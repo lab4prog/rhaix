@@ -168,6 +168,17 @@ impl Database {
         self.0.kind()
     }
 
+    /// Застосувати вже прочитані міграції (ім'я, SQL).
+    ///
+    /// Саме цим користується сервер: у розробці файли читаються з диска, у
+    /// зібраному бінарнику — з вшитої таблиці, а база про різницю не знає.
+    pub fn migrate(&self, migrations: &[(String, String)]) -> Result<Vec<String>, DbError> {
+        let mut sorted = migrations.to_vec();
+        // Порядок — за іменем файлу, тому нумерація `001_`, `002_` обов'язкова.
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        self.0.migrate(&sorted)
+    }
+
     /// Прочитати `migrations/*.sql` і застосувати їх по порядку імен.
     pub fn migrate_from(&self, dir: &Path) -> Result<Vec<String>, DbError> {
         if !dir.is_dir() {
@@ -189,9 +200,7 @@ impl Database {
                 .map_err(|err| DbError::Config(format!("міграція `{name}`: {err}")))?;
             files.push((name, body));
         }
-        // Порядок — за іменем файлу, тому нумерація `001_`, `002_` обов'язкова.
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        self.0.migrate(&files)
+        self.migrate(&files)
     }
 }
 

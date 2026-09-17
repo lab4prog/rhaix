@@ -14,6 +14,7 @@ pub mod ast;
 pub mod error;
 pub mod escape;
 mod expr;
+mod files;
 mod loader;
 mod parse;
 mod render;
@@ -25,6 +26,7 @@ use rhaix_parser::{Source, Span};
 
 pub use ast::Node;
 pub use error::Diagnostic;
+pub use files::{DiskFiles, EmbeddedFiles, Files};
 pub use loader::{Components, Loader, NoComponents, TemplateCache};
 pub use render::{Asset, Globals, Rendered, Slots};
 

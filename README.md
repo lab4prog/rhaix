@@ -19,7 +19,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M7 (асети)
+## Стан: M8 (прод-збірка)
 
 Що вже працює:
 
@@ -40,6 +40,9 @@ page.title = "ToDo";
   піднімає їх у документ один раз; у фрагменті скрипт загорнутий у реєстр, тож
   не виконується повторно. Тости приїжджають із `rhaix.js` — власний `app.js`
   більше не потрібен;
+- **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (8.7 МБ), який
+  нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
+  із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
 - layout вантажиться лише при звичайному заході, на `HX-Request` іде фрагмент;
 - `{{ вираз }}` з контекстним екрануванням і директиви `@if` / `@else` / `@for` /
   `@class` / `@style` / `@attr` / `@html` / `@text` / `@oob`;
@@ -56,7 +59,7 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: `http` і `session` (M5.2), прод-збірки в один бінарник (M8).
+Чого ще немає: `http` і `session` (M5.2), англомовних доків і `llms.txt` (M9).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -70,6 +73,12 @@ cargo run --release -p rhaix-cli -- new myapp
 
 ```bash
 cargo run --release -p rhaix-cli -- check myapp --json
+```
+
+Застосунок в одному бінарнику — деплой стає копіюванням файлу:
+
+```bash
+cargo run --release -p rhaix-cli -- build myapp
 ```
 
 Ворота продуктивності. M0 міряє обчислення виразів (4.88 мс при межі 5 мс),
@@ -98,6 +107,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M5-FINDINGS.md](M5-FINDINGS.md) | дані: булеві в SQLite, шлях до бази, захист від ін'єкції |
 | [M6-FINDINGS.md](M6-FINDINGS.md) | DX: кеш із залежностями, 68 мс до оновлення, межа `check` |
 | [M7-FINDINGS.md](M7-FINDINGS.md) | асети: підйом і дедуплікація, пастка оптимізації втретє |
+| [M8-FINDINGS.md](M8-FINDINGS.md) | прод: трейт `Files`, один бінарник, два режими сервера |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 
@@ -110,7 +120,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, бенчмарк |
 | `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |
 | `rhaix-server` | axum: маршрути, layout, правило фрагмента, статика |
-| `rhaix-cli` | `rhaix dev`, `rhaix new`, `rhaix check` |
+| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check` |
 
 `rhaix-runtime` поки лишається частиною `rhaix-template`: реєстр компонентів
 виявився надто зв'язаним із парсером, щоб ділити їх зараз.

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod build;
 mod scaffold;
 
 #[derive(Parser)]
@@ -33,10 +34,36 @@ enum Command {
         port: Option<u16>,
     },
 
+    /// Запустити сервер у режимі продакшну
+    Serve {
+        /// Корінь проєкту
+        #[arg(default_value = ".")]
+        root: PathBuf,
+
+        /// Порт (сильніший за `rhaix.toml`)
+        #[arg(short, long)]
+        port: Option<u16>,
+    },
+
     /// Створити новий проєкт
     New {
         /// Тека для проєкту
         path: PathBuf,
+    },
+
+    /// Зібрати застосунок в один бінарник
+    Build {
+        /// Корінь проєкту
+        #[arg(default_value = ".")]
+        root: PathBuf,
+
+        /// Де лежить сам фреймворк (поки він не в crates.io)
+        #[arg(long)]
+        framework: Option<PathBuf>,
+
+        /// Тека для згенерованого крейта
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 
     /// Перевірити всі `.rhx` проєкту, не запускаючи сервер
@@ -63,18 +90,31 @@ async fn main() -> anyhow::Result<()> {
 
     match Cli::parse().command {
         Command::Dev { root, port } => {
-            // canonicalize на Windows повертає UNC-шлях `\\?\C:\...` — у виводі
-            // це тільки заважає, тому префікс прибираємо.
-            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
-            let root = match root.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
-                Some(stripped) => PathBuf::from(stripped),
-                None => root,
-            };
+            let root = normalise(root);
             let config = rhaix_server::Config::load(root, port)?;
             rhaix_server::serve(config).await
         }
 
+        Command::Serve { root, port } => {
+            let root = normalise(root);
+            let config = rhaix_server::Config::load_release(root, port)?;
+            rhaix_server::serve(config).await
+        }
+
         Command::New { path } => scaffold::create(&path),
+
+        Command::Build {
+            root,
+            framework,
+            out,
+        } => {
+            let root = normalise(root);
+            // Шлях до фреймворку відомий на момент компіляції самого `rhaix`:
+            // поки крейти не опубліковані, згенерований проєкт посилається
+            // на цей репозиторій.
+            let framework = framework.unwrap_or_else(default_framework);
+            build::build(&root, &framework, out)
+        }
 
         Command::Check { root, json } => {
             let config = rhaix_server::Config::load(root, None)?;
@@ -100,4 +140,23 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+}
+
+/// canonicalize на Windows повертає UNC-шлях виду `\?\C:\...` — у виводі це
+/// лише заважає, тому префікс прибираємо.
+fn normalise(path: PathBuf) -> PathBuf {
+    let path = path.canonicalize().unwrap_or(path);
+    match path.to_str().and_then(|text| text.strip_prefix(r"\?\")) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path,
+    }
+}
+
+/// Тека фреймворку за замовчуванням — той репозиторій, з якого зібрано `rhaix`.
+fn default_framework() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|crates| crates.parent())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }

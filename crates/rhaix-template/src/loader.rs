@@ -14,6 +14,7 @@ use rhai::Engine;
 use rhaix_parser::{Source, Span};
 
 use crate::error::Diagnostic;
+use crate::files::Files;
 use crate::Template;
 
 /// Звідки рендерер бере компоненти.
@@ -141,6 +142,8 @@ impl TemplateCache {
 pub struct Loader {
     root: PathBuf,
     engine: Arc<Engine>,
+    /// Звідки читати файли: диск у розробці, вшита таблиця в зібраному бінарнику.
+    files: Arc<dyn Files>,
     /// Спільний кеш між запитами.
     cache: Arc<TemplateCache>,
     /// Файли, скомпільовані під час поточного завантаження: і дедуплікація,
@@ -152,9 +155,20 @@ pub struct Loader {
 
 impl Loader {
     pub fn new(root: impl Into<PathBuf>, engine: Arc<Engine>, cache: Arc<TemplateCache>) -> Self {
+        Self::with_files(root, engine, cache, crate::DiskFiles::shared())
+    }
+
+    /// Те саме, але з явним джерелом файлів.
+    pub fn with_files(
+        root: impl Into<PathBuf>,
+        engine: Arc<Engine>,
+        cache: Arc<TemplateCache>,
+        files: Arc<dyn Files>,
+    ) -> Self {
         Self {
             root: root.into(),
             engine,
+            files,
             cache,
             visited: Mutex::new(HashMap::new()),
             stack: Mutex::new(Vec::new()),
@@ -244,9 +258,9 @@ impl Loader {
     }
 
     fn compile_uncached(&self, file: &Path, span: Span) -> Result<Arc<Template>, Diagnostic> {
-        let raw = std::fs::read_to_string(file).map_err(|err| {
+        let raw = self.files.read_text(file).ok_or_else(|| {
             Diagnostic::new(format!("не вдалося прочитати {}", self.display(file)), span)
-                .with_hint(err.to_string())
+                .with_hint("файл не знайдено")
         })?;
         let source = Arc::new(Source::new(self.display(file), raw));
         Template::compile_with(source, &self.engine, self).map(Arc::new)
@@ -264,10 +278,9 @@ impl Loader {
     fn suggest(&self, name: &str) -> Option<String> {
         let target = name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase();
         let mut best: Option<(usize, String)> = None;
-        collect_components(
-            &self.components_dir(),
-            &self.components_dir(),
-            &mut |found| {
+        let root = self.components_dir();
+        for path in self.files.list(&root, "rhx") {
+            let mut visit = |found: String| {
                 let candidate = found
                     .rsplit('.')
                     .next()
@@ -280,8 +293,11 @@ impl Loader {
                         _ => best = Some((distance, found.clone())),
                     }
                 }
-            },
-        );
+            };
+            if let Some(tag) = component_tag(&root, &path) {
+                visit(tag);
+            }
+        }
         best.map(|(_, name)| name)
     }
 }
@@ -289,7 +305,7 @@ impl Loader {
 impl Components for Loader {
     fn resolve(&self, name: &str, span: Span) -> Result<Arc<Template>, Diagnostic> {
         let path = self.component_path(name);
-        if !path.is_file() {
+        if !self.files.exists(&path) {
             let mut diagnostic = Diagnostic::new(format!("компонент `<{name}>` не знайдено"), span);
             diagnostic = match self.suggest(name) {
                 Some(similar) => {
@@ -303,37 +319,23 @@ impl Components for Loader {
     }
 }
 
-/// Обійти `components/` і віддати імена у вигляді тегів (`Ui.Button`).
-fn collect_components(dir: &Path, root: &Path, visit: &mut impl FnMut(String)) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_components(&path, root, visit);
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("rhx") {
-            continue;
-        }
-        if let Ok(relative) = path.strip_prefix(root) {
-            let mut segments: Vec<String> = relative
-                .iter()
-                .map(|part| part.to_string_lossy().into_owned())
-                .collect();
-            if let Some(last) = segments.last_mut() {
-                *last = last.trim_end_matches(".rhx").to_owned();
-            }
-            for segment in segments.iter_mut().rev().skip(1) {
-                let mut chars = segment.chars();
-                if let Some(first) = chars.next() {
-                    *segment = first.to_uppercase().collect::<String>() + chars.as_str();
-                }
-            }
-            visit(segments.join("."));
+/// Шлях компонента → ім'я тега: `components/ui/Button.rhx` → `Ui.Button`.
+fn component_tag(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut segments: Vec<String> = relative
+        .iter()
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect();
+    if let Some(last) = segments.last_mut() {
+        *last = last.trim_end_matches(".rhx").to_owned();
+    }
+    for segment in segments.iter_mut().rev().skip(1) {
+        let mut chars = segment.chars();
+        if let Some(first) = chars.next() {
+            *segment = first.to_uppercase().collect::<String>() + chars.as_str();
         }
     }
+    Some(segments.join("."))
 }
 
 /// Відстань Левенштейна — щоб у помилці була підказка, а не лише констатація.

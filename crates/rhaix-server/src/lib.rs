@@ -3,9 +3,9 @@
 //! Сервер знаходить сторінку, рендерить її шаблонізатором і віддає — з layout
 //! при звичайному заході й без нього при HTMX-запиті.
 //!
-//! Обсяг M6: сторінки з `pages/`, фрагменти з `partials/`, спільна охорона в
-//! `middleware.rhx`, база з `rhaix.toml`, кеш шаблонів і живе перезавантаження.
-//! Прод-збірка в один бінарник — M8.
+//! Два режими: розробка (живе перезавантаження, свіжість файлів на кожен запит)
+//! і продакшн (заморожений кеш, стиснення). Файли беруться через трейт `Files`,
+//! тому той самий сервер працює і з диска, і з таблиці, вшитої в бінарник.
 
 mod check;
 mod client;
@@ -33,11 +33,14 @@ use rhaix_script::{
     Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData,
     State as ScriptState,
 };
-use rhaix_template::{Globals, Loader, Slots, TemplateCache};
+use rhaix_template::{DiskFiles, Files, Globals, Loader, Slots, TemplateCache};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 /// Скільки часу дається скрипту сторінки. Далі — явна помилка, а не мовчазне
 /// утримання потоку (RISKS 2.3).
@@ -56,7 +59,7 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 const RELOAD_ROUTE: &str = "/_rhaix/events";
 
 /// Налаштування застосунку: `rhaix.toml` плюс те, що задав CLI.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub root: PathBuf,
     pub addr: SocketAddr,
@@ -64,6 +67,21 @@ pub struct Config {
     pub database: Option<DatabaseConfig>,
     /// Режим розробки: живе перезавантаження й перевірка свіжості файлів.
     pub dev: bool,
+    /// Звідки читати файли проєкту: диск або вшита в бінарник таблиця.
+    pub files: Arc<dyn Files>,
+    /// Чи застосунок вшитий у бінарник (тоді статика теж іде з таблиці).
+    pub embedded: bool,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("root", &self.root)
+            .field("addr", &self.addr)
+            .field("database", &self.database)
+            .field("dev", &self.dev)
+            .finish()
+    }
 }
 
 /// Секція `[db]` з `rhaix.toml`.
@@ -91,7 +109,39 @@ impl Config {
             addr,
             database: None,
             dev: true,
+            files: DiskFiles::shared(),
+            embedded: false,
         }
+    }
+
+    /// Конфіг для зібраного бінарника: файли беруться з вшитої таблиці,
+    /// режим — продакшн, коренем є порожній шлях.
+    ///
+    /// Цим користується код, який генерує `rhaix build`.
+    pub fn embedded(files: Arc<dyn Files>, port: Option<u16>) -> anyhow::Result<Self> {
+        let raw = files.read_text(Path::new("rhaix.toml")).unwrap_or_default();
+        let file: ConfigFile =
+            toml::from_str(&raw).map_err(|err| anyhow::anyhow!("rhaix.toml: {err}"))?;
+        let port = port
+            .or_else(|| file.server.as_ref().and_then(|s| s.port))
+            .unwrap_or(3000);
+
+        Ok(Self {
+            root: PathBuf::new(),
+            addr: SocketAddr::from(([0, 0, 0, 0], port)),
+            database: file.db,
+            dev: false,
+            files,
+            embedded: true,
+        })
+    }
+
+    /// Те саме, але для продакшну: без стеження за файлами й без клієнта
+    /// живого перезавантаження.
+    pub fn load_release(root: impl Into<PathBuf>, port: Option<u16>) -> anyhow::Result<Self> {
+        let mut config = Self::load(root, port)?;
+        config.dev = false;
+        Ok(config)
     }
 
     /// Прочитати `rhaix.toml`, якщо він є.
@@ -117,6 +167,8 @@ impl Config {
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
             database: file.db,
             dev: true,
+            files: DiskFiles::shared(),
+            embedded: false,
         })
     }
 
@@ -195,8 +247,11 @@ pub fn build_watched(
     Vec<PageRoute>,
     (Arc<TemplateCache>, broadcast::Sender<()>),
 )> {
-    let mut routes = scan_pages(&config.pages_dir())?;
-    routes.extend(scan_partials(&config.partials_dir())?);
+    let mut routes = scan_pages(config.files.as_ref(), &config.pages_dir())?;
+    routes.extend(scan_partials(
+        config.files.as_ref(),
+        &config.partials_dir(),
+    )?);
 
     let database = match &config.database {
         Some(settings) => {
@@ -208,8 +263,18 @@ pub fn build_watched(
                 Database::open(&settings.driver, &url).map_err(|err| anyhow::anyhow!("{err}"))?;
             // Міграції застосовуються на старті: сервер, який піднявся, завжди
             // має схему, яку очікують сторінки.
+            let migrations: Vec<(String, String)> = config
+                .files
+                .list(&config.migrations_dir(), "sql")
+                .into_iter()
+                .filter_map(|path| {
+                    let name = path.file_name()?.to_string_lossy().into_owned();
+                    let body = config.files.read_text(&path)?;
+                    Some((name, body))
+                })
+                .collect();
             let applied = database
-                .migrate_from(&config.migrations_dir())
+                .migrate(&migrations)
                 .map_err(|err| anyhow::anyhow!("{err}"))?;
             for name in &applied {
                 tracing::info!("міграція застосована: {name}");
@@ -223,8 +288,13 @@ pub fn build_watched(
         engine: Arc::new(build_engine(Limits::default())),
         state: ScriptState::new(),
         database,
-        // У dev кеш перевіряє свіжість файлів; `rhaix build` (M8) візьме frozen.
-        templates: TemplateCache::watching(),
+        // У dev кеш перевіряє свіжість файлів на кожен запит; у продакшні
+        // шаблон компілюється один раз і більше ніколи не читається з диска.
+        templates: if config.dev {
+            TemplateCache::watching()
+        } else {
+            TemplateCache::frozen()
+        },
         reload: broadcast::channel(16).0,
     };
 
@@ -271,12 +341,48 @@ pub fn build_watched(
         }),
     );
 
+    if config.embedded {
+        // Вшита статика: ServeDir тут ні до чого — файлів на диску немає.
+        let files = config.files.clone();
+        let public = config.public_dir();
+        let router = router.fallback(move |uri: axum::http::Uri| {
+            let files = files.clone();
+            let public = public.clone();
+            async move { serve_embedded_asset(files.as_ref(), &public, uri.path()) }
+        });
+        let router = router.layer(CompressionLayer::new());
+        let watched = (state.templates.clone(), state.reload.clone());
+        return Ok((router.with_state(state), routes, watched));
+    }
+
     let public = config.public_dir();
     let router = if public.is_dir() {
         // `public/style.css` віддається як `/style.css` — без префікса, як в Astro.
-        router.fallback_service(ServeDir::new(public).append_index_html_on_directories(false))
+        let files = ServeDir::new(public).append_index_html_on_directories(false);
+        if config.dev {
+            router.fallback_service(files)
+        } else {
+            // У продакшні статика кешується браузером: вона змінюється лише
+            // разом із деплоєм.
+            router.fallback_service(
+                ServiceBuilder::new()
+                    .layer(SetResponseHeaderLayer::if_not_present(
+                        header::CACHE_CONTROL,
+                        HeaderValue::from_static("public, max-age=3600"),
+                    ))
+                    .service(files),
+            )
+        }
     } else {
         router.fallback(not_found)
+    };
+
+    // Стиснення вмикається лише в продакшні: у розробці воно тільки заважає
+    // дивитись відповіді очима.
+    let router = if config.dev {
+        router
+    } else {
+        router.layer(CompressionLayer::new())
     };
 
     let watched = (state.templates.clone(), state.reload.clone());
@@ -287,12 +393,16 @@ pub fn build_watched(
 ///
 /// `index.rhx` → `/`, `todo.rhx` → `/todo`, `todo/[id].rhx` → `/todo/{id}`,
 /// `blog/[...rest].rhx` → `/blog/{*rest}`.
-pub fn scan_pages(dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
+pub fn scan_pages(files: &dyn Files, dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
     let mut routes = Vec::new();
-    if !dir.is_dir() {
-        return Ok(routes);
+    for path in files.list(dir, "rhx") {
+        let relative = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
+        routes.push(PageRoute {
+            pattern: route_pattern(&relative),
+            file: path,
+            kind: RouteKind::Page,
+        });
     }
-    collect_pages(dir, dir, &mut routes)?;
     // Довші (специфічніші) шляхи реєструємо першими, щоб `/todo/new` не з'їдався
     // маршрутом `/todo/{id}`.
     routes.sort_by(|a, b| {
@@ -309,38 +419,13 @@ pub fn scan_pages(dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
 ///
 /// Це прямий аналог `/components/todo` з Node-RED-стартера, тільки без окремого
 /// ендпоінта на кожен компонент — файл і є ендпоінтом.
-pub fn scan_partials(dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
-    let mut routes = Vec::new();
-    if !dir.is_dir() {
-        return Ok(routes);
-    }
-    collect_pages(dir, dir, &mut routes)?;
+pub fn scan_partials(files: &dyn Files, dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
+    let mut routes = scan_pages(files, dir)?;
     for route in &mut routes {
         route.kind = RouteKind::Partial;
         route.pattern = format!("/components{}", route.pattern.to_lowercase());
     }
     Ok(routes)
-}
-
-fn collect_pages(root: &Path, dir: &Path, out: &mut Vec<PageRoute>) -> anyhow::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_pages(root, &path, out)?;
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("rhx") {
-            continue;
-        }
-        let relative = path.strip_prefix(root).unwrap_or(&path);
-        out.push(PageRoute {
-            pattern: route_pattern(relative),
-            file: path,
-            kind: RouteKind::Page,
-        });
-    }
-    Ok(())
 }
 
 fn route_pattern(relative: &Path) -> String {
@@ -547,10 +632,11 @@ fn render_page(
 
     // Завантажувач створюється на запит, але кеш у нього спільний: повторний
     // запит бере готове дерево, а правка файлу робить запис несвіжим.
-    let loader = Loader::new(
+    let loader = Loader::with_files(
         state.config.root.clone(),
         state.engine.clone(),
         state.templates.clone(),
+        state.config.files.clone(),
     );
     let template = loader
         .load(file)
@@ -572,7 +658,7 @@ fn render_page(
     // `middleware.rhx` виконується перед сторінкою: автентифікація, права,
     // локаль — усе, що інакше довелось би дублювати в кожному файлі (SYNTAX 6.6).
     let middleware_path = state.config.middleware_path();
-    if middleware_path.is_file() {
+    if state.config.files.exists(&middleware_path) {
         let middleware =
             loader
                 .load(&middleware_path)
@@ -639,7 +725,7 @@ fn render_page(
     }
 
     let layout_path = state.config.layout_path();
-    if !layout_path.is_file() {
+    if !state.config.files.exists(&layout_path) {
         state_now = response.take();
         return Ok((page_html, state_now));
     }
@@ -662,7 +748,7 @@ fn render_page(
     // Підняті стилі — у `<rhaix:head/>`, підняті скрипти — у `<rhaix:scripts/>`.
     let head = format!(
         "{}{}",
-        collect_head(&state.config.public_dir()),
+        collect_head(state.config.files.as_ref(), &state.config.public_dir()),
         assets.head()
     );
     let scripts = format!("{}{}", collect_scripts(&state.config), assets.scripts());
@@ -691,8 +777,8 @@ fn render_page(
 }
 
 /// Усі `public/**.css` — у `<head>`.
-fn collect_head(public: &Path) -> String {
-    list_assets(public, "css")
+fn collect_head(files: &dyn Files, public: &Path) -> String {
+    list_assets(files, public, "css")
         .into_iter()
         .map(|href| format!("<link rel=\"stylesheet\" href=\"{href}\">"))
         .collect::<Vec<_>>()
@@ -705,7 +791,7 @@ fn collect_head(public: &Path) -> String {
 /// htmx першим, далі решта `public/**.js` — саме те, що в Node-RED-стартері
 /// доводилось вписувати в `index.html` руками.
 fn collect_scripts(config: &Config) -> String {
-    let mut scripts = list_assets(&config.public_dir(), "js");
+    let mut scripts = list_assets(config.files.as_ref(), &config.public_dir(), "js");
     scripts.sort_by_key(|src| !src.contains("htmx"));
 
     // `rhaix.js` іде перший: підняті скрипти компонентів питають у нього
@@ -727,27 +813,52 @@ fn collect_scripts(config: &Config) -> String {
     out.join("\n  ")
 }
 
-fn list_assets(public: &Path, extension: &str) -> Vec<String> {
-    fn walk(dir: &Path, base: &Path, extension: &str, out: &mut Vec<String>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, base, extension, out);
-            } else if path.extension().and_then(|e| e.to_str()) == Some(extension) {
-                if let Ok(rel) = path.strip_prefix(base) {
-                    out.push(format!("/{}", rel.to_string_lossy().replace('\\', "/")));
-                }
-            }
-        }
-    }
-
-    let mut found = Vec::new();
-    walk(public, public, extension, &mut found);
+fn list_assets(files: &dyn Files, public: &Path, extension: &str) -> Vec<String> {
+    let mut found: Vec<String> = files
+        .list(public, extension)
+        .into_iter()
+        .filter_map(|path| {
+            let relative = path.strip_prefix(public).ok()?;
+            Some(format!(
+                "/{}",
+                relative.to_string_lossy().replace('\\', "/")
+            ))
+        })
+        .collect();
     found.sort();
     found
+}
+
+/// Віддати вшитий файл із `public/`.
+fn serve_embedded_asset(files: &dyn Files, public: &Path, path: &str) -> Response {
+    let relative = path.trim_start_matches('/');
+    if relative.is_empty() || relative.contains("..") {
+        return (StatusCode::NOT_FOUND, "404").into_response();
+    }
+    let Some(bytes) = files.read(&public.join(relative)) else {
+        return (StatusCode::NOT_FOUND, "404").into_response();
+    };
+
+    let mime = match Path::new(relative).extension().and_then(|e| e.to_str()) {
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("ico") => "image/x-icon",
+        Some("json") => "application/json",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    };
+    (
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 async fn not_found(_: HttpRequest<Body>) -> Response {
@@ -921,10 +1032,16 @@ fn is_source(path: &Path) -> bool {
 /// Запустити сервер і працювати до Ctrl+C.
 pub async fn serve(config: Config) -> anyhow::Result<()> {
     let (router, routes, watched) = build_watched(config.clone())?;
-    watch(config.root.clone(), watched.0, watched.1);
+    if config.dev {
+        watch(config.root.clone(), watched.0, watched.1);
+    }
 
-    println!("rhaix dev — http://{}", config.addr);
-    println!("  корінь : {}", config.root.display());
+    println!("rhaix — http://{}", config.addr);
+    if config.embedded {
+        println!("  джерело: файли вшиті в бінарник");
+    } else {
+        println!("  корінь : {}", config.root.display());
+    }
     for route in &routes {
         let mark = match route.kind {
             RouteKind::Page => "сторінка",
@@ -936,14 +1053,18 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             display_path(&config.root, &route.file)
         );
     }
-    if config.middleware_path().is_file() {
+    if config.files.exists(&config.middleware_path()) {
         println!("  middleware: middleware.rhx — виконується перед кожним запитом");
     }
     match &config.database {
         Some(settings) => println!("  база   : {} — {}", settings.driver, settings.url),
         None => println!("  база   : не налаштована (секція [db] у rhaix.toml)"),
     }
-    println!("  M5: дані, маршрути й компоненти працюють; кеш і watcher — з M6\n");
+    if config.dev {
+        println!("  режим  : розробка — живе перезавантаження увімкнено\n");
+    } else {
+        println!("  режим  : продакшн — кеш заморожено, стиснення увімкнено\n");
+    }
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     axum::serve(listener, router)

@@ -25,5 +25,6 @@ notify = "7"
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
+rhaix-template.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { workspace = true, features = ["util"] }

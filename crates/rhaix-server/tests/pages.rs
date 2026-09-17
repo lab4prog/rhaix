@@ -382,6 +382,72 @@ async fn the_client_script_is_served_by_the_core() {
     assert!(body.contains("window.__rhaix"), "реєстр асетів");
 }
 
+// ----------------------------------------------------------- вшитий режим
+
+/// Застосунок, файли якого існують лише в пам'яті — так само, як у бінарнику
+/// після `rhaix build`.
+fn embedded_app() -> axum::Router {
+    let files = rhaix_template::EmbeddedFiles::new(&[
+        (
+            "rhaix.toml",
+            b"[db]
+driver = \"sqlite\"
+url = \":memory:\"
+",
+        ),
+        (
+            "layouts/main.rhx",
+            b"<!DOCTYPE html><html><head><rhaix:head /></head><body><slot /></body></html>",
+        ),
+        ("pages/index.rhx", "<h1>вшито</h1><Mark />".as_bytes()),
+        ("components/Mark.rhx", "<b>компонент теж</b>".as_bytes()),
+        ("public/style.css", b"body{margin:0}"),
+        (
+            "migrations/001_init.sql",
+            b"create table notes (id integer primary key, title text)",
+        ),
+    ]);
+    let config = rhaix_server::Config::embedded(files, Some(0)).expect("вшитий конфіг");
+    build(config).expect("вшитий застосунок").0
+}
+
+async fn call_on(router: axum::Router, request: Request<Body>) -> (StatusCode, String) {
+    let response = router.oneshot(request).await.expect("запит");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("тіло");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn embedded_app_serves_pages_components_and_assets() {
+    let (status, body) = call_on(embedded_app(), get("/")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<h1>вшито</h1>"), "{body}");
+    assert!(
+        body.contains("<b>компонент теж</b>"),
+        "компонент з пам'яті: {body}"
+    );
+    assert!(
+        body.contains("<link rel=\"stylesheet\" href=\"/style.css\">"),
+        "{body}"
+    );
+
+    let (status, body) = call_on(embedded_app(), get("/style.css")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("margin"), "статика теж із пам'яті: {body}");
+}
+
+#[tokio::test]
+async fn embedded_app_has_no_dev_client() {
+    let (_, body) = call_on(embedded_app(), get("/")).await;
+    assert!(
+        !body.contains("_rhaix/events"),
+        "у продакшні перезавантаження немає"
+    );
+}
+
 #[tokio::test]
 async fn missing_page_is_a_404() {
     let (status, _, _) = call(get("/nope")).await;
