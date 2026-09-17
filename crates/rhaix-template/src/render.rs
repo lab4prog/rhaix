@@ -61,6 +61,14 @@ impl Globals {
         self
     }
 
+    /// Значення глобального об'єкта за іменем.
+    pub fn get(&self, name: &str) -> Option<&Dynamic> {
+        self.entries
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
+    }
+
     /// Звідки брати токен для полів `<rhaix:csrf />`.
     pub fn with_csrf(&mut self, token: CsrfToken) -> &mut Self {
         self.csrf = Some(token);
@@ -581,6 +589,18 @@ impl<'a> Renderer<'a> {
 
     /// `@oob={"#row-42"}` → `hx-swap-oob="outerHTML:#row-42"` (плюс `id`, якщо його немає).
     fn oob_attributes(&mut self, value: &Dynamic, has_id: bool) {
+        // Мапа тут — майже завжди помилка: `@oob` чекає селектор або
+        // `["#список", "beforeend"]`. Без цього попередження вона мовчки
+        // перетворювалась на `hx-swap-oob="outerHTML:#{...}"`, і своп просто
+        // не спрацьовував.
+        if value.is_map() {
+            self.warnings.push(
+                "`@oob` чекає селектор (`\"#row-1\"`) або `[\"#список\", \"beforeend\"]`,                  а не мапу — своп не спрацює"
+                    .to_owned(),
+            );
+            return;
+        }
+
         let (selector, swap) = match value.read_lock::<Array>() {
             Some(array) => {
                 let selector = array.first().map(rhaix_script::display).unwrap_or_default();

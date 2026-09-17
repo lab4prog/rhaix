@@ -1,0 +1,384 @@
+# rhaix
+
+> Server-rendered HTML framework. Rust core, [Rhai](https://rhai.rs) for business
+> logic, HTMX over the wire. One file = one component: markup plus a small logic
+> block on top, like Astro. No Rust knowledge required, no frontend build, no
+> `node_modules`. Deployment is copying one binary.
+
+This file is the complete working reference. If you write `.rhx` from it alone,
+you should not need anything else. Full spec: `SYNTAX.md` (Ukrainian),
+`SYNTAX.en.md` (English). Ready-made recipes: `examples/cookbook/`.
+
+Diagnostics are in Ukrainian and always carry `file:line:column` in `.rhx`
+coordinates.
+
+---
+
+## File format
+
+```
+pages/todo.rhx
+---
+// frontmatter: Rhai. Runs on the server. Never reaches the response.
+let todos = db.find("todos", #{ done: false }, #{ sort: "id desc" });
+page.title = "ToDo";
+---
+<h1>{{ page.title }}</h1>
+<ul>
+  <TodoItem @for={t in todos} @key={t.id} todo={t} />
+  <li @if={todos.is_empty()}>Nothing here</li>
+</ul>
+```
+
+- Opening `---` must be the first non-empty line. Frontmatter is optional.
+- Everything below is markup. Frontmatter variables are visible in it.
+- Encoding UTF-8. Extension `.rhx`.
+
+## Four rules that cover the whole language
+
+1. Tag starting with a **capital** letter → component from `components/`.
+2. Attribute starting with `@` → framework directive, never emitted as HTML.
+3. `{ ... }` as an attribute value → Rhai expression; `"..."` → string (may
+   contain `{{ }}`).
+4. Everything else is plain HTML, emitted as written.
+
+## Directories
+
+| Path | Role | Reachable over HTTP |
+|---|---|---|
+| `pages/**/*.rhx` | page / endpoint | yes, by file path |
+| `partials/**/*.rhx` | HTMX fragment | yes, `/components/<lowercase-name>` |
+| `components/**/*.rhx` | component | no |
+| `layouts/main.rhx` | full-document wrapper | no |
+| `scripts/*.rhai` | shared functions, visible everywhere | no |
+| `middleware.rhx` | runs before every request | no |
+| `migrations/*.sql` | applied at startup, in filename order | no |
+| `public/**` | static files; `.css`/`.js` auto-included in layout | yes, at `/` |
+
+Routes: `pages/index.rhx` → `/`, `pages/todo.rhx` → `/todo`,
+`pages/blog/index.rhx` → `/blog`, `pages/todo/[id].rhx` → `/todo/{id}`
+(`req.param("id")`), `pages/blog/[...rest].rhx` → catch-all.
+
+---
+
+## Output and escaping
+
+```html
+{{ value }}                  escaped for the context it sits in
+{{ raw(html) }}              no escaping — the only way out, and it is visible
+{{! comment, never rendered }}
+{{ "{{" }}                   a literal double brace
+<rhaix:raw>…</rhaix:raw>     a whole block emitted verbatim
+```
+
+`()` and `false` render as an **empty string** (so `{{ maybe }}` never prints
+`()` or `false`); everything else goes through `to_string()`. `{{-` and `-}}`
+trim surrounding whitespace.
+
+Escaping is **context-aware**, so there is nothing to remember:
+
+| Context | What happens |
+|---|---|
+| text | HTML-escaped |
+| attribute | attribute-escaped |
+| `href` `src` `action` `formaction` | plus URL scheme check; `javascript:` becomes `#` and is logged |
+| `on*` (`onclick`, …) | an expression here is a **compile error** — event handlers cannot come from data |
+| inside `<script>` | only `{{ json(x) }}` is allowed |
+| inside `<style>` | interpolation is forbidden |
+
+## Directives
+
+```html
+<li @if={t.done}>done</li>
+<li @else-if={t.urgent}>urgent</li>
+<li @else>pending</li>
+
+<li @for={t in todos} @key={t.id}>{{ t.title }}</li>
+<li @for={(t, i) in todos}>{{ i }}: {{ t.title }}</li>       <!-- also (v, k) over maps -->
+<li @for={n in 1..=5}>{{ n }}</li>                          <!-- and over ranges -->
+<li @for={t in todos}>{{ iter.number }} of {{ iter.count }}</li>
+
+<div @class={#{ "active": is_on, "done": t.done }}>        merged with class="..."
+<div @style={#{ "width": percent(done, total) }}>           percent() already adds "%"
+<div @attr={#{ "disabled": locked, "data-id": t.id }}>     false/() drops the attribute
+<div @html={post.body}>       inner HTML, unescaped
+<div @text={post.title}>      inner text, escaped
+<tr @oob={"#row-" + o.id}>                                  out-of-band swap; sets id too
+<div @oob={["#list", "beforeend"]}>                         selector + swap mode
+```
+
+`@if` and `@for` on the same element: the loop wraps the condition, so the loop
+variable is visible to `@if`.
+
+Counters live in `iter` (`iter.number`, `iter.index`, `iter.count`,
+`iter.first`, `iter.last`) — `loop` is a Rhai keyword and cannot be used.
+
+Truthiness for `@if`: `()`, `false`, `0`, `0.0`, `""`, empty array, empty map
+are false. Everything else is true.
+
+## Components
+
+```html
+<!-- components/TodoItem.rhx -->
+---
+// props is a map of what the caller passed
+let todo = props.todo;
+---
+<li @class={#{ "done": todo.done }}>{{ todo.title }}</li>
+```
+
+```html
+<TodoItem todo={t} />
+<TodoItem {...attrs} />
+<Ui.Card>…</Ui.Card>          <!-- components/ui/Card.rhx -->
+```
+
+Slots:
+
+```html
+<!-- components/Card.rhx -->
+<section>
+  <header @if={slots.has("header")}><slot name="header" /></header>
+  <slot />                               <!-- default slot -->
+  <footer><slot name="footer">fallback</slot></footer>
+</section>
+```
+
+```html
+<Card>
+  <template slot="header"><h2>Title</h2></template>
+  Body goes into the default slot.
+</Card>
+```
+
+A component does **not** inherit the caller's scope: it sees only `props`,
+`slots` and the globals. Unknown tags and dependency cycles are **compile**
+errors, reported before the first request.
+
+## Layout and the fragment rule
+
+`layouts/main.rhx` is the only full document. It is used **only** on a normal
+visit; when the request carries `HX-Request`, the page's own markup is returned
+with no layout. Files in `partials/` are never wrapped.
+
+```html
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <title>{{ page.title ?? "app" }}</title>
+  <rhaix:head />        <!-- public/*.css + hoisted <style> -->
+</head>
+<body hx-boost="true">
+  <main id="main"><slot /></main>
+  <rhaix:scripts />     <!-- public/*.js + rhaix.js + hoisted <script> -->
+</body>
+</html>
+```
+
+`page` is a shared map: set `page.title` in the page, read it in the layout.
+`page.layout = "admin"` picks `layouts/admin.rhx`; `page.layout = false` renders
+the page with no layout at all.
+
+---
+
+## Globals available in every file
+
+| Name | What |
+|---|---|
+| `req` | `req.method`, `req.path`, `req.is_htmx`, `req.param/query/form/header/cookie`, typed `query_int/query_float/query_bool` and `form_int/form_float/form_bool`, `req.all_query()`, `req.all_form()`, `req.body` |
+| `res` | `res.status(422)`, `res.header(k,v)`, `res.cookie(k,v)`, `res.redirect("/login")` |
+| `hx` | `hx.toast(msg, "success")`, `hx.trigger(name[, detail])`, `hx.redirect`, `hx.refresh`, `hx.push_url`, `hx.retarget`, `hx.reswap`, `hx.location` |
+| `db` | see below |
+| `session` | `session.set/get/has/remove/clear/all`, `session.user` |
+| `csrf` | `csrf.token` |
+| `http` | `http.get/post/put/patch/delete` |
+| `state` | process-wide key/value: `state.get/set/has/remove` |
+| `page` | shared map for the page and its layout |
+| `log` | `log.info/warn/error` |
+| `props` `slots` | inside components |
+| `iter` | inside `@for` |
+
+Missing values are `()`, so `req.query("x") ?? "default"` is the idiom.
+
+Only `res.redirect`, `hx.redirect` and `hx.refresh` stop rendering.
+`res.status(422)` does **not**: re-rendering a form with errors is the normal
+case.
+
+## Database
+
+```rhai
+// Portable CRUD — works on every driver
+db.find("orders", #{ status: "paid" }, #{ sort: "id desc", limit: 20, skip: 40 })
+db.get("orders", id)                       // by primary key, () if absent
+db.count("orders", #{ status: "new" })
+db.insert("orders", #{ customer: name })   // returns the new id
+db.update("orders", id, #{ status: "paid" })
+db.delete("orders", id)
+
+// Native SQL when you need it — always parameterised
+db.query("select * from orders where amount > ?", [100])
+db.one("select count(*) as n from orders")
+db.exec("update orders set status = ? where id = ?", ["paid", id])
+db.tx(|t| { t.insert(...); t.update(...); })   // one connection; any error rolls back
+```
+
+Filter operators: `eq ne gt gte lt lte in nin contains starts ends between
+is_null`.
+
+```rhai
+db.find("orders", #{ amount: #{ gte: 100, lt: 1000 }, status: #{ in: ["new", "paid"] } })
+db.find("orders", #{ customer: #{ contains: q } })
+```
+
+`options` accepts only `sort`, `limit`, `skip`, `fields`. An unknown key is an
+error, not silence.
+
+**SQLite has no boolean type.** `done` comes back as `0`/`1`. In markup that is
+fine (`@if={t.done}`, `!t.done` both work), but plain Rhai `if t.done` needs
+`if bool(t.done)`.
+
+Config, `rhaix.toml`:
+
+```toml
+[server]
+port = 3000
+
+[db]
+driver = "sqlite"
+url = "data/app.db"       # relative to the project root, not the working dir
+
+[app]
+csrf = true               # default
+session_days = 30
+tz_offset = "+03:00"
+http_timeout = 10
+```
+
+The session signing key comes from `RHAIX_SECRET`, then `[app] secret`, then a
+`.rhaix-secret` file created by `rhaix dev`. In production, set `RHAIX_SECRET`.
+
+## Sessions and CSRF
+
+```rhai
+session.set("user", name);
+session.user                      // shorthand for session.get("user")
+session.clear();                  // logout
+```
+
+A session is a **signed cookie**, not server state: the app stays one binary you
+can run twice behind a load balancer. The client can read the contents (base64,
+not encryption) but cannot change them. Keep it under ~4 KB; put ids in the
+session and data in the database. A session cannot be revoked server-side.
+
+**CSRF needs nothing from you.** A form that changes data gets a hidden field; a
+non-form element with `hx-post`/`hx-put`/`hx-patch`/`hx-delete` gets an
+`hx-headers` attribute. Requests with a method other than GET/HEAD/OPTIONS and
+no valid token are refused with 403 before `middleware.rhx` runs.
+
+Edge cases: dynamic `method={m}` → put `<rhaix:csrf />` inside the form by hand;
+your own `hx-headers` → add `#{"x-csrf-token": csrf.token}` yourself;
+`data-no-csrf` opts one element out.
+
+## Calling other services
+
+```rhai
+let r = http.get("https://api.example.com/rates");
+let rate = if r.ok { r.json.usd } else { () };
+
+http.post(url, #{ title: title })                       // map/array → JSON body
+http.get(url, #{ Authorization: `Bearer ${token}` })
+```
+
+Synchronous — no `await`. Response map: `status`, `ok`, `body`, `json`,
+`headers`, `error`. A network failure gives `ok: false`, never an exception, so
+no `try` is needed. Only `http://` and `https://` are accepted.
+
+## Helpers
+
+```rhai
+url("/orders", #{ q: q, page: n })   // the only correct way to build a link
+now() today() date(v) date(v, "DD.MM.YYYY HH:mm") datetime(v) timestamp(s)
+days(n) hours(n) minutes(n)
+slug(s) cut(s, n) strip_tags(s) capitalize(s) is_blank(v)
+money(v) money(v, 0) percent(a, b)
+uuid() random_id() sha256(s)
+json(v)              // for <script> only — escapes tag-closing sequences
+json_encode(v) json_decode(s)
+raw(v) bool(v)
+```
+
+Date pattern tokens: `YYYY YY MM M DD D HH H mm m ss s`; text in double quotes
+is kept verbatim. `date()` accepts both a timestamp and a database string.
+
+## Shared functions
+
+```rhai
+// scripts/orders.rhai — no import anywhere
+fn status_label(status) {
+    switch status { "new" => "New", "paid" => "Paid", _ => status }
+}
+```
+
+Visible from every `.rhx`, in frontmatter and in `{{ }}`. Loaded once at
+startup, so editing them needs a `rhaix dev` restart (it says so in the console).
+
+## Component assets
+
+```html
+<div class="card">…</div>
+<style>.card { border: 1px solid #ddd }</style>
+<script>console.log({{ json(props) }})</script>
+```
+
+`<style>` is hoisted into `<rhaix:head/>`, `<script>` into `<rhaix:scripts/>`,
+both deduplicated by content hash. A script runs **once per page lifetime**,
+even if its component arrives through several HTMX swaps. `<style>` is global
+in v1 — scoping is v1.1. There are no islands and no `<script client>`.
+
+---
+
+## Two Rhai facts that bite
+
+1. `loop` is a keyword — loop counters live in `iter`.
+2. Many string methods mutate in place. rhaix overrides `trim()` so it both
+   trims and returns the value, but other in-place methods still behave the
+   Rhai way.
+
+## Method-specific logic in one file
+
+```rhai
+---
+if req.method == "POST" {
+    let title = req.form("title").trim();
+    if is_blank(title) {
+        res.status(422);          // same page, with errors
+    } else {
+        db.insert("todos", #{ title: title });
+        hx.toast("Added", "success");
+    }
+}
+if req.method == "DELETE" {
+    db.delete("todos", req.query_int("id"));
+    return "";                    // empty body — HTMX removes the element
+}
+let todos = db.find("todos", #{}, #{ sort: "id desc" });
+---
+```
+
+Returning a value from frontmatter makes it the response body, skipping markup.
+
+## Commands
+
+```bash
+rhaix dev <dir>      # live reload, diagnostics in the browser
+rhaix serve <dir>    # production from disk: frozen cache, compression
+rhaix build <dir>    # one binary with every file embedded
+rhaix new <dir>      # project skeleton
+rhaix check <dir>    # compile everything without starting; --json for CI
+```
+
+## Not in v1, on purpose
+
+Islands / client components / partial hydration; scoped CSS (v1.1); password
+hashing and auth (planned as M12, deliberately not faked with SHA-256);
+`markdown()`; Postgres, MongoDB, SurrealDB drivers (M11, same `DbDriver` trait).

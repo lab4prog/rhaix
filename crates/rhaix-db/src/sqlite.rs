@@ -92,51 +92,49 @@ impl DbDriver for SqliteDriver {
     }
 
     fn raw_query(&self, sql: &str, params: &[Dynamic]) -> Result<Vec<Map>, DbError> {
-        self.with_connection(|connection| {
-            let mut statement = connection
-                .prepare(sql)
-                .map_err(|err| query_error(sql, err))?;
-            let columns: Vec<String> = statement
-                .column_names()
-                .into_iter()
-                .map(|name| name.to_owned())
-                .collect();
-
-            let bound: Vec<Param> = params.iter().map(Param).collect();
-            let values: Vec<&dyn ToSql> = bound.iter().map(|p| p as &dyn ToSql).collect();
-
-            let mut rows = statement
-                .query(values.as_slice())
-                .map_err(|err| query_error(sql, err))?;
-
-            let mut out = Vec::new();
-            while let Some(row) = rows.next().map_err(|err| query_error(sql, err))? {
-                let mut map = Map::new();
-                for (index, name) in columns.iter().enumerate() {
-                    let value = row
-                        .get_ref(index)
-                        .map_err(|err| query_error(sql, err))
-                        .map(from_sql)?;
-                    map.insert(name.as_str().into(), value);
-                }
-                out.push(map);
-            }
-            Ok(out)
-        })
+        self.with_connection(|connection| run_query(connection, sql, params))
     }
 
     fn raw_exec(&self, sql: &str, params: &[Dynamic]) -> Result<Affected, DbError> {
-        self.with_connection(|connection| {
-            let bound: Vec<Param> = params.iter().map(Param).collect();
-            let values: Vec<&dyn ToSql> = bound.iter().map(|p| p as &dyn ToSql).collect();
-            let rows = connection
-                .execute(sql, values.as_slice())
-                .map_err(|err| query_error(sql, err))?;
-            Ok(Affected {
-                rows: rows as i64,
-                last_id: connection.last_insert_rowid(),
-            })
-        })
+        self.with_connection(|connection| run_exec(connection, sql, params))
+    }
+
+    /// Транзакція тримає одне з'єднання від `begin` до `commit`.
+    fn transaction(
+        &self,
+        body: &mut dyn FnMut(Arc<dyn DbDriver>) -> Result<Dynamic, DbError>,
+    ) -> Result<Dynamic, DbError> {
+        let connection = self.checkout()?;
+        // `begin immediate` — щоб конфлікт запису виявився одразу, а не на
+        // `commit`, коли відкочувати вже дорожче.
+        connection
+            .execute_batch("begin immediate;")
+            .map_err(|err| DbError::Query(format!("не вдалося почати транзакцію: {err}")))?;
+
+        let pinned = Arc::new(PinnedSqlite {
+            connection: Mutex::new(Some(connection)),
+        });
+        let result = body(pinned.clone());
+
+        // З'єднання забираємо назад. Якщо скрипт десь зберіг посилання на
+        // транзакцію, `take` віддасть None — тоді просто нічого не робимо,
+        // і з'єднання помре разом із останнім посиланням.
+        let Some(connection) = pinned.take() else {
+            return Err(DbError::Query(
+                "з'єднання транзакції лишилось зайнятим: не зберігайте `t` поза межами db.tx".into(),
+            ));
+        };
+
+        match &result {
+            Ok(_) => connection
+                .execute_batch("commit;")
+                .map_err(|err| DbError::Query(format!("не вдалося завершити транзакцію: {err}")))?,
+            Err(_) => {
+                let _ = connection.execute_batch("rollback;");
+            }
+        }
+        self.checkin(connection);
+        result
     }
 
     fn migrate(&self, migrations: &[(String, String)]) -> Result<Vec<String>, DbError> {
@@ -151,35 +149,115 @@ impl DbDriver for SqliteDriver {
                 .map_err(|err| {
                     DbError::Query(format!("не вдалося створити таблицю міграцій: {err}"))
                 })?;
-
-            let mut applied = Vec::new();
-            for (name, body) in migrations {
-                let already: i64 = connection
-                    .query_row(
-                        "select count(*) from _rhaix_migrations where name = ?",
-                        [name],
-                        |row| row.get(0),
-                    )
-                    .map_err(|err| DbError::Query(err.to_string()))?;
-                if already > 0 {
-                    continue;
-                }
-
-                // Міграція йде однією транзакцією: або вся, або жодної.
-                connection
-                    .execute_batch(&format!("begin; {body}; commit;"))
-                    .map_err(|err| {
-                        let _ = connection.execute_batch("rollback;");
-                        DbError::Query(format!("міграція `{name}`: {err}"))
-                    })?;
-                connection
-                    .execute("insert into _rhaix_migrations (name) values (?)", [name])
-                    .map_err(|err| DbError::Query(err.to_string()))?;
-                applied.push(name.clone());
-            }
-            Ok(applied)
+            migrate_all(connection, migrations)
         })
     }
+}
+
+/// Драйвер, прив'язаний до одного з'єднання: усередині `db.tx`.
+struct PinnedSqlite {
+    connection: Mutex<Option<Connection>>,
+}
+
+impl PinnedSqlite {
+    fn take(&self) -> Option<Connection> {
+        self.connection.lock().expect("з'єднання не отруєне").take()
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T, DbError>) -> Result<T, DbError> {
+        let guard = self.connection.lock().expect("з'єднання не отруєне");
+        match guard.as_ref() {
+            Some(connection) => f(connection),
+            None => Err(DbError::Query("транзакцію вже завершено".into())),
+        }
+    }
+}
+
+impl DbDriver for PinnedSqlite {
+    fn kind(&self) -> &'static str {
+        "sqlite"
+    }
+
+    fn raw_query(&self, sql: &str, params: &[Dynamic]) -> Result<Vec<Map>, DbError> {
+        self.with(|connection| run_query(connection, sql, params))
+    }
+
+    fn raw_exec(&self, sql: &str, params: &[Dynamic]) -> Result<Affected, DbError> {
+        self.with(|connection| run_exec(connection, sql, params))
+    }
+}
+
+fn run_query(connection: &Connection, sql: &str, params: &[Dynamic]) -> Result<Vec<Map>, DbError> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|err| query_error(sql, err))?;
+    let columns: Vec<String> = statement
+        .column_names()
+        .into_iter()
+        .map(|name| name.to_owned())
+        .collect();
+
+    let bound: Vec<Param> = params.iter().map(Param).collect();
+    let values: Vec<&dyn ToSql> = bound.iter().map(|p| p as &dyn ToSql).collect();
+
+    let mut rows = statement
+        .query(values.as_slice())
+        .map_err(|err| query_error(sql, err))?;
+
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().map_err(|err| query_error(sql, err))? {
+        let mut map = Map::new();
+        for (index, name) in columns.iter().enumerate() {
+            let value = row
+                .get_ref(index)
+                .map_err(|err| query_error(sql, err))
+                .map(from_sql)?;
+            map.insert(name.as_str().into(), value);
+        }
+        out.push(map);
+    }
+    Ok(out)
+}
+
+fn run_exec(connection: &Connection, sql: &str, params: &[Dynamic]) -> Result<Affected, DbError> {
+    let bound: Vec<Param> = params.iter().map(Param).collect();
+    let values: Vec<&dyn ToSql> = bound.iter().map(|p| p as &dyn ToSql).collect();
+    let rows = connection
+        .execute(sql, values.as_slice())
+        .map_err(|err| query_error(sql, err))?;
+    Ok(Affected {
+        rows: rows as i64,
+        last_id: connection.last_insert_rowid(),
+    })
+}
+
+fn migrate_all(connection: &Connection, migrations: &[(String, String)]) -> Result<Vec<String>, DbError> {
+    let mut applied = Vec::new();
+    for (name, body) in migrations {
+        let already: i64 = connection
+            .query_row(
+                "select count(*) from _rhaix_migrations where name = ?",
+                [name],
+                |row| row.get(0),
+            )
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        if already > 0 {
+            continue;
+        }
+
+        // Міграція йде однією транзакцією: або вся, або жодної.
+        connection
+            .execute_batch(&format!("begin; {body}; commit;"))
+            .map_err(|err| {
+                let _ = connection.execute_batch("rollback;");
+                DbError::Query(format!("міграція `{name}`: {err}"))
+            })?;
+        connection
+            .execute("insert into _rhaix_migrations (name) values (?)", [name])
+            .map_err(|err| DbError::Query(err.to_string()))?;
+        applied.push(name.clone());
+    }
+    Ok(applied)
 }
 
 /// Обгортка, щоб `Dynamic` можна було віддати в rusqlite як параметр.
@@ -229,6 +307,64 @@ fn query_error(sql: &str, err: rusqlite::Error) -> DbError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_transaction_commits_together() {
+        let driver = SqliteDriver::open(":memory:").expect("база");
+        driver
+            .raw_exec("create table t (id integer primary key, n integer)", &[])
+            .expect("таблиця");
+
+        let result = driver.transaction(&mut |tx| {
+            tx.raw_exec("insert into t (n) values (1)", &[])?;
+            tx.raw_exec("insert into t (n) values (2)", &[])?;
+            Ok(Dynamic::from(true))
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(driver.raw_query("select * from t", &[]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_transaction_leaves_nothing_behind() {
+        let driver = SqliteDriver::open(":memory:").expect("база");
+        driver
+            .raw_exec("create table t (id integer primary key, n integer)", &[])
+            .expect("таблиця");
+        driver
+            .raw_exec("insert into t (n) values (1)", &[])
+            .expect("перший запис");
+
+        let result = driver.transaction(&mut |tx| {
+            tx.raw_exec("insert into t (n) values (2)", &[])?;
+            // Другий запит падає — перший не має лишитись.
+            tx.raw_exec("insert into nosuchtable (n) values (3)", &[])?;
+            Ok(Dynamic::UNIT)
+        });
+
+        assert!(result.is_err());
+        let rows = driver.raw_query("select * from t", &[]).unwrap();
+        assert_eq!(rows.len(), 1, "відкат мав прибрати запис із транзакції");
+    }
+
+    #[test]
+    fn the_connection_returns_to_the_pool_after_a_transaction() {
+        // Інакше кожна транзакція «з'їдала» б з'єднання, і застосунок
+        // помирав би після кількох записів.
+        let driver = SqliteDriver::open(":memory:").expect("база");
+        driver
+            .raw_exec("create table t (id integer primary key)", &[])
+            .expect("таблиця");
+        for _ in 0..10 {
+            let _ = driver
+                .transaction(&mut |tx| {
+                    tx.raw_exec("insert into t default values", &[])?;
+                    Ok(Dynamic::UNIT)
+                })
+                .expect("транзакція");
+        }
+        assert_eq!(driver.raw_query("select * from t", &[]).unwrap().len(), 10);
+    }
+
     use super::*;
 
     fn driver() -> Arc<SqliteDriver> {

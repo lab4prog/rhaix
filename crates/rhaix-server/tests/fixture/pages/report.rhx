@@ -1,0 +1,11 @@
+---
+page.title = "Звіт";
+
+// Сторінка сама обирає обгортку: `false` — взагалі без неї.
+if req.query("bare") != () {
+    page.layout = false;
+} else {
+    page.layout = req.query("layout") ?? "print";
+}
+---
+<p>звіт</p>

@@ -589,3 +589,77 @@ async fn stdlib_is_available_in_pages() {
     assert!(body.contains(r#"<p id="cut">один два…</p>"#), "{body}");
     assert!(body.contains(r#"<p id="json">8</p>"#), "{body}");
 }
+
+#[tokio::test]
+async fn shared_scripts_are_visible_everywhere() {
+    // `scripts/helpers.rhai` — єдиний спосіб не копіювати ту саму функцію
+    // по десятку сторінок. Підключати нічого не треба, і в `{{ }}` вони
+    // працюють так само, як у frontmatter.
+    let (status, _, body) = call(htmx("/shared")).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(r#"<p id="vat">120,00</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="label">1 запис</p>"#), "{body}");
+}
+
+#[tokio::test]
+async fn a_transaction_is_all_or_nothing() {
+    // У фікстурі дві нотатки з міграції. Успішна транзакція додає дві,
+    // зламана — жодної, навіть тієї, що встигла вставитись.
+    let (status, _, body) = call(htmx("/tx")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(r#"<p id="failed">ні</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="total">4</p>"#), "{body}");
+
+    let (status, _, body) = call(htmx("/tx?mode=fail")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(r#"<p id="failed">так</p>"#), "{body}");
+    assert!(
+        body.contains(r#"<p id="total">2</p>"#),
+        "відкат мав прибрати й перший запис: {body}"
+    );
+}
+
+#[tokio::test]
+async fn only_an_explicit_return_replaces_the_page() {
+    // У Rhai значення останнього виразу лишається значенням блоку навіть із
+    // крапкою з комою. Через це frontmatter, який закінчувався на
+    // `db.insert(...);`, мовчки віддавав клієнту новий id замість сторінки.
+    let (status, _, body) = call(htmx("/tail")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("розмітка на місці"),
+        "останній вираз frontmatter не має ставати тілом: {body}"
+    );
+
+    // А явний `return` працює як і раніше.
+    let (_, _, body) = call(htmx("/tail?mode=return")).await;
+    assert_eq!(body, "готове тіло");
+}
+
+#[tokio::test]
+async fn a_page_can_choose_its_layout() {
+    // `page.layout = "print"` → layouts/print.rhx замість main.rhx.
+    let (status, _, body) = call(get("/report")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#"<body class="print">"#), "{body}");
+    assert!(body.contains("<p>звіт</p>"), "{body}");
+
+    // `page.layout = false` → сторінка сама собі документ.
+    let (_, _, body) = call(get("/report?bare=1")).await;
+    assert!(!body.contains("<!DOCTYPE html>"), "{body}");
+    assert!(body.contains("<p>звіт</p>"), "{body}");
+}
+
+#[tokio::test]
+async fn a_layout_name_cannot_escape_the_layouts_directory() {
+    // Ім'я layout приходить зі скрипта користувача, тож воно звіряється:
+    // `../../` не має нікуди вести, і сторінка не має падати.
+    let (status, _, body) = call(get("/report?layout=..%2F..%2Fmiddleware")).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("<p>звіт</p>"), "{body}");
+    // Відкат на layout за замовчуванням, а не на чужий файл.
+    assert!(!body.contains(r#"<body class="print">"#), "{body}");
+}

@@ -1,0 +1,42 @@
+---
+// ЗАДАЧА: гортати сторінками так, щоб посилання лишалось робочим —
+// його можна скопіювати, надіслати й відкрити напряму.
+page.title = "Пагінація";
+
+const PER_PAGE = 2;
+
+let page_no = req.query_int("page") ?? 1;
+if page_no < 1 { page_no = 1; }
+
+let total = db.count("orders");
+let pages = (total + PER_PAGE - 1) / PER_PAGE;
+if pages < 1 { pages = 1; }
+if page_no > pages { page_no = pages; }
+
+let orders = db.find("orders", #{}, #{
+    sort: "id asc",
+    limit: PER_PAGE,
+    skip: (page_no - 1) * PER_PAGE,
+});
+---
+<h1>Пагінація</h1>
+
+<table>
+  <thead><tr><th>№</th><th>Клієнт</th><th>Сума</th></tr></thead>
+  <tbody>
+    <tr @for={o in orders}>
+      <td>{{ o.id }}</td>
+      <td>{{ o.customer }}</td>
+      <td>{{ money(o.amount) }}</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  <a @for={n in 1..=pages}
+     href={url("/pagination", #{ page: n })}
+     hx-get={url("/pagination", #{ page: n })}
+     hx-target="#main" hx-push-url="true"
+     @class={#{"active": n == page_no}}>{{ n }}</a>
+</p>
+<p>Сторінка {{ page_no }} із {{ pages }}, усього записів: {{ total }}.</p>

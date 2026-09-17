@@ -9,6 +9,7 @@
 
 mod check;
 mod client;
+mod scripts;
 
 pub use check::{check, Issue};
 pub use client::{CLIENT_JS, CLIENT_ROUTE};
@@ -345,7 +346,13 @@ impl Config {
     }
 
     pub fn layout_path(&self) -> PathBuf {
-        self.root.join("layouts").join("main.rhx")
+        self.layout_named("main")
+    }
+
+    /// `layouts/<name>.rhx`. Ім'я звіряється: воно приходить зі скрипта
+    /// користувача, і `page.layout = "../../etc/passwd"` не має нікуди вести.
+    pub fn layout_named(&self, name: &str) -> PathBuf {
+        self.root.join("layouts").join(format!("{name}.rhx"))
     }
 
     /// Код, що виконується перед кожним запитом (SYNTAX 6.6).
@@ -446,9 +453,20 @@ pub fn build_watched(
         }
         None => Database::unconfigured(),
     };
+    // Спільні функції проєкту підключаються один раз при старті. Файли беруться
+    // через ті самі `Files`, що й шаблони: у зібраному бінарнику їх на диску немає.
+    let mut engine = build_engine(Limits::default());
+    engine.set_module_resolver(scripts::ScriptResolver::new(
+        config.root.clone(),
+        config.files.clone(),
+        config.dev,
+    ));
+    scripts::load_globals(&mut engine, &config.root, config.files.as_ref())?;
+    let engine = Arc::new(engine);
+
     let state = AppState {
         config: config.clone(),
-        engine: Arc::new(build_engine(Limits::default())),
+        engine: engine.clone(),
         state: ScriptState::new(),
         database,
         // У dev кеш перевіряє свіжість файлів на кожен запит; у продакшні
@@ -938,7 +956,16 @@ fn render_inner(
         return Ok((assets.append_to(page_html), state_now));
     }
 
-    let layout_path = state.config.layout_path();
+    // Сторінка може попросити інший layout або відмовитись від нього зовсім:
+    // `page.layout = "admin"` / `page.layout = false` (SYNTAX 6.2).
+    let layout_path = match chosen_layout(&globals) {
+        Layout::None => {
+            state_now = response.take();
+            return Ok((page_html, state_now));
+        }
+        Layout::Named(name) => state.config.layout_named(&name),
+        Layout::Default => state.config.layout_path(),
+    };
     if !state.config.files.exists(&layout_path) {
         state_now = response.take();
         return Ok((page_html, state_now));
@@ -1122,6 +1149,41 @@ impl Assets {
     }
 }
 
+/// Який layout попросила сторінка.
+enum Layout {
+    Default,
+    Named(String),
+    None,
+}
+
+/// Прочитати `page.layout`, виставлений скриптом сторінки.
+fn chosen_layout(globals: &Globals) -> Layout {
+    let Some(page) = globals.get("page") else {
+        return Layout::Default;
+    };
+    let Some(map) = page.read_lock::<Map>() else {
+        return Layout::Default;
+    };
+    let Some(value) = map.get("layout") else {
+        return Layout::Default;
+    };
+
+    if let Ok(flag) = value.as_bool() {
+        // `page.layout = false` — сторінка сама собі документ.
+        return if flag { Layout::Default } else { Layout::None };
+    }
+    let name = display(value);
+    let safe = !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+    if !safe {
+        tracing::warn!("page.layout = `{name}` — дозволені лише літери, цифри, `-` і `_`");
+        return Layout::Default;
+    }
+    Layout::Named(name)
+}
+
 /// Об'єкти, які бачить кожен файл рендеру — і сторінка, і layout, і компоненти.
 ///
 /// Компонент не успадковує scope батька (SYNTAX 5.3), тому глобальні об'єкти
@@ -1258,12 +1320,25 @@ fn watch(root: PathBuf, templates: Arc<TemplateCache>, reload: broadcast::Sender
 
             templates.clear();
             let _ = reload.send(());
+            // Спільні скрипти підключаються в рушій один раз при старті, і
+            // очищення кешу шаблонів їх не оновлює. Мовчати про це не можна:
+            // людина правила б файл і не розуміла, чому нічого не змінюється.
+            if event.paths.iter().any(|path| is_shared_script(path)) {
+                tracing::warn!(
+                    "змінено scripts/*.rhai — перезапустіть `rhaix dev`,                      спільні функції підключаються один раз при старті"
+                );
+            }
             tracing::info!("зміни підхоплено");
         }
     });
 }
 
 /// Чи варто реагувати на цей файл.
+/// Файл зі спільними функціями проєкту.
+fn is_shared_script(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("rhai")
+}
+
 fn is_source(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some("rhx" | "rhai" | "css" | "js" | "toml" | "sql") => true,
@@ -1298,6 +1373,12 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     }
     if config.files.exists(&config.middleware_path()) {
         println!("  middleware: middleware.rhx — виконується перед кожним запитом");
+    }
+    for script in config.files.list(&config.root.join("scripts"), "rhai") {
+        println!(
+            "  скрипт : {} — функції доступні скрізь",
+            display_path(&config.root, &script)
+        );
     }
     match &config.database {
         Some(settings) => println!("  база   : {} — {}", settings.driver, settings.url),

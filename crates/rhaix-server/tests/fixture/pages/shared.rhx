@@ -1,0 +1,9 @@
+---
+page.title = "Спільні функції";
+
+// Ніякого підключення: функції зі `scripts/*.rhai` видно одразу.
+let total = vat(100.0);
+let count = 1;
+---
+<p id="vat">{{ money(total) }}</p>
+<p id="label">{{ count }} {{ label(count) }}</p>

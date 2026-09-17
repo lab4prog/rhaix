@@ -44,8 +44,29 @@ pub fn ident(name: &str) -> Result<String, DbError> {
     }
 }
 
+/// Ключі, які розуміє `options` у `db.find`.
+const OPTION_KEYS: [&str; 4] = ["sort", "limit", "skip", "fields"];
+
+/// Невідомий ключ в `options` — помилка, а не мовчазне ігнорування.
+///
+/// Знайдено на власному рецепті пагінації: `#{ offset: 20 }` замість `skip`
+/// просто зникав, і сторінка показувала перші записи замість других. Сторінка
+/// при цьому виглядала цілком справною — найгірший різновид помилки.
+fn check_options(options: &Map) -> Result<(), DbError> {
+    for key in options.keys() {
+        if !OPTION_KEYS.contains(&key.as_str()) {
+            return Err(DbError::Query(format!(
+                "невідомий параметр `{key}`; доступні: {}",
+                OPTION_KEYS.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// `db.find(table, filter, options)`
 pub fn find(table: &str, filter: &Map, options: &Map) -> Result<Sql, DbError> {
+    check_options(options)?;
     let mut params = Vec::new();
     let columns = select_list(options)?;
     let mut text = format!("select {columns} from {}", ident(table)?);
@@ -421,6 +442,17 @@ mod tests {
 
         let options = map(&[("sort", Dynamic::from("created sideways"))]);
         assert!(find("orders", &Map::new(), &options).is_err());
+    }
+
+    #[test]
+    fn an_unknown_option_is_an_error_not_silence() {
+        // `offset` замість `skip` колись просто зникав, і пагінація мовчки
+        // показувала не ту сторінку.
+        let options: Map = [("offset".into(), Dynamic::from(20_i64))].into_iter().collect();
+        let err = find("orders", &Map::new(), &options).expect_err("має бути помилка");
+        let text = err.to_string();
+        assert!(text.contains("offset"), "{text}");
+        assert!(text.contains("skip"), "{text}");
     }
 
     #[test]

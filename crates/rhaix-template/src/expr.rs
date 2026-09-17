@@ -69,7 +69,17 @@ impl Expr {
     /// інструкції дозволені — це звичайний скрипт.
     pub fn compile_script(engine: &Engine, source: &Source, span: Span) -> Result<Self> {
         let text = source.slice(span);
-        let ast = engine.compile(text).map_err(|err| {
+
+        // Тілом відповіді стає тільки те, що віддали через `return`.
+        //
+        // У Rhai значення останнього виразу лишається значенням блоку навіть із
+        // крапкою з комою — тому frontmatter, який закінчувався на
+        // `db.insert(...);`, мовчки віддавав клієнту новий id замість сторінки.
+        // Дописаний `()` робить останнім виразом одиницю; явний `return` до
+        // нього просто не доходить.
+        let guarded = format!("{text}\n()");
+        let ast = engine.compile(&guarded).map_err(|err| {
+            // Позиції не зсуваються: доданий рядок іде після всього тексту.
             let at = map_position(text, span, err.1);
             Diagnostic::new(clean_message(&err.0.to_string()), at)
         })?;

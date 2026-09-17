@@ -1,0 +1,55 @@
+---
+// ЗАДАЧА: список із бази + фільтр за статусом + сортування за колонкою.
+// Без перезавантаження сторінки й без жодного рядка JS.
+page.title = "Таблиця з фільтром";
+
+let status = req.query("status") ?? "";
+let sort   = req.query("sort") ?? "id";
+let dir    = req.query("dir") ?? "desc";
+
+// Тільки дозволені колонки: значення з адреси не має потрапляти в SQL як є.
+if !["id", "customer", "amount", "created"].contains(sort) { sort = "id"; }
+if dir != "asc" { dir = "desc"; }
+
+let where = if status == "" { #{} } else { #{ status: status } };
+let orders = db.find("orders", where, #{ sort: `${sort} ${dir}` });
+let total  = 0.0;
+for o in orders { total += o.amount; }
+
+// Клац по тій самій колонці перевертає напрямок.
+let flip = if dir == "asc" { "desc" } else { "asc" };
+---
+<h1>Замовлення</h1>
+
+<p>
+  <a @for={s in ["", "new", "paid", "cancelled"]}
+     href={url("/table", #{ status: s, sort: sort, dir: dir })}
+     hx-get={url("/table", #{ status: s, sort: sort, dir: dir })}
+     hx-target="#main" hx-push-url="true"
+     @class={#{"active": s == status}}>{{ if s == "" { "Усі" } else { status_label(s) } }}</a>
+</p>
+
+<table>
+  <thead>
+    <tr>
+      <th @for={col in [#{k: "id", t: "№"}, #{k: "customer", t: "Клієнт"}, #{k: "amount", t: "Сума"}, #{k: "created", t: "Створено"}]}>
+        <a href={url("/table", #{ status: status, sort: col.k, dir: if col.k == sort { flip } else { "asc" } })}
+           hx-get={url("/table", #{ status: status, sort: col.k, dir: if col.k == sort { flip } else { "asc" } })}
+           hx-target="#main" hx-push-url="true">{{ col.t }}</a>
+      </th>
+      <th>Статус</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr @for={o in orders}>
+      <td>{{ o.id }}</td>
+      <td>{{ o.customer }}</td>
+      <td>{{ money(o.amount) }}</td>
+      <td>{{ date(o.created, "DD.MM.YYYY HH:mm") }}</td>
+      <td><span @class={status_class(o.status)}>{{ status_label(o.status) }}</span></td>
+    </tr>
+    <tr @if={orders.is_empty()}><td colspan="5">Нічого не знайдено</td></tr>
+  </tbody>
+</table>
+
+<p>Разом: <b>{{ money(total) }}</b> за {{ orders.len() }} замовлень.</p>

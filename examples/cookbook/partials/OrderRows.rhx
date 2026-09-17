@@ -1,0 +1,14 @@
+---
+// Тільки рядки таблиці: фрагмент не знає ні про layout, ні про <table>.
+let q = req.query("q") ?? "";
+
+// `contains` зі словника операторів — конкатенації в SQL тут немає.
+let where = if is_blank(q) { #{} } else { #{ customer: #{ contains: q } } };
+let orders = db.find("orders", where, #{ sort: "customer asc", limit: 20 });
+---
+<tr @for={o in orders}>
+  <td>{{ o.id }}</td>
+  <td>{{ o.customer }}</td>
+  <td>{{ money(o.amount) }}</td>
+</tr>
+<tr @if={orders.is_empty()}><td colspan="3">Нічого не знайдено</td></tr>

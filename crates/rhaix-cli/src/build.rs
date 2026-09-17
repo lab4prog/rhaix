@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Що саме вшивати.
-const EMBEDDED_EXTENSIONS: [&str; 2] = ["rhx", "sql"];
+const EMBEDDED_EXTENSIONS: [&str; 3] = ["rhx", "sql", "rhai"];
 
 pub fn build(root: &Path, framework: &Path, out: Option<PathBuf>) -> anyhow::Result<()> {
     if !root.join("rhaix.toml").is_file() && !root.join("pages").is_dir() {
@@ -93,7 +93,16 @@ fn collect(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     if root.join("middleware.rhx").is_file() {
         files.push(root.join("middleware.rhx"));
     }
-    for dir in ["pages", "partials", "components", "layouts", "migrations"] {
+    for dir in [
+        "pages",
+        "partials",
+        "components",
+        "layouts",
+        "migrations",
+        // `scripts/` теж: без нього `import "helpers";` у зібраному бінарнику
+        // падав би на першому ж запиті.
+        "scripts",
+    ] {
         walk(&root.join(dir), &mut files, Some(&EMBEDDED_EXTENSIONS));
     }
     // `public/` іде цілком: там і css, і картинки, і шрифти.

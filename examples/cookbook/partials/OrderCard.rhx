@@ -1,0 +1,17 @@
+---
+// Фрагмент-ендпоінт: доступний як /components/ordercard.
+let id = req.query_int("id");
+let order = if id == () { () } else { db.get("orders", id) };
+
+// Порожня відповідь прибирає діалог — саме так працює кнопка «Закрити».
+if req.query("close") != () { return ""; }
+---
+<dialog open @if={order}>
+  <h2>Замовлення №{{ order.id }}</h2>
+  <p>{{ order.customer }} &lt;{{ order.email }}&gt;</p>
+  <p>Сума: <b>{{ money(order.amount) }}</b></p>
+  <p>Статус: <span @class={status_class(order.status)}>{{ status_label(order.status) }}</span></p>
+  <p>Створено: {{ date(order.created, "DD.MM.YYYY о HH:mm") }}</p>
+  <button hx-get="/components/ordercard?close=1" hx-target="#dialog">Закрити</button>
+</dialog>
+<p class="error" @else>Замовлення не знайдено.</p>

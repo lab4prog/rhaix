@@ -1,5 +1,7 @@
 # rhaix
 
+English version: [README.en.md](README.en.md).
+
 Серверний рендер HTML на HTMX з компонентним підходом.
 Ядро — Rust, скриптова мова для бізнес-логіки — [Rhai](https://rhai.rs), DX — як в Astro.
 
@@ -19,7 +21,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M5.2 (сесії, CSRF, http, stdlib)
+## Стан: M9 (доки й рецепти)
 
 Що вже працює:
 
@@ -49,7 +51,11 @@ page.title = "ToDo";
   API лежить — у відповіді `ok: false`, а не 500 на вашій сторінці;
 - **stdlib**: `date()` розуміє і мітку часу, і рядок із бази; `slug()` транслітерує
   кирилицю; `money()`, `cut()`, `uuid()`, `json_encode/decode`;
-- **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (10.6 МБ), який
+- **спільні функції**: усе, що оголошено в `scripts/*.rhai`, видно з будь-якого
+  файлу — підключати нічого не треба;
+- **транзакції**: `db.tx(|t| { … })` тримає одне з'єднання від `begin` до
+  `commit`; будь-яка помилка всередині означає відкат;
+- **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (11.3 МБ), який
   нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
   із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
 - layout вантажиться лише при звичайному заході, на `HX-Request` іде фрагмент;
@@ -68,8 +74,8 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: англомовних доків і `llms.txt` (M9), автентифікації з паролями
-й `markdown()` (M12), драйверів Postgres/Mongo/SurrealDB (M11).
+Чого ще немає: автентифікації з паролями й `markdown()` (M12),
+драйверів Postgres/Mongo/SurrealDB (M11).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -107,6 +113,9 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | Файл | Про що |
 |---|---|
 | [SYNTAX.md](SYNTAX.md) | повна специфікація мови `.rhx` (v1) |
+| [SYNTAX.en.md](SYNTAX.en.md) | те саме англійською |
+| [llms.txt](llms.txt) | довідник на один файл, написаний для LLM |
+| [examples/cookbook](examples/cookbook) | рецепти «задача → готовий `.rhx`», перевіряються тестом |
 | [PLAN.md](PLAN.md) | архітектура, API, дорожня карта M0-M13 |
 | [RISKS.md](RISKS.md) | підводні камені, ворота рішень, оцінка життєздатності |
 | [M0-FINDINGS.md](M0-FINDINGS.md) | результати спайку: виміри й сім знайдених тертя |
@@ -119,6 +128,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M7-FINDINGS.md](M7-FINDINGS.md) | асети: підйом і дедуплікація, пастка оптимізації втретє |
 | [M8-FINDINGS.md](M8-FINDINGS.md) | прод: трейт `Files`, один бінарник, два режими сервера |
 | [M5.2-FINDINGS.md](M5.2-FINDINGS.md) | сесії, CSRF без ручної роботи, `http`, дати й гроші |
+| [M9-FINDINGS.md](M9-FINDINGS.md) | доки як тест: шість розбіжностей між спекою й кодом |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 
@@ -126,7 +136,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 
 | Крейт | Роль |
 |---|---|
-| `rhaix-db` | трейт драйвера, переносимий CRUD → SQL, драйвер SQLite, міграції |
+| `rhaix-db` | трейт драйвера, переносимий CRUD → SQL, драйвер SQLite, транзакції, міграції |
 | `rhaix-parser` | джерела, спани, `файл:рядок:колонка`, розділення frontmatter |
 | `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, сесії й CSRF, `http`, дати й рядки, бенчмарк |
 | `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |

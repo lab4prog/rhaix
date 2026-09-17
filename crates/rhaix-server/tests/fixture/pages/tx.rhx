@@ -1,0 +1,23 @@
+---
+page.title = "Транзакція";
+
+// `?mode=fail` — навмисний збій посеред транзакції.
+let mode = req.query("mode") ?? "ok";
+let failed = false;
+
+try {
+    db.tx(|t| {
+        t.insert("notes", #{ title: "з транзакції 1", done: false });
+        if mode == "fail" {
+            throw "навмисна помилка";
+        }
+        t.insert("notes", #{ title: "з транзакції 2", done: false });
+    });
+} catch (err) {
+    failed = true;
+}
+
+let total = db.count("notes");
+---
+<p id="failed">{{ if failed { "так" } else { "ні" } }}</p>
+<p id="total">{{ total }}</p>

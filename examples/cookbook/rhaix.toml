@@ -1,0 +1,9 @@
+[server]
+port = 3100
+
+[db]
+driver = "sqlite"
+url = "data/cookbook.db"
+
+[app]
+tz_offset = "+03:00"

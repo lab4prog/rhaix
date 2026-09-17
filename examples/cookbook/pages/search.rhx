@@ -1,0 +1,16 @@
+---
+// ЗАДАЧА: шукати під час набору, не забиваючи сервер запитами.
+// `hx-trigger="input changed delay:300ms"` — уся боротьба з дребезгом.
+page.title = "Живий пошук";
+---
+<h1>Живий пошук</h1>
+
+<input name="q" placeholder="Прізвище клієнта"
+       hx-get="/components/orderrows"
+       hx-trigger="input changed delay:300ms, load"
+       hx-target="#rows">
+
+<table>
+  <thead><tr><th>№</th><th>Клієнт</th><th>Сума</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>

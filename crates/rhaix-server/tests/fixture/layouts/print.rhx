@@ -1,0 +1,5 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head><title>{{ page.title ?? "друк" }}</title><rhaix:head /></head>
+<body class="print"><slot /><rhaix:scripts /></body>
+</html>

@@ -5,7 +5,7 @@
 //! віддаються як звичайні помилки Rhai, тому потрапляють у діагностику з
 //! позицією в `.rhx` — так само, як будь-яка інша помилка виразу.
 
-use rhai::{Array, Dynamic, Engine, EvalAltResult, Map};
+use rhai::{Array, Dynamic, Engine, EvalAltResult, FnPtr, Map, NativeCallContext};
 use rhaix_db::{Database, DbError};
 
 /// Зареєструвати тип `db`.
@@ -32,6 +32,7 @@ pub fn register_db(engine: &mut Engine) {
         .register_fn("exec", |db: &mut Database, sql: &str, params: Array| {
             affected(db.driver().raw_exec(sql, &params))
         })
+        .register_fn("tx", transaction)
         // ------------------------------------------- переносимий CRUD
         .register_fn("find", |db: &mut Database, table: &str| {
             rows(db.driver().find(table, &Map::new(), &Map::new()))
@@ -110,6 +111,41 @@ fn affected(result: Result<rhaix_db::Affected, DbError>) -> Result<i64, Box<Eval
 
 fn fail(err: DbError) -> Box<EvalAltResult> {
     err.to_string().into()
+}
+
+/// `db.tx(|t| { ... })` — кілька запитів однією транзакцією.
+///
+/// `t` — та сама база, але прив'язана до одного з'єднання. Це принципово:
+/// `db.exec("begin")` узяв би з пулу одне з'єднання, а наступний `insert` —
+/// інше, і «транзакція» не охопила б нічого.
+///
+/// Будь-яка помилка всередині (і помилка бази, і `throw` у скрипті) означає
+/// rollback: сторінка не має лишати базу в напівзміненому стані.
+fn transaction(
+    context: NativeCallContext,
+    db: &mut Database,
+    body: FnPtr,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    // Помилку скрипта треба винести назовні як є — із позицією у файлі.
+    // Трейт бази про Rhai не знає, тому вона їде в цій комірці, а в трейт
+    // повертається звичайна помилка, якої достатньо для rollback.
+    let mut script_error: Option<Box<EvalAltResult>> = None;
+
+    let outcome = db.transaction(&mut |pinned| {
+        let handle = Dynamic::from(Database::new(pinned));
+        match body.call_within_context::<Dynamic>(&context, (handle,)) {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                script_error = Some(err);
+                Err(DbError::Query("транзакцію перервано".into()))
+            }
+        }
+    });
+
+    if let Some(err) = script_error {
+        return Err(err);
+    }
+    outcome.map_err(fail)
 }
 
 #[cfg(test)]

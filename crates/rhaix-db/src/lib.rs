@@ -59,6 +59,20 @@ pub trait DbDriver: Send + Sync {
     fn raw_query(&self, sql: &str, params: &[Dynamic]) -> Result<Vec<Map>, DbError>;
     fn raw_exec(&self, sql: &str, params: &[Dynamic]) -> Result<Affected, DbError>;
 
+    /// Виконати кілька запитів однією транзакцією.
+    ///
+    /// `body` отримує драйвер, прив'язаний до **одного** з'єднання. Це не
+    /// дрібниця: `db.exec("begin")` з пулу взяв би одне з'єднання, а наступний
+    /// `insert` — інше, і «транзакція» нічого б не охопила.
+    ///
+    /// Помилка з `body` означає rollback. Успіх — commit.
+    fn transaction(
+        &self,
+        _body: &mut dyn FnMut(Arc<dyn DbDriver>) -> Result<Dynamic, DbError>,
+    ) -> Result<Dynamic, DbError> {
+        Err(DbError::Unsupported("транзакції".into()))
+    }
+
     /// Застосувати міграції, повернути імена щойно застосованих.
     fn migrate(&self, _migrations: &[(String, String)]) -> Result<Vec<String>, DbError> {
         Err(DbError::Unsupported("міграції".into()))
@@ -166,6 +180,13 @@ impl Database {
 
     pub fn kind(&self) -> &'static str {
         self.0.kind()
+    }
+
+    pub fn transaction(
+        &self,
+        body: &mut dyn FnMut(Arc<dyn DbDriver>) -> Result<Dynamic, DbError>,
+    ) -> Result<Dynamic, DbError> {
+        self.0.transaction(body)
     }
 
     /// Застосувати вже прочитані міграції (ім'я, SQL).
