@@ -6,6 +6,8 @@ let recipes = [
     #{ href: "/modal",     label: "Модалка" },
     #{ href: "/search",    label: "Живий пошук" },
     #{ href: "/pagination", label: "Пагінація" },
+    #{ href: "/upload", label: "Файл" },
+    #{ href: "/contact", label: "Пошта" },
 ];
 ---
 <!DOCTYPE html>

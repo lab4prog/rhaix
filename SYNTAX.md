@@ -816,6 +816,74 @@ is_blank(value)            // (), "", "   ", [], #{}
 
 ---
 
+### 7.5 Батарейки: валідація, пагінація, файли, пошта
+
+**`validate(значення, правила)`** — перевірка форми одним викликом замість
+десятка `if`. Повертає мапу `поле → повідомлення` (порожню, якщо все гаразд):
+
+```rhai
+let errors = validate(req.all_form(), #{
+    name:  "required|min:2",
+    email: "required|email",
+    age:   "int|between:18,120",
+    again: "same:pass",
+    role:  "in:user,admin",
+});
+if !errors.is_empty() { res.status(422); }
+```
+
+Правила: `required email url int number min:N max:N between:a,b same:поле in:a,b,c`.
+`min`/`max`/`between` на полі з `int`/`number` порівнюють **значення**, інакше —
+**довжину** рядка. Порожнє необов'язкове поле пропускає решту правил.
+
+**`paginate(total, per_page, page)`** — уся арифметика сторінок. `page`
+затискається в межі, тож `?page=999` дає останню сторінку:
+
+```rhai
+let p = paginate(db.count("orders"), 20, req.query_int("page") ?? 1);
+let rows = db.find("orders", #{}, #{ sort: "id desc", limit: 20, skip: p.skip });
+```
+
+Поля: `page pages per_page total skip from to has_prev has_next prev next
+first last window` (`window` — масив номерів навколо поточного для посилань).
+
+**Завантаження файлів.** Форма з `enctype="multipart/form-data"`:
+
+```rhai
+let f = req.file("photo");        // перше завантаження або (); ще req.files(name), req.has_file(name)
+if f != () && f.is_image && f.size <= 2 * 1024 * 1024 {
+    f.save(`public/uploads/${random_id()}.${f.extension}`);
+}
+```
+
+Поля завантаження: `filename content_type size is_image extension`, методи
+`text()` і `save(шлях)`. `save` звіряє шлях — без абсолютних і `..`, резолвиться
+відносно кореня проєкту (як база). Текстові поля тієї ж форми, як звичайно, у
+`req.form(...)`.
+
+**Пошта.** `mail.send(#{ to, subject, text, html? })`:
+
+```rhai
+mail.send(#{ to: "user@example.com", subject: "Вітаємо", text: "Дякуємо." });
+```
+
+Без секції `[mail]` — dev-режим: лист друкується в лог, а не надсилається, тож
+форма зворотного зв'язку працює без SMTP-сервера. Справжнє надсилання — за
+feature `mail` (його вмикає `rhaix build` за наявності `[mail]`) плюс секція:
+
+```toml
+[mail]
+from      = "App <noreply@example.com>"
+smtp_host = "smtp.example.com"
+smtp_port = 587
+smtp_user = "..."
+smtp_pass = "..."
+```
+
+Рецепти всіх чотирьох — у `examples/cookbook`.
+
+---
+
 ## 8. `<style>` і `<script>` у компоненті
 
 ```html

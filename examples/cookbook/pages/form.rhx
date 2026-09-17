@@ -1,5 +1,6 @@
 ---
 // ЗАДАЧА: прийняти форму, показати помилки поруч із полями, зберегти в базу.
+// Валідація — одним викликом `validate()`, а не десятком `if` руками.
 // Токен CSRF фреймворк додасть сам — про нього тут немає жодного рядка.
 page.title = "Форма з валідацією";
 
@@ -8,21 +9,18 @@ let errors = #{};
 let saved  = ();
 
 if req.method == "POST" {
-    form.customer = req.form("customer").trim();
-    form.email    = req.form("email").trim();
-    form.amount   = req.form("amount").trim();
-
-    if is_blank(form.customer) { errors.customer = "Вкажіть ім'я"; }
-    if !form.email.contains("@") { errors.email = "Схоже, це не пошта"; }
-
-    let amount = req.form_float("amount");
-    if amount == () || amount <= 0.0 { errors.amount = "Сума має бути більшою за нуль"; }
+    form = req.all_form();
+    errors = validate(form, #{
+        customer: "required|min:2",
+        email:    "required|email",
+        amount:   "required|number|min:0.01",
+    });
 
     if errors.is_empty() {
         let id = db.insert("orders", #{
-            customer: form.customer,
-            email:    form.email,
-            amount:   amount,
+            customer: form.customer.trim(),
+            email:    form.email.trim(),
+            amount:   req.form_float("amount"),
             status:   "new",
         });
         saved = db.get("orders", id);

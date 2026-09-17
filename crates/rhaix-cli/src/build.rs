@@ -29,10 +29,15 @@ pub fn build(root: &Path, framework: &Path, out: Option<PathBuf>) -> anyhow::Res
     }
 
     let driver = read_driver(root);
-    std::fs::write(workdir.join("Cargo.toml"), manifest(&name, framework, driver.as_deref()))?;
+    let has_mail = has_section(root, "[mail]");
+    let features = server_features(driver.as_deref(), has_mail);
+    std::fs::write(workdir.join("Cargo.toml"), manifest(&name, framework, &features))?;
     std::fs::write(workdir.join("src/main.rs"), main_rs(root, &files))?;
     if let Some(driver) = &driver {
         println!("Драйвер бази: {driver}");
+    }
+    if has_mail {
+        println!("Пошта: SMTP (feature mail)");
     }
 
     println!("Вшито файлів: {}", files.len());
@@ -144,6 +149,13 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, extensions: Option<&[&str]>) {
 ///
 /// Без цього прод-бінарник SQLite-застосунку тягнув би й залежності Postgres
 /// (~20 крейтів). Легкий парсер, щоб не залежати від `toml` заради одного рядка.
+/// Чи є в `rhaix.toml` секція (наприклад `[mail]`).
+fn has_section(root: &Path, section: &str) -> bool {
+    std::fs::read_to_string(root.join("rhaix.toml"))
+        .map(|text| text.lines().any(|line| line.trim() == section))
+        .unwrap_or(false)
+}
+
 fn read_driver(root: &Path) -> Option<String> {
     let text = std::fs::read_to_string(root.join("rhaix.toml")).ok()?;
     let mut in_db = false;
@@ -167,21 +179,32 @@ fn read_driver(root: &Path) -> Option<String> {
     None
 }
 
-/// Cargo-feature драйвера, який треба увімкнути в rhaix-server.
+/// Рядок features для залежності rhaix-server у згенерованому маніфесті.
 ///
 /// SQLite вбудований завжди (feature за замовчуванням), тож для нього нічого не
-/// додаємо. Невідомий драйвер теж лишаємо без feature — про його відсутність
-/// скаже вже сам сервер при старті.
-fn server_features(driver: Option<&str>) -> &'static str {
-    match driver {
-        Some("postgres" | "postgresql") => r#", default-features = false, features = ["postgres"]"#,
-        _ => "",
+/// додаємо. Postgres і пошта — опційні: вмикаються лише тоді, коли їх справді
+/// використовує проєкт, інакше прод-бінарник тягнув би їхні залежності дарма.
+fn server_features(driver: Option<&str>, mail: bool) -> String {
+    let mut features: Vec<&str> = Vec::new();
+    if matches!(driver, Some("postgres" | "postgresql")) {
+        features.push("postgres");
     }
+    if mail {
+        features.push("mail");
+    }
+    if features.is_empty() {
+        return String::new();
+    }
+    let list = features
+        .iter()
+        .map(|f| format!("\"{f}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(", default-features = false, features = [{list}]")
 }
 
-fn manifest(name: &str, framework: &Path, driver: Option<&str>) -> String {
+fn manifest(name: &str, framework: &Path, server_features: &str) -> String {
     let framework = framework.to_string_lossy().replace('\\', "/");
-    let server_features = server_features(driver);
     format!(
         r##"# Згенеровано `rhaix build`. Правити цей файл сенсу немає:
 # наступна збірка перезапише його.
@@ -289,15 +312,38 @@ mod tests {
 
     #[test]
     fn manifest_declares_its_own_workspace() {
-        let text = manifest("demo", Path::new("C:/rhaix"), None);
+        let text = manifest("demo", Path::new("C:/rhaix"), "");
         assert!(text.contains("[workspace]"), "{text}");
         assert!(text.contains("C:/rhaix/crates/rhaix-server"), "{text}");
         assert!(text.contains("tracing-subscriber"), "{text}");
-        // SQLite-застосунок не тягне feature postgres.
+        // SQLite-застосунок без пошти не тягне жодного опційного feature:
+        // рядок rhaix-server лишається без `features`.
         assert!(!text.contains("postgres"), "{text}");
+        assert!(
+            text.contains("rhaix-server = { path = \"C:/rhaix/crates/rhaix-server\" }"),
+            "{text}"
+        );
+    }
 
-        // А postgres-застосунок вмикає його точково.
-        let pg = manifest("demo", Path::new("C:/rhaix"), Some("postgres"));
-        assert!(pg.contains(r#"features = ["postgres"]"#), "{pg}");
+    #[test]
+    fn features_are_enabled_only_when_used() {
+        // Лише драйвер.
+        assert_eq!(
+            server_features(Some("postgres"), false),
+            r#", default-features = false, features = ["postgres"]"#
+        );
+        // Лише пошта.
+        assert_eq!(
+            server_features(None, true),
+            r#", default-features = false, features = ["mail"]"#
+        );
+        // Обидва.
+        assert_eq!(
+            server_features(Some("postgres"), true),
+            r#", default-features = false, features = ["postgres", "mail"]"#
+        );
+        // SQLite без пошти — нічого.
+        assert_eq!(server_features(Some("sqlite"), false), "");
+        assert_eq!(server_features(None, false), "");
     }
 }

@@ -6,11 +6,20 @@
 //! перевірити без жодного сокета.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rhai::{Dynamic, Engine, Map};
+use rhai::{Array, Dynamic, Engine, Map};
 
 // ------------------------------------------------------------------- запит
+
+/// Завантажений файл: ім'я, тип і байти. Сервер наповнює це з multipart-тіла.
+#[derive(Debug, Clone)]
+pub struct UploadData {
+    pub filename: String,
+    pub content_type: String,
+    pub data: Arc<Vec<u8>>,
+}
 
 /// Дані запиту в тому вигляді, у якому їх бачить `.rhx`.
 #[derive(Debug, Default, Clone)]
@@ -20,12 +29,17 @@ pub struct RequestData {
     /// Сегменти маршруту: `pages/todo/[id].rhx` → `id`.
     pub params: BTreeMap<String, String>,
     pub query: BTreeMap<String, String>,
-    /// Розібране тіло форми (`application/x-www-form-urlencoded`).
+    /// Розібране тіло форми (`application/x-www-form-urlencoded` або текстові
+    /// поля з `multipart/form-data`).
     pub form: BTreeMap<String, String>,
+    /// Файли з `multipart/form-data`: поле → список завантажень.
+    pub files: BTreeMap<String, Vec<UploadData>>,
     pub headers: BTreeMap<String, String>,
     pub cookies: BTreeMap<String, String>,
     pub body: String,
     pub is_htmx: bool,
+    /// Корінь, відносно якого `upload.save(...)` пише файли. Ставить сервер.
+    pub upload_root: PathBuf,
 }
 
 /// `req` у скрипті.
@@ -76,6 +90,77 @@ fn as_bool(map: &BTreeMap<String, String>, name: &str) -> bool {
         ),
         None => false,
     }
+}
+
+/// `upload` у скрипті — один завантажений файл.
+#[derive(Debug, Clone)]
+pub struct Upload {
+    data: UploadData,
+    root: PathBuf,
+}
+
+impl Upload {
+    fn new(data: UploadData, root: PathBuf) -> Self {
+        Self { data, root }
+    }
+
+    /// Куди насправді писати `save(path)`.
+    ///
+    /// Шлях від користувача звіряється: заборонені абсолютні шляхи й `..`, щоб
+    /// `save(req.form("name"))` не вивів запис за межі проєкту. Резолвиться
+    /// відносно кореня проєкту — так само, як база (`data/app.db`).
+    fn resolve(&self, path: &str) -> Result<PathBuf, String> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err("порожній шлях для save()".to_owned());
+        }
+        let candidate = Path::new(path);
+        if candidate.is_absolute()
+            || path.starts_with('/')
+            || path.starts_with('\\')
+            || candidate.components().any(|c| c.as_os_str() == "..")
+        {
+            return Err(format!("небезпечний шлях `{path}`: без абсолютних шляхів і `..`"));
+        }
+        Ok(self.root.join(candidate))
+    }
+}
+
+
+/// Зареєструвати тип `Upload` і його методи.
+fn register_upload(engine: &mut Engine) {
+    engine
+        .register_type_with_name::<Upload>("Upload")
+        .register_get("filename", |u: &mut Upload| u.data.filename.clone())
+        .register_get("content_type", |u: &mut Upload| u.data.content_type.clone())
+        .register_get("size", |u: &mut Upload| u.data.data.len() as i64)
+        // Зручні прапорці для найчастішої перевірки — тип завантаження.
+        .register_get("is_image", |u: &mut Upload| {
+            u.data.content_type.starts_with("image/")
+        })
+        // Розширення з імені файлу, у нижньому регістрі, без крапки.
+        .register_get("extension", |u: &mut Upload| {
+            Path::new(&u.data.filename)
+                .extension()
+                .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default()
+        })
+        // Вміст як текст — для завантажених `.csv`/`.txt`.
+        .register_fn("text", |u: &mut Upload| {
+            String::from_utf8_lossy(&u.data.data).into_owned()
+        })
+        // `save(path)` пише файл і повертає шлях, куди зберегло; помилку кидає як
+        // помилку скрипта (з позицією у файлі), а не мовчить.
+        .register_fn("save", |u: &mut Upload, path: &str| -> Result<String, Box<rhai::EvalAltResult>> {
+            let target = u.resolve(path).map_err(|e| -> Box<rhai::EvalAltResult> { e.into() })?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| -> Box<rhai::EvalAltResult> { format!("save(): {e}").into() })?;
+            }
+            std::fs::write(&target, u.data.data.as_ref())
+                .map_err(|e| -> Box<rhai::EvalAltResult> { format!("save(): {e}").into() })?;
+            Ok(path.to_owned())
+        });
 }
 
 // ---------------------------------------------------------------- відповідь
@@ -191,7 +276,34 @@ pub fn register_web(engine: &mut Engine) {
             lookup(&req.0.cookies, name)
         })
         .register_fn("all_query", |req: &mut Request| to_map(&req.0.query))
-        .register_fn("all_form", |req: &mut Request| to_map(&req.0.form));
+        .register_fn("all_form", |req: &mut Request| to_map(&req.0.form))
+        // `req.file(name)` — перший завантажений файл поля, або `()`.
+        .register_fn("file", |req: &mut Request, name: &str| {
+            match req.0.files.get(name).and_then(|list| list.first()) {
+                Some(data) => Dynamic::from(Upload::new(data.clone(), req.0.upload_root.clone())),
+                None => Dynamic::UNIT,
+            }
+        })
+        // `req.files(name)` — усі файли поля (для `<input multiple>`).
+        .register_fn("files", |req: &mut Request, name: &str| {
+            let root = req.0.upload_root.clone();
+            let array: Array = req
+                .0
+                .files
+                .get(name)
+                .map(|list| {
+                    list.iter()
+                        .map(|data| Dynamic::from(Upload::new(data.clone(), root.clone())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Dynamic::from_array(array)
+        })
+        .register_fn("has_file", |req: &mut Request, name: &str| {
+            req.0.files.get(name).is_some_and(|list| !list.is_empty())
+        });
+
+    register_upload(engine);
 
     engine
         .register_type_with_name::<Response>("Response")
@@ -444,6 +556,25 @@ fn decode_component(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_save_path_rejects_traversal() {
+        let up = Upload::new(
+            UploadData {
+                filename: "x.png".into(),
+                content_type: "image/png".into(),
+                data: Arc::new(vec![1, 2, 3]),
+            },
+            PathBuf::from("/proj"),
+        );
+        // Нормальний шлях резолвиться під коренем.
+        assert!(up.resolve("public/uploads/x.png").is_ok());
+        // Абсолютний і `..` — відмова.
+        assert!(up.resolve("/etc/passwd").is_err());
+        assert!(up.resolve("../../secret").is_err());
+        assert!(up.resolve("public/../../x").is_err());
+        assert!(up.resolve("").is_err());
+    }
     use crate::{engine, Limits};
     use rhai::Scope;
 

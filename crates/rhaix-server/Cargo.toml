@@ -12,6 +12,7 @@ rust-version.workspace = true
 default = ["sqlite"]
 sqlite = ["rhaix-db/sqlite"]
 postgres = ["rhaix-db/postgres"]
+mail = ["rhaix-script/mail"]
 
 [dependencies]
 rhaix-db.workspace = true

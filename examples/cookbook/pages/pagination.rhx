@@ -1,23 +1,14 @@
 ---
 // ЗАДАЧА: гортати сторінками так, щоб посилання лишалось робочим —
 // його можна скопіювати, надіслати й відкрити напряму.
+// Уся арифметика (межі, skip, вікно номерів) — у `paginate()`.
 page.title = "Пагінація";
 
 const PER_PAGE = 2;
-
-let page_no = req.query_int("page") ?? 1;
-if page_no < 1 { page_no = 1; }
-
 let total = db.count("orders");
-let pages = (total + PER_PAGE - 1) / PER_PAGE;
-if pages < 1 { pages = 1; }
-if page_no > pages { page_no = pages; }
+let p = paginate(total, PER_PAGE, req.query_int("page") ?? 1);
 
-let orders = db.find("orders", #{}, #{
-    sort: "id asc",
-    limit: PER_PAGE,
-    skip: (page_no - 1) * PER_PAGE,
-});
+let orders = db.find("orders", #{}, #{ sort: "id asc", limit: PER_PAGE, skip: p.skip });
 ---
 <h1>Пагінація</h1>
 
@@ -33,10 +24,14 @@ let orders = db.find("orders", #{}, #{
 </table>
 
 <p>
-  <a @for={n in 1..=pages}
+  <a @if={p.has_prev} href={url("/pagination", #{ page: p.prev })}
+     hx-get={url("/pagination", #{ page: p.prev })} hx-target="#main" hx-push-url="true">‹</a>
+  <a @for={n in p.window}
      href={url("/pagination", #{ page: n })}
      hx-get={url("/pagination", #{ page: n })}
      hx-target="#main" hx-push-url="true"
-     @class={#{"active": n == page_no}}>{{ n }}</a>
+     @class={#{"active": n == p.page}}>{{ n }}</a>
+  <a @if={p.has_next} href={url("/pagination", #{ page: p.next })}
+     hx-get={url("/pagination", #{ page: p.next })} hx-target="#main" hx-push-url="true">›</a>
 </p>
-<p>Сторінка {{ page_no }} із {{ pages }}, усього записів: {{ total }}.</p>
+<p>Сторінка {{ p.page }} із {{ p.pages }} — показано {{ p.from }}–{{ p.to }} з {{ p.total }}.</p>

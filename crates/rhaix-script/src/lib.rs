@@ -6,13 +6,16 @@
 
 mod auth;
 mod crypto;
+mod paginate;
 mod data;
 mod datetime;
 mod http;
 mod json;
+mod mail;
 mod session;
 mod stdlib;
 mod text;
+mod validate;
 mod web;
 
 pub use auth::{hash_password, verify_password};
@@ -20,6 +23,7 @@ pub use crypto::{random_token, uuid_v4};
 pub use data::register_db;
 pub use datetime::{now_secs, parse_tz_offset, register_datetime, set_tz_offset};
 pub use http::{register_http, Http};
+pub use mail::{register_mail, Mail, MailConfig};
 pub use json::{parse as json_parse, to_dynamic as json_to_dynamic};
 pub use session::{
     register_session, Csrf, Secret, Session, SessionOptions, CSRF_FIELD, CSRF_HEADER,
@@ -28,7 +32,7 @@ pub use stdlib::{register_core, Html, SlotSet};
 pub use text::register_text;
 pub use web::{
     parse_cookies, parse_urlencoded, register_web, triggers_header, Hx, Log, Request, RequestData,
-    Response, ResponseData, State,
+    Response, ResponseData, State, UploadData,
 };
 
 use std::cell::Cell;
@@ -84,6 +88,9 @@ pub fn engine(limits: Limits) -> Engine {
     register_datetime(&mut engine);
     register_text(&mut engine);
     auth::register_auth(&mut engine);
+    validate::register_validate(&mut engine);
+    paginate::register_paginate(&mut engine);
+    mail::register_mail(&mut engine);
     engine
 }
 

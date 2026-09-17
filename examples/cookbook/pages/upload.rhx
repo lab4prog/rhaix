@@ -1,0 +1,37 @@
+---
+// ЗАДАЧА: прийняти файл, перевірити його й зберегти на диск.
+// `req.file(...)` дає завантаження; `.save(...)` пише його, звіряючи шлях.
+page.title = "Завантаження файлу";
+
+let error = "";
+let saved = session.get("last_upload") ?? "";
+
+if req.method == "POST" {
+    let file = req.file("doc");
+    if file == () {
+        error = "Виберіть файл";
+    } else if file.size > 2 * 1024 * 1024 {
+        error = "Файл більший за 2 МБ";
+    } else {
+        // Ім'я на диску — своє, а не від клієнта: випадкове плюс розширення.
+        let name = `${random_id()}.${file.extension}`;
+        file.save(`public/uploads/${name}`);
+        saved = name;
+        session.set("last_upload", name);
+        hx.toast("Файл збережено", "success");
+    }
+    if error != "" { res.status(422); }
+}
+---
+<h1>Завантаження файлу</h1>
+
+<form method="post" action="/upload" enctype="multipart/form-data">
+  <p><input type="file" name="doc"></p>
+  <button>Завантажити</button>
+</form>
+<p class="error" @if={error}>{{ error }}</p>
+
+<div @if={saved}>
+  <p>Останній файл: <code>public/uploads/{{ saved }}</code></p>
+  <p><a href={url("/uploads/" + saved)}>відкрити</a></p>
+</div>

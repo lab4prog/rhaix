@@ -1,0 +1,17 @@
+---
+page.title = "Файл";
+let info = "";
+
+if req.method == "POST" {
+    let f = req.file("doc");
+    if f == () {
+        info = "no-file";
+    } else {
+        info = `${f.filename}|${f.size}|${f.content_type}|${f.is_image}|${f.text()}`;
+    }
+}
+---
+<form method="post" action="/upload" enctype="multipart/form-data">
+  <input type="file" name="doc"><button>ok</button>
+</form>
+<p id="info">{{ info }}</p>

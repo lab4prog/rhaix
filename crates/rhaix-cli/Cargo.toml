@@ -10,9 +10,10 @@ rust-version.workspace = true
 # Dev-CLI за замовчуванням уміє і Postgres: `rhaix dev`/`serve` для pg-застосунку
 # працюють без пересборки. Прод-бінарник, який робить `rhaix build`, обирає
 # драйвер точково за секцією [db], тож зайвого туди не потрапляє.
-default = ["postgres"]
+default = ["postgres", "mail"]
 sqlite = ["rhaix-server/sqlite"]
 postgres = ["rhaix-server/postgres"]
+mail = ["rhaix-server/mail"]
 
 [dependencies]
 rhaix-server.workspace = true

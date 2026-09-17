@@ -1,0 +1,51 @@
+---
+// ЗАДАЧА: форма зворотного зв'язку, яка надсилає лист.
+// Без секції [mail] у rhaix.toml `mail.send` працює в dev-режимі — друкує
+// лист у консоль замість надсилання, тож рецепт працює без SMTP-сервера.
+page.title = "Зворотний зв'язок";
+
+let sent = false;
+let errors = #{};
+
+if req.method == "POST" {
+    let form = req.all_form();
+    errors = validate(form, #{
+        name:    "required",
+        email:   "required|email",
+        message: "required|min:10",
+    });
+
+    if errors.is_empty() {
+        mail.send(#{
+            to:      "support@example.com",
+            subject: `Повідомлення від ${form.name}`,
+            text:    `${form.email}:\n\n${form.message}`,
+        });
+        sent = true;
+        hx.toast("Повідомлення надіслано", "success");
+    } else {
+        res.status(422);
+    }
+}
+---
+<h1>Зворотний зв'язок</h1>
+
+<div @if={sent}>
+  <p>Дякуємо! Ми відповімо на пошту.</p>
+  <p><small>У dev-режимі лист надруковано в консоль сервера.</small></p>
+</div>
+<form @else method="post" action="/contact">
+  <p>
+    <label>Ім'я<br><input name="name"></label>
+    <span class="error" @if={errors.name}>{{ errors.name }}</span>
+  </p>
+  <p>
+    <label>Пошта<br><input name="email"></label>
+    <span class="error" @if={errors.email}>{{ errors.email }}</span>
+  </p>
+  <p>
+    <label>Повідомлення<br><textarea name="message"></textarea></label>
+    <span class="error" @if={errors.message}>{{ errors.message }}</span>
+  </p>
+  <button>Надіслати</button>
+</form>

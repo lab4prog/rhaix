@@ -9,6 +9,7 @@
 
 mod check;
 mod client;
+mod multipart;
 mod scripts;
 
 pub use check::{check, Issue};
@@ -34,7 +35,7 @@ use rhaix_script::{
     Deadline, Http, Hx, Limits, Log, Request as ScriptRequest, RequestData,
     Response as ScriptResponse, ResponseData, Secret, Session, SessionOptions, CSRF_FIELD,
     CSRF_HEADER,
-    State as ScriptState,
+    Mail, MailConfig, State as ScriptState, UploadData,
 };
 use rhaix_template::{DiskFiles, Files, Globals, Loader, Slots, TemplateCache};
 use tokio::sync::broadcast;
@@ -50,7 +51,9 @@ use tower_http::set_header::SetResponseHeaderLayer;
 const SCRIPT_BUDGET: Duration = Duration::from_secs(5);
 
 /// Обмеження на тіло запиту.
-const MAX_BODY: usize = 1024 * 1024;
+/// Максимум тіла запиту. Форми крихітні, але сюди ж іде multipart із файлами,
+/// тому межа щедріша. У проді її варто виносити в конфіг.
+const MAX_BODY: usize = 16 * 1024 * 1024;
 
 /// Скільки чекати після події файлової системи, перш ніж перезбирати.
 ///
@@ -91,6 +94,8 @@ pub struct AppConfig {
     pub tz_offset: i32,
     /// Скільки `http` чекає на чужий сервер.
     pub http_timeout: Duration,
+    /// Секція `[mail]`: SMTP або dev-лог.
+    pub mail: MailConfig,
 }
 
 impl Default for AppConfig {
@@ -101,6 +106,7 @@ impl Default for AppConfig {
             session: SessionOptions::default(),
             tz_offset: 0,
             http_timeout: Duration::from_secs(10),
+            mail: MailConfig::default(),
         }
     }
 }
@@ -129,6 +135,7 @@ struct ConfigFile {
     server: Option<ServerSection>,
     db: Option<DatabaseConfig>,
     app: Option<AppSection>,
+    mail: Option<MailSection>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -153,8 +160,24 @@ struct AppSection {
     http_timeout: Option<u64>,
 }
 
+/// `[mail]` у `rhaix.toml`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct MailSection {
+    from: Option<String>,
+    smtp_host: Option<String>,
+    smtp_port: Option<u16>,
+    smtp_user: Option<String>,
+    smtp_pass: Option<String>,
+}
+
 /// Зібрати `[app]` з файлу, оточення й режиму запуску.
-fn app_config(file: Option<&AppSection>, root: &Path, dev: bool, persist: bool) -> AppConfig {
+fn app_config(
+    file: Option<&AppSection>,
+    mail: Option<&MailSection>,
+    root: &Path,
+    dev: bool,
+    persist: bool,
+) -> AppConfig {
     let mut app = AppConfig {
         secret: resolve_secret(file.and_then(|a| a.secret.as_deref()), root, dev, persist),
         ..AppConfig::default()
@@ -184,6 +207,15 @@ fn app_config(file: Option<&AppSection>, root: &Path, dev: bool, persist: bool) 
         if let Some(seconds) = section.http_timeout {
             app.http_timeout = Duration::from_secs(seconds.clamp(1, 300));
         }
+    }
+    if let Some(m) = mail {
+        app.mail = MailConfig {
+            from: m.from.clone().unwrap_or_default(),
+            host: m.smtp_host.clone().unwrap_or_default(),
+            port: m.smtp_port.unwrap_or(587),
+            user: m.smtp_user.clone().unwrap_or_default(),
+            password: m.smtp_pass.clone().unwrap_or_default(),
+        };
     }
     app
 }
@@ -260,7 +292,7 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
-        let app = app_config(file.app.as_ref(), Path::new(""), false, false);
+        let app = app_config(file.app.as_ref(), file.mail.as_ref(), Path::new(""), false, false);
         Ok(Self {
             root: PathBuf::new(),
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
@@ -317,7 +349,7 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
-        let app = app_config(file.app.as_ref(), &root, dev, dev && persist_secret);
+        let app = app_config(file.app.as_ref(), file.mail.as_ref(), &root, dev, dev && persist_secret);
         Ok(Self {
             root,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
@@ -395,6 +427,8 @@ struct AppState {
     reload: broadcast::Sender<()>,
     /// Клієнт для `http` у скриптах: пул з'єднань один на застосунок.
     http: Http,
+    /// Пошта: SMTP або dev-лог, один на застосунок.
+    mail: Mail,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
@@ -492,6 +526,7 @@ pub fn build_watched(
         },
         reload: broadcast::channel(16).0,
         http: Http::new(config.app.http_timeout),
+        mail: Mail::new(config.app.mail.clone()),
     };
 
     let mut router = Router::new();
@@ -671,10 +706,12 @@ async fn serve_page(
     file: PathBuf,
     kind: RouteKind,
 ) -> Response {
-    let data = match collect_request(params, request).await {
+    let mut data = match collect_request(params, request).await {
         Ok(data) => data,
         Err(err) => return err.into_response(),
     };
+    // Куди `upload.save(...)` пише файли — відносно кореня проєкту, як і база.
+    data.upload_root = state.config.root.clone();
     let is_htmx = data.is_htmx;
 
     // Скрипт користувача синхронний і може ходити в БД, тому виконується на
@@ -719,10 +756,29 @@ async fn collect_request(
         })?;
     let body_text = String::from_utf8_lossy(&bytes).into_owned();
 
-    let is_form = headers
-        .get("content-type")
-        .map(|value| value.starts_with("application/x-www-form-urlencoded"))
-        .unwrap_or(false);
+    let content_type = headers.get("content-type").map(String::as_str).unwrap_or("");
+    let is_urlencoded = content_type.starts_with("application/x-www-form-urlencoded");
+
+    // Форма з файлами: текстові поля йдуть у `form`, файли — у `files`.
+    let mut form = std::collections::BTreeMap::new();
+    let mut files: std::collections::BTreeMap<String, Vec<UploadData>> = std::collections::BTreeMap::new();
+    if is_urlencoded {
+        form = parse_urlencoded(&body_text);
+    } else if content_type.starts_with("multipart/form-data") {
+        if let Some(boundary) = multipart::boundary(content_type) {
+            for part in multipart::parse(&bytes, &boundary) {
+                if part.is_file() {
+                    files.entry(part.name.clone()).or_default().push(UploadData {
+                        filename: part.filename.unwrap_or_default(),
+                        content_type: part.content_type.unwrap_or_default(),
+                        data: std::sync::Arc::new(part.data),
+                    });
+                } else {
+                    form.insert(part.name, String::from_utf8_lossy(&part.data).into_owned());
+                }
+            }
+        }
+    }
 
     Ok(RequestData {
         method: parts.method.as_str().to_owned(),
@@ -732,15 +788,13 @@ async fn collect_request(
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
             .collect(),
         query: parts.uri.query().map(parse_urlencoded).unwrap_or_default(),
-        form: if is_form {
-            parse_urlencoded(&body_text)
-        } else {
-            Default::default()
-        },
+        form,
+        files,
         is_htmx: headers.contains_key("hx-request"),
         headers,
         cookies,
         body: body_text,
+        upload_root: std::path::PathBuf::new(),
     })
 }
 
@@ -894,6 +948,7 @@ fn render_inner(
         &state.state,
         &state.database,
         &state.http,
+        &state.mail,
         session,
         csrf,
         data,
@@ -1208,6 +1263,7 @@ fn globals_for(
     state: &ScriptState,
     database: &Database,
     http: &Http,
+    mail: &Mail,
     session: &Session,
     csrf: &Csrf,
     data: RequestData,
@@ -1222,6 +1278,7 @@ fn globals_for(
         .set("state", Dynamic::from(state.clone()))
         .set("db", Dynamic::from(database.clone()))
         .set("http", Dynamic::from(http.clone()))
+        .set("mail", Dynamic::from(mail.clone()))
         .set("session", Dynamic::from(session.clone()))
         .set("csrf", Dynamic::from(csrf.clone()))
         .set("log", Dynamic::from(Log { source }))

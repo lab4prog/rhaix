@@ -820,6 +820,59 @@ returns `false` rather than erroring.
 
 ---
 
+### 7.5 Batteries: validation, pagination, uploads, mail
+
+**`validate(values, rules)`** — validate a form in one call instead of a dozen
+`if`s. Returns a map of `field → message` (empty when valid):
+
+```rhai
+let errors = validate(req.all_form(), #{
+    name:  "required|min:2",
+    email: "required|email",
+    age:   "int|between:18,120",
+    again: "same:pass",
+    role:  "in:user,admin",
+});
+if !errors.is_empty() { res.status(422); }
+```
+
+Rules: `required email url int number min:N max:N between:a,b same:field
+in:a,b,c`. `min`/`max`/`between` compare by **value** on an `int`/`number`
+field, by string **length** otherwise. An empty optional field skips the rest.
+
+**`paginate(total, per_page, page)`** — all the page arithmetic. `page` is
+clamped, so `?page=999` gives the last page:
+
+```rhai
+let p = paginate(db.count("orders"), 20, req.query_int("page") ?? 1);
+let rows = db.find("orders", #{}, #{ sort: "id desc", limit: 20, skip: p.skip });
+```
+
+Fields: `page pages per_page total skip from to has_prev has_next prev next
+first last window`.
+
+**File uploads.** A form with `enctype="multipart/form-data"`:
+
+```rhai
+let f = req.file("photo");        // first upload or (); also req.files(name), req.has_file(name)
+if f != () && f.is_image && f.size <= 2 * 1024 * 1024 {
+    f.save(`public/uploads/${random_id()}.${f.extension}`);
+}
+```
+
+Upload fields: `filename content_type size is_image extension`; methods `text()`
+and `save(path)`. `save` checks the path — no absolute, no `..`, resolved
+against the project root. The form's text fields stay in `req.form(...)`.
+
+**Mail.** `mail.send(#{ to, subject, text, html? })`. Without a `[mail]`
+section it runs in dev mode — logs the message instead of sending — so a contact
+form works with no SMTP server. Real sending is behind the `mail` build feature
+(which `rhaix build` enables when `[mail]` is present) plus the config section.
+
+Recipes for all four are in `examples/cookbook`.
+
+---
+
 ## 8. `<style>` and `<script>` in a component
 
 ```html

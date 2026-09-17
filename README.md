@@ -21,7 +21,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M12 (автентифікація)
+## Стан: M12 (батарейки: auth, валідація, пагінація, файли, пошта)
 
 Що вже працює:
 
@@ -59,6 +59,11 @@ page.title = "ToDo";
   зміна драйвера це зміна `rhaix.toml`, а не коду (перевірено на `bench/`);
 - **паролі**: `hash_password(pw)` і `verify_password(pw, hash)` на Argon2id зі
   стандартними параметрами OWASP; у демо справжній вхід із реєстрацією;
+- **батарейки форм**: `validate(значення, правила)` — перевірка форми одним
+  викликом; `paginate(total, per, page)` — уся арифметика сторінок;
+- **завантаження файлів**: `req.file(...)` + `upload.save(...)` зі звіркою шляху;
+- **пошта**: `mail.send(#{...})` — dev-режим друкує лист у лог, справжній SMTP
+  за feature `mail`;
 - **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (11.3 МБ), який
   нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
   із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
@@ -78,8 +83,8 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: завантаження файлів, пагінації-хелпера, пошти й `markdown()`
-(решта M12), драйверів MongoDB/SurrealDB (решта M11).
+Чого ще немає: i18n, багатших валідаторів і `markdown()` (решта M12),
+драйверів MongoDB/SurrealDB (решта M11).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -135,7 +140,8 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M5.2-FINDINGS.md](M5.2-FINDINGS.md) | сесії, CSRF без ручної роботи, `http`, дати й гроші |
 | [M9-FINDINGS.md](M9-FINDINGS.md) | доки як тест: шість розбіжностей між спекою й кодом |
 | [M11-FINDINGS.md](M11-FINDINGS.md) | драйвер PostgreSQL: `?`→`$N`, `RETURNING`, коерція типів |
-| [M12-FINDINGS.md](M12-FINDINGS.md) | автентифікація: Argon2, справжній вхід у демо |
+| [M12-FINDINGS.md](M12-FINDINGS.md) | батарейки: Argon2, `validate`, `paginate`, завантаження, пошта |
+| [GUIDE.md](GUIDE.md) | юзергайд: створити застосунок, міграції, деплой, оновлення |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 

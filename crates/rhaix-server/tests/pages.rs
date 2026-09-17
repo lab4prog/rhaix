@@ -733,3 +733,51 @@ async fn passwords_are_hashed_and_verified() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(body.contains(r#"<p id="status">wrong</p>"#), "{body}");
 }
+
+#[tokio::test]
+async fn multipart_upload_is_parsed_and_exposed() {
+    // Той самий застосунок: GET дає cookie+токен, POST — multipart із текстовим
+    // полем (_csrf) і файлом.
+    let app = app();
+
+    let (_, headers, html) = {
+        let r = app.clone().oneshot(htmx("/upload")).await.expect("оброблено");
+        let hs: Vec<(String, String)> = r
+            .headers()
+            .iter()
+            .map(|(n, v)| (n.as_str().to_owned(), v.to_str().unwrap_or_default().to_owned()))
+            .collect();
+        let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        ((), hs, String::from_utf8_lossy(&bytes).into_owned())
+    };
+    let cookie = header(&headers, "set-cookie")
+        .expect("cookie")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let marker = "name=\"_csrf\" value=\"";
+    let start = html.find(marker).expect("токен") + marker.len();
+    let token = html[start..].split('"').next().unwrap().to_owned();
+
+    let boundary = "----rhaixTEST";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"_csrf\"\r\n\r\n{token}\r\n\
+         --{boundary}\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"нотатка.txt\"\r\n\
+         Content-Type: text/plain\r\n\r\nвміст файлу\r\n--{boundary}--\r\n"
+    );
+    let request = Request::builder()
+        .method("POST")
+        .uri("/upload")
+        .header("HX-Request", "true")
+        .header("cookie", cookie)
+        .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+        .body(Body::from(body))
+        .expect("запит");
+    let (status, _, out) = call(request).await;
+
+    assert_eq!(status, StatusCode::OK, "{out}");
+    // filename|size|content_type|is_image|text
+    assert!(out.contains("нотатка.txt|"), "{out}");
+    assert!(out.contains("|text/plain|false|вміст файлу"), "{out}");
+}

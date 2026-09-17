@@ -254,6 +254,14 @@ csrf = true               # default
 session_days = 30
 tz_offset = "+03:00"
 http_timeout = 10
+
+# [mail] enables real SMTP (build with the `mail` feature); without it mail.send logs
+# [mail]
+# from = "App <noreply@example.com>"
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# smtp_user = "..."
+# smtp_pass = "..."
 ```
 
 The session signing key comes from `RHAIX_SECRET`, then `[app] secret`, then a
@@ -314,6 +322,7 @@ slug(s) cut(s, n) strip_tags(s) capitalize(s) is_blank(v)
 money(v) money(v, 0) percent(a, b)
 uuid() random_id() sha256(s)
 hash_password(pw) verify_password(pw, hash)   // Argon2id — for passwords, not sha256()
+validate(values, rules) paginate(total, per, page)   // see the batteries section
 json(v)              // for <script> only — escapes tag-closing sequences
 json_encode(v) json_decode(s)
 raw(v) bool(v)
@@ -321,6 +330,39 @@ raw(v) bool(v)
 
 Date pattern tokens: `YYYY YY MM M DD D HH H mm m ss s`; text in double quotes
 is kept verbatim. `date()` accepts both a timestamp and a database string.
+
+## Form validation, pagination, uploads, mail
+
+```rhai
+// validate(values, rules) -> map of field -> message (empty if valid)
+let errors = validate(req.all_form(), #{
+    name:  "required|min:2",
+    email: "required|email",
+    age:   "int|between:18,120",
+    site:  "url",
+    pass:  "required|min:8",
+    again: "same:pass",
+    role:  "in:user,admin",
+});
+if !errors.is_empty() { res.status(422); }
+// rules: required email url int number min:N max:N between:a,b same:field in:a,b,c
+// min/max compare by value on int/number fields, by length otherwise
+
+// paginate(total, per_page, page) -> map; page is clamped to 1..=pages
+let p = paginate(db.count("orders"), 20, req.query_int("page") ?? 1);
+db.find("orders", #{}, #{ sort: "id desc", limit: 20, skip: p.skip });
+// p: page pages per_page total skip from to has_prev has_next prev next first last window
+
+// file uploads (multipart/form-data forms only)
+let f = req.file("doc");          // first upload or (); also req.files(name), req.has_file(name)
+if f != () {
+    // f.filename f.content_type f.size f.is_image f.extension f.text()
+    f.save("public/uploads/" + random_id() + "." + f.extension);   // path checked: no absolute, no ..
+}
+
+// mail (dev: logs the message; real SMTP behind the `mail` build feature + [mail] config)
+mail.send(#{ to: "x@y.co", subject: "Hi", text: "...", html: "<p>...</p>" });
+```
 
 ## Shared functions
 
@@ -392,5 +434,5 @@ rhaix check <dir>    # compile everything without starting; --json for CI
 ## Not in v1, on purpose
 
 Islands / client components / partial hydration; scoped CSS (v1.1); password
-uploads, mail and the rest of the batteries (M12);
+the rest of the batteries (M12): pagination window helpers, richer validators, i18n;
 `markdown()`; Postgres, MongoDB, SurrealDB drivers (M11, same `DbDriver` trait).
