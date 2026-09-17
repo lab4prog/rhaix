@@ -1,0 +1,73 @@
+{{! ---------------------------------------------------------------------------
+  Ергономічний спайк M0 №1: форма з валідацією і повторним рендером себе.
+  Файл не виконується (рендерера ще немає) — він написаний руками, щоб
+  перевірити, чи вистачає синтаксису на реальну задачу.
+  Знайдені проблеми позначені як ТЕРТЯ і зведені в M0-FINDINGS.md.
+---------------------------------------------------------------------------- }}
+---
+let form = #{ title: "", email: "", qty: 1, urgent: false };
+let errors = #{};
+let saved = false;
+
+if req.method == "POST" {
+    form.title  = req.form("title").trim();
+    form.email  = req.form("email").trim();
+    // ТЕРТЯ 1: req.form() повертає рядок, а тут потрібне число з дефолтом.
+    // Без типізованого доступу кожен користувач писатиме свій to_int().
+    form.qty    = req.form_int("qty") ?? 1;
+    form.urgent = req.form_bool("urgent");
+
+    if form.title == "" { errors.title = "Вкажіть назву"; }
+    if !form.email.contains("@") { errors.email = "Схоже, це не пошта"; }
+    if form.qty < 1 { errors.qty = "Щонайменше 1"; }
+
+    if errors.is_empty() {
+        db.insert("orders", form);
+        hx.toast("Замовлення створено", "success");
+        hx.trigger("orderCreated");
+        form = #{ title: "", email: "", qty: 1, urgent: false };
+        saved = true;
+    }
+}
+---
+
+{{! Форма замінює саму себе: hx-target="this" + outerHTML. Тому сторінка і є
+    фрагментом — окремий ендпоінт не потрібен. }}
+<form hx-post="/order-form" hx-target="this" hx-swap="outerHTML" class="stack">
+  <p @if={saved} class="ok">Дякуємо! Замовлення прийнято.</p>
+
+  <Field name="title" label="Назва" value={form.title} error={errors.title} />
+  <Field name="email" label="Пошта" type="email" value={form.email} error={errors.email} />
+  <Field name="qty"   label="Кількість" type="number" value={form.qty} error={errors.qty} />
+
+  <label class="check">
+    <input type="checkbox" name="urgent" @attr={#{"checked": form.urgent}}>
+    Терміново
+  </label>
+
+  <button type="submit">
+    Замовити
+    <span class="htmx-indicator">…</span>
+  </button>
+</form>
+
+{{! ---------------------------------------------------------------------------
+  components/Field.rhx — щоб не повторювати розмітку поля чотири рази:
+
+  ---
+  let name  = props.name;
+  let label = props.label;
+  let value = props.value ?? "";
+  let error = props.error;
+  let type  = props.type ?? "text";
+  ---
+  <label class="field" @class={#{"invalid": error}}>
+    <span>{{ label }}</span>
+    <input type={type} name={name} value={value}
+           @attr={#{"aria-invalid": error != ()}}>
+    <small @if={error} class="err">{{ error }}</small>
+  </label>
+
+  Працює як треба: props достатньо, @class і @attr закривають динаміку,
+  окремого синтаксису для форм вигадувати не довелось.
+---------------------------------------------------------------------------- }}

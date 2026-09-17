@@ -1,0 +1,16 @@
+:root { --fg: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #b45309; }
+* { box-sizing: border-box }
+body { margin: 0; font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--fg) }
+nav { display: flex; gap: 1.25rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line) }
+nav a { color: var(--fg); text-decoration: none; padding-bottom: 2px }
+nav a:hover { border-bottom: 2px solid var(--accent) }
+main { max-width: 46rem; margin: 0 auto; padding: 2rem 1.5rem }
+h1 { font-size: 1.75rem; margin-top: 0 }
+code { background: #f4f4f5; padding: .1em .35em; border-radius: 3px; font-size: .9em }
+.hint { color: var(--muted); font-size: .9rem }
+.todo-list { list-style: none; padding: 0 }
+.todo-item { display: flex; gap: .5rem; align-items: center; padding: .35rem 0 }
+.todo-item.completed span { text-decoration: line-through; opacity: .55 }
+.toasts { position: fixed; right: 1rem; bottom: 1rem; display: grid; gap: .5rem }
+.toast { padding: .6rem 1rem; border-radius: 6px; color: #fff; background: #334155 }
+.toast.success { background: #15803d } .toast.error { background: #b91c1c }

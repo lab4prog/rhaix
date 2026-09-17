@@ -1,0 +1,105 @@
+{{! ---------------------------------------------------------------------------
+  Ергономічний спайк M0 №2: таблиця з пошуком, сортуванням і пагінацією.
+  Найважчий типовий екран внутрішнього інструмента — саме тут видно, чи
+  вистачає мови й API.
+---------------------------------------------------------------------------- }}
+---
+let q     = req.query("q") ?? "";
+let sort  = req.query("sort") ?? "created";
+let dir   = req.query("dir") ?? "desc";
+let page  = req.query_int("page") ?? 1;      // ТЕРТЯ 1 (те саме, що у формі)
+let per   = 20;
+
+// ТЕРТЯ 2: переносимий фільтр мусить уміти не лише рівність. Потрібен
+// словник операторів, інакше будь-який пошук змусить писати рідний SQL.
+let filter = #{ archived: false };
+if q != "" { filter.title = #{ contains: q }; }
+
+let total = db.count("orders", filter);
+let pages = ceil(total / per);
+
+// ТЕРТЯ 3: `#{ [sort]: dir }` у Rhai неможливий — обчислюваних ключів у
+// літералі мапи немає. Рядкова форма сортування і коротша, і зрозуміліша.
+let rows = db.find("orders", filter, #{
+    sort: sort + " " + dir,
+    limit: per,
+    skip: (page - 1) * per,
+});
+
+page.title = "Замовлення";
+---
+
+<section id="orders">
+  {{! Пошук із debounce: типовий htmx, ніякого JS. Сторінка сама собі ендпоінт. }}
+  <form class="toolbar" hx-get="/orders-table" hx-target="#orders" hx-swap="outerHTML"
+        hx-trigger="input changed delay:300ms from:find input, submit"
+        hx-push-url="true">
+    <input name="q" value={q} placeholder="Пошук за назвою" autocomplete="off">
+    <input type="hidden" name="sort" value={sort}>
+    <input type="hidden" name="dir" value={dir}>
+    <span class="muted">знайдено: {{ total }}</span>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        {{! ТЕРТЯ 4: посилання зі станом треба будувати безпечно. Ручна
+            конкатенація рядків ламається на `&` у пошуковому запиті —
+            потрібен хелпер url(), який кодує параметри. }}
+        <Th field="id"      label="№"        sort={sort} dir={dir} q={q} />
+        <Th field="title"   label="Назва"    sort={sort} dir={dir} q={q} />
+        <Th field="qty"     label="К-сть"    sort={sort} dir={dir} q={q} />
+        <Th field="created" label="Створено" sort={sort} dir={dir} q={q} />
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr @for={row in rows} id={"row-" + row.id} @class={#{"urgent": row.urgent}}>
+        <td>{{ row.id }}</td>
+        <td>{{ row.title }}</td>
+        <td>{{ row.qty }}</td>
+        <td>{{ date(row.created, "d.m.Y") }}</td>
+        <td>
+          <button hx-get={url("/order-modal", #{ id: row.id })} hx-target="#modal">
+            Редагувати
+          </button>
+        </td>
+      </tr>
+      <tr @if={rows.is_empty()}>
+        <td colspan="5" class="empty">
+          {{ if q == "" { "Замовлень ще немає" } else { "Нічого не знайдено" } }}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <nav class="pager" @if={pages > 1}>
+    <a @for={n in 1..=pages}
+       href={url("/orders-table", #{ q: q, sort: sort, dir: dir, page: n })}
+       hx-get={url("/orders-table", #{ q: q, sort: sort, dir: dir, page: n })}
+       hx-target="#orders" hx-swap="outerHTML" hx-push-url="true"
+       @class={#{"current": n == page}}>{{ n }}</a>
+  </nav>
+</section>
+
+{{! ---------------------------------------------------------------------------
+  components/Th.rhx — заголовок колонки, що перемикає напрямок сортування:
+
+  ---
+  let field = props.field;
+  let active = props.sort == field;
+  let next = if active && props.dir == "asc" { "desc" } else { "asc" };
+  ---
+  <th @class={#{"sorted": active}}>
+    <a href={url("/orders-table", #{ q: props.q, sort: field, dir: next })}
+       hx-get={url("/orders-table", #{ q: props.q, sort: field, dir: next })}
+       hx-target="#orders" hx-swap="outerHTML" hx-push-url="true">
+      {{ props.label }}{{ if active { if props.dir == "asc" { " ↑" } else { " ↓" } } else { "" } }}
+    </a>
+  </th>
+
+  ТЕРТЯ 5: чотири props тільки для того, щоб зібрати посилання. Напрошується
+  доступ до поточних query-параметрів прямо в компоненті (`req.query(...)`
+  там є, бо глобальні об'єкти доступні всюди) — тоді залишиться `field` і
+  `label`. Тобто проблема не в мові, а в тому, як написано приклад.
+---------------------------------------------------------------------------- }}

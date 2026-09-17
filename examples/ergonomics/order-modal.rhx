@@ -1,0 +1,68 @@
+{{! ---------------------------------------------------------------------------
+  Ергономічний спайк M0 №3: модалка з редагуванням.
+  Найцікавіше тут — збереження має одночасно закрити модалку і оновити рядок
+  у таблиці позаду. Це те місце, де сирий htmx і спека розходяться.
+---------------------------------------------------------------------------- }}
+---
+let id = req.query_int("id");
+if id == () { res.status(400); return "Немає id"; }
+
+let order = db.get("orders", id);
+if order == () { res.status(404); return "Замовлення не знайдено"; }
+
+let errors = #{};
+
+if req.method == "POST" {
+    order.title = req.form("title").trim();
+    order.qty   = req.form_int("qty") ?? 1;
+
+    if order.title == "" { errors.title = "Вкажіть назву"; }
+
+    if errors.is_empty() {
+        db.update("orders", id, #{ title: order.title, qty: order.qty });
+        hx.toast("Збережено", "success");
+
+        {{! ТЕРТЯ 6: треба повернути ДВА фрагменти — порожню модалку і свіжий
+            рядок таблиці. У htmx це hx-swap-oob, і воно працює саме собою,
+            бо це звичайний HTML. Але в спеці про цей сценарій не сказано
+            жодного слова, хоч він у внутрішніх інструментах щоденний. }}
+        return raw(`
+            <tr id="row-${id}" hx-swap-oob="true">
+              <td>${id}</td><td>${order.title}</td><td>${order.qty}</td>
+            </tr>
+        `);
+        {{! ...і це вже не «розмітка у файлі», а рядок у логіці — тобто саме те,
+            від чого ми тікали. Потрібен нормальний спосіб оголосити
+            out-of-band фрагмент розміткою. }}
+    }
+}
+---
+
+<div class="modal-card" id="modal-card">
+  <header>
+    <h2>Замовлення №{{ order.id }}</h2>
+    <button class="close" hx-get="/order-modal/close" hx-target="#modal">×</button>
+  </header>
+
+  <form hx-post={url("/order-modal", #{ id: order.id })}
+        hx-target="#modal-card" hx-swap="outerHTML">
+    <Field name="title" label="Назва" value={order.title} error={errors.title} />
+    <Field name="qty" label="Кількість" type="number" value={order.qty} />
+
+    <footer>
+      <button type="button" hx-get="/order-modal/close" hx-target="#modal">Скасувати</button>
+      <button type="submit">Зберегти</button>
+    </footer>
+  </form>
+</div>
+
+{{! ---------------------------------------------------------------------------
+  Що хотілося б написати замість рядка з raw() вище:
+
+  <Oob target={"#row-" + order.id} swap="outerHTML">
+    <OrderRow order={order} />
+  </Oob>
+
+  Тобто розмітка лишається розміткою, а ядро саме проставляє hx-swap-oob і
+  id. Кандидат у директиву `@oob={"#row-" + id}` — вирішується в M4.
+---------------------------------------------------------------------------- }}

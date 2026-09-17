@@ -1,0 +1,78 @@
+{{! ---------------------------------------------------------------------------
+  Ергономічний спайк M0 №4: закрита сторінка зі звітом.
+  Перевіряємо дві речі: захист доступу і сторінку, де даних більше, ніж розмітки.
+---------------------------------------------------------------------------- }}
+---
+// ТЕРТЯ 7: охорона доступу списана вручну в кожну закриту сторінку.
+// Забув один рядок в одному файлі — і сторінка відкрита всім. Потрібен
+// middleware, який виконується ДО сторінки (див. M0-FINDINGS.md).
+if session.user == () {
+    hx.redirect("/login");
+    return;
+}
+if session.user.role != "admin" {
+    res.status(403);
+    return "Немає доступу";
+}
+
+let from = req.query("from") ?? date(now().add_days(-30), "Y-m-d");
+let to   = req.query("to") ?? date(now(), "Y-m-d");
+
+let rows = db.query(
+    "select status, count(*) as n, sum(qty) as qty
+       from orders
+      where created between ? and ?
+      group by status
+      order by n desc",
+    [from, to]
+);
+
+let total = rows.reduce(|sum, r| sum + r.n, 0);
+let top = if rows.is_empty() { () } else { rows[0] };
+
+page.title = "Звіт";
+---
+
+<h1>Звіт за {{ from }} — {{ to }}</h1>
+
+<form class="toolbar" hx-get="/admin-report" hx-target="#report" hx-swap="outerHTML" hx-push-url="true">
+  <input type="date" name="from" value={from}>
+  <input type="date" name="to" value={to}>
+  <button>Показати</button>
+</form>
+
+<section id="report">
+  <p @if={rows.is_empty()} class="empty">За цей період даних немає.</p>
+
+  <template @if={!rows.is_empty()}>
+    <p>
+      Усього замовлень: <strong>{{ total }}</strong>.
+      Найбільше — <strong>{{ top.status }}</strong> ({{ top.n }}).
+    </p>
+
+    <table>
+      <tr @for={row in rows}>
+        <td>{{ row.status }}</td>
+        <td>{{ row.n }}</td>
+        <td>{{ percent(row.n, total) }}</td>
+        <td>
+          {{! проста смужка замість графіка — без JS і без бібліотек }}
+          <span class="bar" @style={#{"width": percent(row.n, total)}}></span>
+        </td>
+      </tr>
+    </table>
+  </template>
+</section>
+
+{{! ---------------------------------------------------------------------------
+  Висновки з цього файлу:
+
+  ✔ `<template @if>` рятує там, де треба сховати групу вузлів без обгортки —
+    без нього довелось би вводити зайвий <div>.
+  ✔ Рідний SQL із group by читається нормально прямо у frontmatter; переносимий
+    CRUD тут не потрібен і не заважає.
+  ✔ `page.title` зі сторінки видно в layout, бо layout рендериться після неї.
+  ✘ Охорона доступу (ТЕРТЯ 7) — єдине справді слабке місце на цій сторінці.
+  ✘ `percent()` і `now().add_days()` — нагадування, що stdlib треба спроєктувати
+    цілком, а не «за потребою» (RISKS 2.6).
+---------------------------------------------------------------------------- }}

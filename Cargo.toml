@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rhaix-parser",
+    "crates/rhaix-script",
+    "crates/rhaix-server",
+    "crates/rhaix-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lab4prog/rhaix"
+rust-version = "1.85"
+
+[workspace.dependencies]
+rhaix-parser = { path = "crates/rhaix-parser" }
+rhaix-script = { path = "crates/rhaix-script" }
+rhaix-server = { path = "crates/rhaix-server" }
+
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+rhai = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

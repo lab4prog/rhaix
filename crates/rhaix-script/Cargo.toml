@@ -1,0 +1,14 @@
+[package]
+name = "rhaix-script"
+description = "Rhai engine setup, value conversion and the M0 performance gate for rhaix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rhai.workspace = true
+
+[[bin]]
+name = "rhaix-bench"
+path = "src/bin/bench.rs"

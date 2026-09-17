@@ -1,0 +1,19 @@
+[package]
+name = "rhaix-cli"
+description = "rhaix command line: dev server and project checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rhaix-server.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "rhaix"
+path = "src/main.rs"

@@ -1,0 +1,17 @@
+[package]
+name = "rhaix-server"
+description = "HTTP layer for rhaix: file-based routing, layout wrapping and the HTMX fragment rule"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rhaix-parser.workspace = true
+
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
