@@ -1,0 +1,4 @@
+---
+page.title = "Запис";
+---
+<p>id = {{ req.param("id") }}</p>

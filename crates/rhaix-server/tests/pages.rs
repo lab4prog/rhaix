@@ -1,0 +1,190 @@
+//! Наскрізні перевірки: справжній роутер, справжні заголовки, справжні `.rhx`.
+//!
+//! Застосунок для тестів лежить у `tests/fixture` — окремо від демо, щоб
+//! перевірки не залежали від того, що зараз показує демо.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use rhaix_server::{build, Config};
+use tower::ServiceExt;
+
+fn app() -> axum::Router {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture");
+    let config = Config::new(root, SocketAddr::from(([127, 0, 0, 1], 0)));
+    build(config)
+        .expect("застосунок для тестів має збиратись")
+        .0
+}
+
+async fn call(request: Request<Body>) -> (StatusCode, Vec<(String, String)>, String) {
+    let response = app().oneshot(request).await.expect("запит має оброблятись");
+    let status = response.status();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                value.to_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("тіло має читатись");
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+fn get(path: &str) -> Request<Body> {
+    Request::builder()
+        .uri(path)
+        .body(Body::empty())
+        .expect("запит")
+}
+
+fn htmx(path: &str) -> Request<Body> {
+    Request::builder()
+        .uri(path)
+        .header("HX-Request", "true")
+        .body(Body::empty())
+        .expect("запит")
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
+}
+
+#[tokio::test]
+async fn full_load_wraps_the_page_in_the_layout() {
+    let (status, headers, body) = call(get("/")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.starts_with("<!DOCTYPE html>"), "{body}");
+    // page.title зі сторінки видно в layout — саме тому layout рендериться після неї
+    assert!(body.contains("<title>rhaix — Головна</title>"), "{body}");
+    assert!(body.contains("<li>перше</li><li>друге</li>"), "{body}");
+    // статика підхоплюється сама
+    assert!(
+        body.contains(r#"<link rel="stylesheet" href="/style.css">"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<script src="/app.js"></script>"#),
+        "{body}"
+    );
+    assert_eq!(header(&headers, "vary"), Some("HX-Request"));
+}
+
+#[tokio::test]
+async fn htmx_request_gets_only_the_fragment() {
+    let (status, headers, body) = call(htmx("/")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body.contains("<!DOCTYPE html>"), "{body}");
+    assert!(body.contains("<h1>Головна</h1>"), "{body}");
+    assert_eq!(header(&headers, "cache-control"), Some("private, no-store"));
+}
+
+#[tokio::test]
+async fn dynamic_segment_reaches_the_script() {
+    let (status, _, body) = call(htmx("/item/42")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("id = 42"), "{body}");
+}
+
+#[tokio::test]
+async fn form_post_runs_the_logic_and_sends_triggers() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/form")
+        .header("HX-Request", "true")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from("title=%D0%9F%D1%80%D0%B8%D0%B2%D1%96%D1%82"))
+        .expect("запит");
+    let (status, headers, body) = call(request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<b>Привіт</b>"), "{body}");
+    let trigger = header(&headers, "hx-trigger").expect("є HX-Trigger");
+    assert!(trigger.contains(r#""showToast""#), "{trigger}");
+    // не-ASCII у заголовку неприпустимий, тому кирилиця їде як \uXXXX
+    assert!(trigger.is_ascii(), "{trigger}");
+    assert!(trigger.contains("\\u041f\\u0440\\u0438"), "{trigger}");
+    assert!(trigger.contains(r#""saved":true"#), "{trigger}");
+}
+
+#[tokio::test]
+async fn validation_keeps_the_page_but_changes_the_status() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/form")
+        .header("HX-Request", "true")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from("title=%20%20"))
+        .expect("запит");
+    let (status, headers, body) = call(request).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body.contains("порожньо"), "{body}");
+    assert!(
+        header(&headers, "hx-trigger").is_none(),
+        "тостів бути не має"
+    );
+}
+
+#[tokio::test]
+async fn redirect_differs_for_htmx_and_for_a_normal_visit() {
+    let (status, headers, body) = call(get("/guard")).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(header(&headers, "location"), Some("/"));
+    assert!(body.is_empty(), "розмітка не рендериться: {body}");
+
+    let (status, headers, _) = call(htmx("/guard")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, "hx-redirect"), Some("/"));
+}
+
+#[tokio::test]
+async fn returned_value_becomes_the_body() {
+    let request = Request::builder()
+        .method("DELETE")
+        .uri("/fragment")
+        .header("HX-Request", "true")
+        .body(Body::empty())
+        .expect("запит");
+    let (status, _, body) = call(request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body, "",
+        "`return \"\";` віддає порожнє тіло — htmx прибере елемент"
+    );
+}
+
+#[tokio::test]
+async fn script_error_is_shown_in_rhx_coordinates() {
+    let (status, _, body) = call(htmx("/broken")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    // ворота M2: файл, рядок, колонка — і жодного сирого Rhai
+    assert!(body.contains("pages/broken.rhx:3:"), "{body}");
+    assert!(body.contains("missing_variable"), "{body}");
+    assert!(!body.contains("EvalAltResult"), "{body}");
+}
+
+#[tokio::test]
+async fn missing_page_is_a_404() {
+    let (status, _, _) = call(get("/nope")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

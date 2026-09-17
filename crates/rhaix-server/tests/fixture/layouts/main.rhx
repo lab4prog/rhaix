@@ -1,0 +1,8 @@
+---
+let brand = "rhaix";
+---
+<!DOCTYPE html>
+<html lang="uk">
+<head><title>{{ brand }} — {{ page.title ?? "без назви" }}</title><rhaix:head /></head>
+<body><main id="main"><slot /></main><rhaix:scripts /></body>
+</html>

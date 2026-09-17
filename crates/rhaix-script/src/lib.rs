@@ -5,8 +5,16 @@
 //! хибним в `@if`, які ліміти стоять на скрипті користувача.
 
 mod stdlib;
+mod web;
 
 pub use stdlib::{register_core, Html};
+pub use web::{
+    parse_cookies, parse_urlencoded, register_web, triggers_header, Hx, Log, Request, RequestData,
+    Response, ResponseData, State,
+};
+
+use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 use rhai::{Dynamic, Engine, EvalAltResult, OptimizationLevel, AST};
 
@@ -39,8 +47,52 @@ pub fn engine(limits: Limits) -> Engine {
     engine.set_max_string_size(limits.max_string_size);
     engine.set_max_expr_depths(limits.max_expr_depth, limits.max_expr_depth);
     engine.set_optimization_level(OptimizationLevel::Full);
+
+    // Ліміт часу: скрипт користувача не має тримати потік нескінченно.
+    // Перевіряємо не щокроку, а раз на кілька тисяч операцій — цього достатньо,
+    // щоб зловити цикл, і не видно на звичайному рендері.
+    engine.on_progress(|operations| {
+        if operations % 4096 != 0 {
+            return None;
+        }
+        deadline_exceeded().then(|| Dynamic::from("час виконання скрипта вичерпано"))
+    });
+
     register_core(&mut engine);
+    register_web(&mut engine);
     engine
+}
+
+thread_local! {
+    static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Обмежувач часу на один запит.
+///
+/// Рендер іде в `spawn_blocking`, тобто один запит — один потік, тому дедлайн
+/// живе в thread-local і знімається сам, коли `Deadline` виходить з області
+/// видимості.
+#[must_use = "дедлайн діє, поки живе цей об'єкт"]
+pub struct Deadline;
+
+impl Deadline {
+    pub fn new(budget: Duration) -> Self {
+        DEADLINE.with(|cell| cell.set(Some(Instant::now() + budget)));
+        Self
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        DEADLINE.with(|cell| cell.set(None));
+    }
+}
+
+fn deadline_exceeded() -> bool {
+    DEADLINE.with(|cell| match cell.get() {
+        Some(at) => Instant::now() >= at,
+        None => false,
+    })
 }
 
 /// Скомпілювати вміст `{{ ... }}`.
@@ -186,6 +238,19 @@ mod tests {
         assert!(compile_expression(&engine, "user.name").is_ok());
         assert!(compile_expression(&engine, "price * qty").is_ok());
         assert!(compile_expression(&engine, "let x = 1; x").is_err());
+    }
+
+    #[test]
+    fn deadline_stops_a_long_script() {
+        let engine = engine(Limits::default());
+        let _guard = Deadline::new(Duration::from_millis(30));
+        let err = engine
+            .eval::<i64>("let i = 0; while true { i += 1 } i")
+            .unwrap_err();
+        assert!(
+            matches!(*err, rhai::EvalAltResult::ErrorTerminated(..)),
+            "{err}"
+        );
     }
 
     #[test]

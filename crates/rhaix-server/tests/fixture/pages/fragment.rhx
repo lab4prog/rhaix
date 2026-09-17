@@ -1,0 +1,4 @@
+---
+if req.method == "DELETE" { return ""; }
+---
+<span>ще тут</span>

@@ -1,16 +1,24 @@
+---
+let nav = [
+    #{ href: "/", label: "Головна" },
+    #{ href: "/todo", label: "ToDo" },
+    #{ href: "/escaping", label: "Екранування" },
+    #{ href: "/contacts", label: "Контакти" },
+];
+---
 <!DOCTYPE html>
 <html lang="uk">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>rhaix — демо</title>
+  <title>{{ page.title ?? "rhaix" }}</title>
   <rhaix:head />
 </head>
 <body hx-boost="true">
   <nav>
-    <a href="/" hx-get="/" hx-target="#main" hx-push-url="true">Головна</a>
-    <a href="/todo" hx-get="/todo" hx-target="#main" hx-push-url="true">ToDo</a>
-    <a href="/contacts" hx-get="/contacts" hx-target="#main" hx-push-url="true">Контакти</a>
+    <a @for={item in nav} href={item.href}
+       hx-get={item.href} hx-target="#main" hx-push-url="true"
+       @class={#{"active": item.href == req.path}}>{{ item.label }}</a>
   </nav>
 
   <main id="main"><slot /></main>

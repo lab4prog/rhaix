@@ -65,6 +65,23 @@ impl Expr {
         })
     }
 
+    /// Скомпілювати frontmatter: тут, на відміну від інтерполяції,
+    /// інструкції дозволені — це звичайний скрипт.
+    pub fn compile_script(engine: &Engine, source: &Source, span: Span) -> Result<Self> {
+        let text = source.slice(span);
+        let ast = engine.compile(text).map_err(|err| {
+            let at = map_position(text, span, err.1);
+            Diagnostic::new(clean_message(&err.0.to_string()), at)
+        })?;
+
+        Ok(Self {
+            ast,
+            span,
+            source: text.to_owned(),
+            fast: Fast::None,
+        })
+    }
+
     pub fn span(&self) -> Span {
         self.span
     }
@@ -90,10 +107,21 @@ impl Expr {
         let at = map_position(&self.source, self.span, err.position());
         let message = clean_message(&err.to_string());
         let mut diagnostic = Diagnostic::new(message, at);
-        if let EvalAltResult::ErrorVariableNotFound(name, _) = err {
-            diagnostic = diagnostic.with_hint(format!(
-                "змінної `{name}` немає в цьому файлі; перевірте frontmatter або props"
-            ));
+        match err {
+            EvalAltResult::ErrorVariableNotFound(name, _) => {
+                diagnostic = diagnostic.with_hint(format!(
+                    "змінної `{name}` немає в цьому файлі; перевірте frontmatter або props"
+                ));
+            }
+            EvalAltResult::ErrorTooManyOperations(_) => {
+                diagnostic = diagnostic
+                    .with_hint("перевірте умову циклу: обмеження спрацювало до завершення");
+            }
+            EvalAltResult::ErrorTerminated(..) => {
+                diagnostic =
+                    diagnostic.with_hint("сторінка не вклалась у відведений час (5 секунд)");
+            }
+            _ => {}
         }
         diagnostic
     }
@@ -146,7 +174,7 @@ fn clean_message(message: &str) -> String {
 /// для неї не пояснення. Решта повідомлень поки лишається як є; повний переклад
 /// разом із перемикачем `lang` — у M6.
 fn translate(message: &str) -> String {
-    let pairs: [(&str, &str); 6] = [
+    let pairs: [(&str, &str); 8] = [
         ("Variable not found: ", "невідома змінна `"),
         ("Function not found: ", "невідома функція `"),
         ("Property not found: ", "невідома властивість `"),
@@ -156,6 +184,8 @@ fn translate(message: &str) -> String {
             "Number of operations exceeds",
             "скрипт виконав забагато операцій —",
         ),
+        ("Script terminated: ", "виконання зупинено: "),
+        ("Data race detected", "одночасний доступ до значення"),
     ];
     for (prefix, replacement) in pairs {
         if let Some(rest) = message.strip_prefix(prefix) {
@@ -168,6 +198,9 @@ fn translate(message: &str) -> String {
     }
     if let Some(rest) = message.strip_prefix("Unexpected ") {
         return format!("несподіване {rest}");
+    }
+    if message.starts_with("Too many operations") {
+        return "скрипт виконав забагато операцій — схоже на нескінченний цикл".to_owned();
     }
     message.to_owned()
 }

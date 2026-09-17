@@ -19,12 +19,14 @@ mod render;
 
 use std::sync::Arc;
 
-use rhai::{Engine, Scope};
+use rhai::{Dynamic, Engine, Scope};
 use rhaix_parser::{Source, Span};
 
 pub use ast::Node;
 pub use error::Diagnostic;
 pub use render::{Rendered, Slots};
+
+use expr::Expr;
 
 /// Скомпільований шаблон. Спільний для всіх запитів: на запит змінюється
 /// тільки `Scope`.
@@ -33,6 +35,9 @@ pub struct Template {
     source: Arc<Source>,
     nodes: Vec<Node>,
     frontmatter: Option<Span>,
+    /// Скомпільований frontmatter. Компілюється разом із розміткою, тому
+    /// синтаксична помилка в логіці видно одразу, а не на першому запиті.
+    script: Option<Expr>,
 }
 
 impl Template {
@@ -45,11 +50,33 @@ impl Template {
             }
         })?;
         let nodes = parse::parse(&source, engine, split.markup)?;
+        let script = match split.frontmatter {
+            Some(span) if !source.slice(span).trim().is_empty() => {
+                Some(Expr::compile_script(engine, &source, span)?)
+            }
+            _ => None,
+        };
         Ok(Self {
             source,
             nodes,
             frontmatter: split.frontmatter,
+            script,
         })
+    }
+
+    /// Виконати frontmatter.
+    ///
+    /// Повертає значення, яке віддав скрипт: `()` означає «рендери розмітку»,
+    /// будь-що інше — готове тіло відповіді (`return "";` — порожнє).
+    pub fn run_script(&self, engine: &Engine, scope: &mut Scope) -> Result<Dynamic, Diagnostic> {
+        match &self.script {
+            Some(script) => script.eval(engine, scope),
+            None => Ok(Dynamic::UNIT),
+        }
+    }
+
+    pub fn has_script(&self) -> bool {
+        self.script.is_some()
     }
 
     /// Rhai-код frontmatter. Виконання з'явиться в M2.
@@ -495,6 +522,78 @@ mod tests {
             .render(&engine, &mut scope, Slots::default())
             .unwrap();
         assert_eq!(rendered.html, "<p>видно</p>");
+    }
+
+    #[test]
+    fn frontmatter_defines_what_the_markup_renders() {
+        let engine = engine(Limits::default());
+        let text = concat!(
+            "---
+",
+            "let titles = [\"перше\", \"друге\"];
+",
+            "let total = titles.len();
+",
+            "---
+",
+            "<p>{{ total }}</p><li @for={t in titles}>{{ t }}</li>"
+        );
+        let source = Arc::new(Source::new("test.rhx", text));
+        let template = Template::compile(source, &engine).unwrap();
+
+        let mut scope = Scope::new();
+        let _ = template.run_script(&engine, &mut scope).unwrap();
+        let rendered = template
+            .render(&engine, &mut scope, Slots::default())
+            .unwrap();
+        assert_eq!(rendered.html, "<p>2</p><li>перше</li><li>друге</li>");
+    }
+
+    #[test]
+    fn frontmatter_error_points_into_the_file() {
+        let engine = engine(Limits::default());
+        let text = "---
+let a = 1;
+let b = missing_variable + 1;
+---
+<p>x</p>";
+        let source = Arc::new(Source::new("test.rhx", text));
+        let template = Template::compile(source, &engine).unwrap();
+
+        let mut scope = Scope::new();
+        let diagnostic = template.run_script(&engine, &mut scope).unwrap_err();
+        let message = template.describe(&diagnostic);
+        assert!(message.contains("test.rhx:3:"), "{message}");
+        assert!(message.contains("missing_variable"), "{message}");
+    }
+
+    #[test]
+    fn frontmatter_syntax_error_is_caught_at_compile_time() {
+        let engine = engine(Limits::default());
+        let text = "---
+let a = ;
+---
+<p>x</p>";
+        let source = Arc::new(Source::new("test.rhx", text));
+        let diagnostic = Template::compile(source.clone(), &engine).unwrap_err();
+        let message = diagnostic.render(&source);
+        assert!(message.contains("test.rhx:2:"), "{message}");
+    }
+
+    #[test]
+    fn returned_value_becomes_the_body() {
+        let engine = engine(Limits::default());
+        let text = "---
+return \"<b>готово</b>\";
+---
+<p>це не рендериться</p>";
+        let source = Arc::new(Source::new("test.rhx", text));
+        let template = Template::compile(source, &engine).unwrap();
+
+        let mut scope = Scope::new();
+        let value = template.run_script(&engine, &mut scope).unwrap();
+        assert!(!value.is_unit());
+        assert_eq!(value.cast::<String>(), "<b>готово</b>");
     }
 
     #[test]

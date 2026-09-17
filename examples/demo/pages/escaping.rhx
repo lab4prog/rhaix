@@ -1,9 +1,17 @@
+---
+page.title = "Екранування";
+
+let dangerous = "<script>alert(1)</script>";
+let markup = "<b>це справді жирний текст</b>";
+let evil = "javascript:alert(document.cookie)";
+let todos = state.get("todos") ?? [];
+---
 <h1>Екранування за контекстом</h1>
 
 <p>Текст екранується завжди: {{ dangerous }}</p>
 <p>Явний вихід через <code>raw()</code>: {{ raw(markup) }}</p>
 <p>Посилання з недозволеною схемою: <a href={evil}>перевірити</a></p>
-<p>А це звичайне посилання: <a href="/todo?from={{ path }}">ToDo</a></p>
+<p>Безпечне посилання: <a href={url("/todo", #{ from: req.path })}>ToDo</a></p>
 
 <script>
   // у <script> дозволено лише json(...)

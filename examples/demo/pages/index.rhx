@@ -1,16 +1,25 @@
+---
+page.title = "rhaix";
+
+let features = [
+    "frontmatter виконується на сервері й не потрапляє у вивід",
+    "req / res / hx / log доступні як звичайні об'єкти",
+    "{{ вираз }} з екрануванням за контекстом",
+    "директиви @if / @else / @for / @class / @attr / @oob",
+];
+---
 <h1>rhaix</h1>
 
 <p>
   Серверний рендер HTMX на Rust + Rhai. Ця сторінка прийшла з
-  <code>pages/index.rhx</code>, шлях запиту — <code>{{ path }}</code>.
+  <code>pages/index.rhx</code>, шлях запиту — <code>{{ req.path }}</code>,
+  метод — <code>{{ req.method }}</code>.
 </p>
 
-<p @if={is_htmx}>Це фрагмент: layout не перевантажувався.</p>
+<p @if={req.is_htmx}>Це фрагмент: layout не перевантажувався.</p>
 <p @else>Повне завантаження: layout зібрано разом зі сторінкою.</p>
 
-<h2>Що вже вміє M1</h2>
+<h2>Що вже вміє M2</h2>
 <ul>
-  <li @for={(feature, index) in features}>
-    <b>{{ index + 1 }}.</b> {{ feature }}
-  </li>
+  <li @for={feature in features}><b>{{ iter.number }}.</b> {{ feature }}</li>
 </ul>

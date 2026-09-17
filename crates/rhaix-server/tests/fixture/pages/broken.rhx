@@ -1,0 +1,5 @@
+---
+let a = 1;
+let b = missing_variable + 1;
+---
+<p>{{ b }}</p>

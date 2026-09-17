@@ -3,26 +3,38 @@
 //! Сервер знаходить сторінку, рендерить її шаблонізатором і віддає — з layout
 //! при звичайному заході й без нього при HTMX-запиті.
 //!
-//! Обсяг M1: `{{ }}`, директиви й екранування працюють, але дані поки
-//! підставляє сам сервер (`stub_scope`) — виконання frontmatter приїде в M2,
-//! компоненти — в M3, кеш шаблонів — в M6.
+//! Обсяг M2: frontmatter виконується, `req`/`res`/`hx`/`log` працюють, рендер
+//! іде в `spawn_blocking` з обмеженням часу. Компоненти — в M3, кеш шаблонів
+//! і watcher — у M6.
 
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode, Uri};
+use axum::extract::{RawPathParams, State};
+use axum::http::{header, HeaderName, HeaderValue, Request as HttpRequest, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use rhai::{Dynamic, Engine, Map, Scope};
 use rhaix_parser::Source;
-use rhaix_script::{engine as build_engine, Limits};
+use rhaix_script::{
+    display, engine as build_engine, parse_cookies, parse_urlencoded, Deadline, Hx, Limits, Log,
+    Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData,
+    State as ScriptState,
+};
 use rhaix_template::{Slots, Template};
 use tower_http::services::ServeDir;
+
+/// Скільки часу дається скрипту сторінки. Далі — явна помилка, а не мовчазне
+/// утримання потоку (RISKS 2.3).
+const SCRIPT_BUDGET: Duration = Duration::from_secs(5);
+
+/// Обмеження на тіло запиту.
+const MAX_BODY: usize = 1024 * 1024;
 
 /// Налаштування застосунку. У M6 сюди приїде `rhaix.toml`.
 #[derive(Debug, Clone)]
@@ -66,6 +78,8 @@ struct AppState {
     /// Рушій спільний для всіх запитів: `sync`-збірка Rhai дозволяє тримати
     /// його в `Arc`, а на запит створюється лише `Scope`.
     engine: Arc<Engine>,
+    /// Процесне сховище `state` — одне на весь застосунок.
+    state: ScriptState,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
@@ -74,6 +88,7 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
     let state = AppState {
         config: config.clone(),
         engine: Arc::new(build_engine(Limits::default())),
+        state: ScriptState::new(),
     };
 
     let mut router = Router::new();
@@ -82,9 +97,9 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
         router = router.route(
             &route.pattern,
             any(
-                move |state: State<AppState>, uri: Uri, headers: HeaderMap| {
+                move |state: State<AppState>, params: RawPathParams, request: HttpRequest<Body>| {
                     let file = file.clone();
-                    async move { serve_page(state.0, uri, headers, file).await }
+                    async move { serve_page(state.0, params, request, file).await }
                 },
             ),
         );
@@ -170,73 +185,242 @@ fn segment_pattern(name: &str) -> String {
     name.to_owned()
 }
 
-async fn serve_page(state: AppState, uri: Uri, headers: HeaderMap, file: PathBuf) -> Response {
-    let is_htmx = headers.contains_key("hx-request");
-
-    let html = match render_page(&state, &file, uri.path(), is_htmx) {
-        Ok(html) => html,
+async fn serve_page(
+    state: AppState,
+    params: RawPathParams,
+    request: HttpRequest<Body>,
+    file: PathBuf,
+) -> Response {
+    let data = match collect_request(params, request).await {
+        Ok(data) => data,
         Err(err) => return err.into_response(),
     };
+    let is_htmx = data.is_htmx;
 
-    let mut response = Response::new(Body::from(html));
-    let out = response.headers_mut();
-    out.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    // Vary самого по собі мало: деякі CDN його ігнорують і можуть віддати
-    // фрагмент замість сторінки (RISKS 2.9), тому HTMX-відповіді не кешуємо.
-    out.insert(header::VARY, HeaderValue::from_static("HX-Request"));
-    if is_htmx {
-        out.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("private, no-store"),
-        );
+    // Скрипт користувача синхронний і може ходити в БД, тому виконується на
+    // окремому потоці; рушій спільний (`sync`-збірка Rhai), шаблон — теж.
+    let outcome = tokio::task::spawn_blocking(move || render_page(&state, &file, data)).await;
+
+    let (body, response_state) = match outcome {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => return err.into_response(),
+        Err(err) => {
+            tracing::error!("рендер не завершився: {err}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "500").into_response();
+        }
+    };
+
+    build_response(body, response_state, is_htmx)
+}
+
+/// Зібрати дані запиту у вигляді, зрозумілому скрипту.
+async fn collect_request(
+    params: RawPathParams,
+    request: HttpRequest<Body>,
+) -> Result<RequestData, PageError> {
+    let (parts, body) = request.into_parts();
+
+    let mut headers = std::collections::BTreeMap::new();
+    for (name, value) in parts.headers.iter() {
+        if let Ok(text) = value.to_str() {
+            headers.insert(name.as_str().to_ascii_lowercase(), text.to_owned());
+        }
     }
+    let cookies = headers
+        .get("cookie")
+        .map(|raw| parse_cookies(raw))
+        .unwrap_or_default();
+
+    let bytes = axum::body::to_bytes(body, MAX_BODY)
+        .await
+        .map_err(|err| PageError::Io {
+            file: PathBuf::from("<body>"),
+            message: format!("не вдалося прочитати тіло запиту: {err}"),
+        })?;
+    let body_text = String::from_utf8_lossy(&bytes).into_owned();
+
+    let is_form = headers
+        .get("content-type")
+        .map(|value| value.starts_with("application/x-www-form-urlencoded"))
+        .unwrap_or(false);
+
+    Ok(RequestData {
+        method: parts.method.as_str().to_owned(),
+        path: parts.uri.path().to_owned(),
+        params: params
+            .iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect(),
+        query: parts.uri.query().map(parse_urlencoded).unwrap_or_default(),
+        form: if is_form {
+            parse_urlencoded(&body_text)
+        } else {
+            Default::default()
+        },
+        is_htmx: headers.contains_key("hx-request"),
+        headers,
+        cookies,
+        body: body_text,
+    })
+}
+
+/// Скласти HTTP-відповідь із того, що попросив скрипт.
+fn build_response(body: String, state: ResponseData, is_htmx: bool) -> Response {
+    let mut status = StatusCode::from_u16(state.status).unwrap_or(StatusCode::OK);
+    let mut response = Response::new(Body::from(body));
+
+    {
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        // Vary самого по собі мало: деякі CDN його ігнорують і можуть віддати
+        // фрагмент замість сторінки (RISKS 2.9), тому HTMX-відповіді не кешуємо.
+        headers.insert(header::VARY, HeaderValue::from_static("HX-Request"));
+        if is_htmx {
+            headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            );
+        }
+
+        for (name, value) in &state.headers {
+            insert_header(headers, name, value);
+        }
+        for cookie in &state.cookies {
+            if let Ok(value) = HeaderValue::from_str(cookie) {
+                headers.append(header::SET_COOKIE, value);
+            }
+        }
+        if let Some(trigger) = rhaix_script::triggers_header(&state.triggers) {
+            insert_header(headers, "HX-Trigger", &trigger);
+            insert_header(headers, "Access-Control-Expose-Headers", "HX-Trigger");
+        }
+        if state.refresh {
+            insert_header(headers, "HX-Refresh", "true");
+        }
+        if let Some(url) = &state.redirect {
+            // htmx сам не піде за 302 у фрагменті — для нього потрібен заголовок,
+            // а для звичайного заходу — звичайний редірект.
+            if is_htmx {
+                insert_header(headers, "HX-Redirect", url);
+            } else {
+                insert_header(headers, "Location", url);
+                status = StatusCode::SEE_OTHER;
+            }
+        }
+    }
+
+    *response.status_mut() = status;
     response
 }
 
-/// Відрендерити сторінку і, якщо треба, вкласти її в layout.
+fn insert_header(headers: &mut axum::http::HeaderMap, name: &str, value: &str) {
+    match (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(value),
+    ) {
+        (Ok(name), Ok(value)) => {
+            headers.insert(name, value);
+        }
+        // Найчастіша причина — не-ASCII у значенні. Мовчки загубити заголовок
+        // гірше, ніж сказати про це: користувач шукатиме зниклий тост годинами.
+        _ => tracing::warn!("заголовок `{name}` не додано: значення має бути ASCII"),
+    }
+}
+
+/// Виконати логіку сторінки, відрендерити її і, якщо треба, вкласти в layout.
 ///
 /// Правило фрагмента (SYNTAX 6.3): layout додається лише тоді, коли сторінку
 /// відкривають напряму. Для HTMX-запиту віддається сама розмітка сторінки.
 fn render_page(
     state: &AppState,
     file: &Path,
-    path: &str,
-    is_htmx: bool,
-) -> Result<String, PageError> {
-    let template = load_template(&state.engine, file, &state.config.root)?;
-    let mut scope = stub_scope(path, is_htmx);
+    data: RequestData,
+) -> Result<(String, ResponseData), PageError> {
+    let _deadline = Deadline::new(SCRIPT_BUDGET);
 
-    let rendered = template
-        .render(&state.engine, &mut scope, Slots::default())
+    let is_htmx = data.is_htmx;
+    let path = data.path.clone();
+    let response = ScriptResponse::new();
+    let template = load_template(&state.engine, file, &state.config.root)?;
+
+    let mut scope = new_scope(
+        &response,
+        &state.state,
+        data,
+        display_path(&state.config.root, file),
+        Map::new(),
+    );
+    let returned = template
+        .run_script(&state.engine, &mut scope)
         .map_err(|diagnostic| PageError::Template {
             diagnostic: template.describe(&diagnostic),
         })?;
-    for warning in &rendered.warnings {
-        tracing::warn!("{path}: {warning}");
+
+    let mut state_now = response.take();
+    // `res.redirect(...)`, `res.status(404)`, `hx.refresh()` — розмітку не рендеримо.
+    if state_now.stop {
+        return Ok((String::new(), state_now));
     }
 
+    // Значення, повернуте скриптом, стає тілом як є: `return "";` прибирає
+    // елемент, `return raw(...)` віддає готовий HTML.
+    let page_html = if !returned.is_unit() {
+        display(&returned)
+    } else {
+        let rendered = template
+            .render(&state.engine, &mut scope, Slots::default())
+            .map_err(|diagnostic| PageError::Template {
+                diagnostic: template.describe(&diagnostic),
+            })?;
+        for warning in &rendered.warnings {
+            tracing::warn!("{path}: {warning}");
+        }
+        rendered.html
+    };
+
     if is_htmx {
-        return Ok(rendered.html);
+        state_now = response.take();
+        return Ok((page_html, state_now));
     }
 
     let layout_path = state.config.layout_path();
     if !layout_path.is_file() {
-        return Ok(rendered.html);
+        state_now = response.take();
+        return Ok((page_html, state_now));
     }
 
+    // `page` (title та інше) переїжджає зі сторінки в layout — саме тому layout
+    // рендериться після неї, а не навколо неї.
+    let page_map = scope.get_value::<Map>("page").unwrap_or_default();
+    let request = scope
+        .get_value::<ScriptRequest>("req")
+        .expect("req завжди в scope");
+
     let layout = load_template(&state.engine, &layout_path, &state.config.root)?;
+    let mut layout_scope = new_scope(
+        &response,
+        &state.state,
+        request.data().clone(),
+        display_path(&state.config.root, &layout_path),
+        page_map,
+    );
+    let _ = layout
+        .run_script(&state.engine, &mut layout_scope)
+        .map_err(|diagnostic| PageError::Template {
+            diagnostic: layout.describe(&diagnostic),
+        })?;
+
     let head = collect_head(&state.config.public_dir());
     let scripts = collect_scripts(&state.config.public_dir());
-    let mut layout_scope = stub_scope(path, is_htmx);
     let wrapped = layout
         .render(
             &state.engine,
             &mut layout_scope,
             Slots {
-                slot: &rendered.html,
+                slot: &page_html,
                 head: &head,
                 scripts: &scripts,
             },
@@ -244,7 +428,30 @@ fn render_page(
         .map_err(|diagnostic| PageError::Template {
             diagnostic: layout.describe(&diagnostic),
         })?;
-    Ok(wrapped.html)
+    for warning in &wrapped.warnings {
+        tracing::warn!("{path}: {warning}");
+    }
+
+    state_now = response.take();
+    Ok((wrapped.html, state_now))
+}
+
+/// Scope одного рендеру: об'єкти зі специфікації і більше нічого.
+fn new_scope(
+    response: &ScriptResponse,
+    state: &ScriptState,
+    data: RequestData,
+    source: String,
+    page: Map,
+) -> Scope<'static> {
+    let mut scope = Scope::new();
+    scope.push("req", ScriptRequest::new(data));
+    scope.push("res", response.clone());
+    scope.push("hx", Hx::new(response.clone()));
+    scope.push("state", state.clone());
+    scope.push("log", Log { source });
+    scope.push_dynamic("page", Dynamic::from_map(page));
+    scope
 }
 
 /// Прочитати й скомпілювати `.rhx`.
@@ -262,54 +469,6 @@ fn load_template(engine: &Engine, file: &Path, root: &Path) -> Result<Template, 
     Template::compile(source.clone(), engine).map_err(|diagnostic| PageError::Template {
         diagnostic: diagnostic.render(&source),
     })
-}
-
-/// Дані-заглушки замість frontmatter (M2).
-///
-/// Це єдине місце в M1, яке знає щось про вміст сторінок, і воно зникне
-/// повністю, щойно frontmatter почне виконуватись.
-fn stub_scope(path: &str, is_htmx: bool) -> Scope<'static> {
-    let mut scope = Scope::new();
-
-    let mut page = Map::new();
-    page.insert("title".into(), Dynamic::from("rhaix"));
-    scope.push_dynamic("page", Dynamic::from_map(page));
-    scope.push("path", path.to_owned());
-    scope.push("is_htmx", is_htmx);
-
-    let todos: Vec<Dynamic> = [
-        ("Купити молоко", true),
-        ("Зробити домашку", false),
-        ("Написати M2", false),
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(index, (title, done))| {
-        let mut todo = Map::new();
-        todo.insert("id".into(), Dynamic::from(index as i64 + 1));
-        todo.insert("title".into(), Dynamic::from(title));
-        todo.insert("done".into(), Dynamic::from(done));
-        Dynamic::from_map(todo)
-    })
-    .collect();
-    scope.push_dynamic("todos", Dynamic::from(todos));
-
-    let features: Vec<Dynamic> = [
-        "інтерполяція {{ }} з екрануванням за контекстом",
-        "директиви @if / @else / @for / @class / @attr",
-        "помилки з позицією у файлі .rhx",
-    ]
-    .into_iter()
-    .map(Dynamic::from)
-    .collect();
-    scope.push_dynamic("features", Dynamic::from(features));
-
-    // для сторінки про екранування
-    scope.push("dangerous", "<script>alert(1)</script>");
-    scope.push("markup", "<b>це справді жирний текст</b>");
-    scope.push("evil", "javascript:alert(document.cookie)");
-
-    scope
 }
 
 /// Усі `public/**.css` — у `<head>`.
@@ -356,7 +515,7 @@ fn list_assets(public: &Path, extension: &str) -> Vec<String> {
     found
 }
 
-async fn not_found(_: Request<Body>) -> Response {
+async fn not_found(_: HttpRequest<Body>) -> Response {
     (StatusCode::NOT_FOUND, "404").into_response()
 }
 
@@ -422,7 +581,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             display_path(&config.root, &route.file)
         );
     }
-    println!("  M1: `{{{{ }}}}` і директиви працюють; дані — заглушки, компоненти — з M3\n");
+    println!("  M2: frontmatter виконується; компоненти — з M3, кеш і watcher — з M6\n");
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     axum::serve(listener, router)

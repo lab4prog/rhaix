@@ -655,6 +655,7 @@ version = "0.0.1"
 dependencies = [
  "rhai",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

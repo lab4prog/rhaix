@@ -1,0 +1,19 @@
+---
+page.title = "Форма";
+let saved = "";
+if req.method == "POST" {
+    let title = req.form("title").trim();
+    if title == "" {
+        res.status(422);
+    } else {
+        saved = title;
+        hx.toast(`Збережено: ${title}`, "success");
+        hx.trigger("saved");
+    }
+}
+---
+<form hx-post="/form">
+  <input name="title" value={saved}>
+  <b @if={saved}>{{ saved }}</b>
+  <i @else>порожньо</i>
+</form>

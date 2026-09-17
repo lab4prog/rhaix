@@ -5,7 +5,7 @@
 //! `<script>`) і `url()` (єдиний безпечний спосіб зібрати посилання зі станом).
 //! Решта stdlib — дати, рядки, числа — приїде в M5 окремим модулем.
 
-use rhai::{Dynamic, Engine, EvalAltResult, Map};
+use rhai::{Dynamic, Engine, EvalAltResult, ImmutableString, Map};
 
 /// Готовий HTML, який не екранується повторно.
 ///
@@ -29,6 +29,17 @@ impl std::fmt::Display for Html {
 
 /// Зареєструвати базові функції в рушії.
 pub fn register_core(engine: &mut Engine) {
+    // `trim()` у Rhai змінює рядок на місці й повертає `()`. Через це
+    // `let title = req.form("title").trim();` тихо давав порожнє значення —
+    // знайдено на демо-формі в M2. Перекриваємо своєю версією: вона так само
+    // підрізає рядок на місці, але ще й повертає результат, тому обидва
+    // способи запису працюють однаково.
+    engine.register_fn("trim", |text: &mut ImmutableString| -> ImmutableString {
+        let trimmed: ImmutableString = text.trim().into();
+        *text = trimmed.clone();
+        trimmed
+    });
+
     engine.register_type_with_name::<Html>("Html");
     engine.register_fn("to_string", |html: &mut Html| html.0.clone());
     engine.register_fn("raw", raw);
@@ -136,6 +147,14 @@ mod tests {
             return html.0.clone();
         }
         crate::display(&value)
+    }
+
+    #[test]
+    fn trim_returns_the_trimmed_value() {
+        // У Rhai `trim()` мутує на місці й повертає (); наша версія повертає
+        // результат, інакше `let t = s.trim();` тихо давало б порожнє значення.
+        assert_eq!(eval(r#"let s = "  текст  "; s.trim()"#), "текст");
+        assert_eq!(eval(r#"let s = "  текст  "; s.trim(); s"#), "текст");
     }
 
     #[test]
