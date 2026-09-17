@@ -429,10 +429,7 @@ pub fn build_watched(
             // теки, з якої запустили процес. Інакше `rhaix dev ../app` створює
             // базу не там, і після деплою це виглядає як зникнення даних.
             let url = resolve_db_url(&config.root, &settings.url);
-            let database =
-                Database::open(&settings.driver, &url).map_err(|err| anyhow::anyhow!("{err}"))?;
-            // Міграції застосовуються на старті: сервер, який піднявся, завжди
-            // має схему, яку очікують сторінки.
+            let driver = settings.driver.clone();
             let migrations: Vec<(String, String)> = config
                 .files
                 .list(&config.migrations_dir(), "sql")
@@ -443,13 +440,30 @@ pub fn build_watched(
                     Some((name, body))
                 })
                 .collect();
-            let applied = database
-                .migrate(&migrations)
-                .map_err(|err| anyhow::anyhow!("{err}"))?;
-            for name in &applied {
-                tracing::info!("міграція застосована: {name}");
-            }
-            database
+
+            // Відкриття бази й міграції — в окремому потоці. Синхронний драйвер
+            // Postgres усередині крутить власний рантайм через `block_on`, а
+            // старт сервера вже в контексті tokio: виклик звідти панікує з
+            // «Cannot start a runtime from within a runtime». Запитний шлях
+            // цього не має — він іде в `spawn_blocking`, поза контекстом.
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| -> anyhow::Result<Database> {
+                        let database = Database::open(&driver, &url)
+                            .map_err(|err| anyhow::anyhow!("{err}"))?;
+                        // Сервер, який піднявся, завжди має схему, яку очікують
+                        // сторінки.
+                        let applied = database
+                            .migrate(&migrations)
+                            .map_err(|err| anyhow::anyhow!("{err}"))?;
+                        for name in &applied {
+                            tracing::info!("міграція застосована: {name}");
+                        }
+                        Ok(database)
+                    })
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("потік ініціалізації бази впав"))?
+            })?
         }
         None => Database::unconfigured(),
     };

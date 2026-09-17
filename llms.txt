@@ -244,8 +244,10 @@ Config, `rhaix.toml`:
 port = 3000
 
 [db]
-driver = "sqlite"
-url = "data/app.db"       # relative to the project root, not the working dir
+driver = "sqlite"                 # sqlite | postgres
+url = "data/app.db"               # relative to the project root, not the working dir
+# driver = "postgres"
+# url = "postgres://user:pass@host:5432/dbname"
 
 [app]
 csrf = true               # default
@@ -256,6 +258,13 @@ http_timeout = 10
 
 The session signing key comes from `RHAIX_SECRET`, then `[app] secret`, then a
 `.rhaix-secret` file created by `rhaix dev`. In production, set `RHAIX_SECRET`.
+
+Drivers: `sqlite` and `postgres`. The portable layer (`db.find/get/…`) and `?`
+placeholders are identical on both — switching driver is a config change, not a
+code change. Two Postgres specifics to know: the portable layer assumes a
+primary key column named `id` (a `serial`/`bigserial`); and in **native** queries
+you still write `?` placeholders (the driver rewrites them to `$1, $2, …`), so
+do not mix in `$1` yourself.
 
 ## Sessions and CSRF
 

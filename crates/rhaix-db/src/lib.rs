@@ -10,6 +10,7 @@
 //! параметризований SQL. Драйвер, для якого SQL не рідний (Mongo, Surreal),
 //! перевизначить ці методи — саме заради цього вони й у трейті.
 
+mod postgres;
 mod query;
 mod sqlite;
 
@@ -20,6 +21,7 @@ use std::sync::Arc;
 use rhai::{Dynamic, Map};
 
 pub use query::{Sql, PRIMARY_KEY};
+pub use postgres::PostgresDriver;
 pub use sqlite::SqliteDriver;
 
 /// Помилка роботи з базою.
@@ -167,9 +169,10 @@ impl Database {
     pub fn open(driver: &str, url: &str) -> Result<Self, DbError> {
         match driver {
             "sqlite" => Ok(Self::new(SqliteDriver::open(url)?)),
-            // Postgres, Mongo й Surreal — M11; трейт до них уже готовий.
+            "postgres" | "postgresql" => Ok(Self::new(PostgresDriver::open(url)?)),
+            // Mongo й Surreal — далі; трейт до них уже готовий.
             other => Err(DbError::Config(format!(
-                "невідомий драйвер `{other}`; поки підтримується лише `sqlite`"
+                "невідомий драйвер `{other}`; підтримуються `sqlite` і `postgres`"
             ))),
         }
     }

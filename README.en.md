@@ -39,7 +39,8 @@ What already works:
 - **database**: a `[db]` section in `rhaix.toml`, migrations from
   `migrations/*.sql` applied at startup, native queries (`db.query`), portable
   CRUD (`db.find/get/insert/…`) with an operator dictionary, and `db.tx` for
-  all-or-nothing writes;
+  all-or-nothing writes; **two drivers, `sqlite` and `postgres`** — the same
+  `.rhx` runs on both, switching driver is a config change, not a code change;
 - **sessions and CSRF**: `session.set("user", name)` is a signed cookie that
   survives a server restart. CSRF needs neither switching on nor remembering:
   a form gets a hidden field, a button with `hx-delete` gets a header, and a
@@ -124,7 +125,7 @@ one records what was measured and what went wrong.
 
 | Crate | Role |
 |---|---|
-| `rhaix-db` | driver trait, portable CRUD → SQL, SQLite driver, transactions, migrations |
+| `rhaix-db` | driver trait, portable CRUD → SQL, SQLite and PostgreSQL drivers, transactions, migrations |
 | `rhaix-parser` | sources, spans, `file:line:column`, frontmatter splitting |
 | `rhaix-script` | the Rhai engine, limits, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, sessions and CSRF, `http`, dates and strings |
 | `rhaix-template` | `.rhx` lexer, AST, expression compilation, components, renderer, escaping |

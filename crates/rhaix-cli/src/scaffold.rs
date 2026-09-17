@@ -12,6 +12,9 @@ port = 3000
 [db]
 driver = "sqlite"
 url    = "data/app.db"
+# Для PostgreSQL — той самий застосунок, інша секція:
+# driver = "postgres"
+# url    = "postgres://user:pass@localhost:5432/app"
 "##;
 
 const LAYOUT: &str = r##"---

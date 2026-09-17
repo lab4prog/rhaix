@@ -21,7 +21,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M9 (доки й рецепти)
+## Стан: M11 (драйвер PostgreSQL)
 
 Що вже працює:
 
@@ -55,6 +55,8 @@ page.title = "ToDo";
   файлу — підключати нічого не треба;
 - **транзакції**: `db.tx(|t| { … })` тримає одне з'єднання від `begin` до
   `commit`; будь-яка помилка всередині означає відкат;
+- **два драйвери бази**: `sqlite` і `postgres`. Той самий `.rhx` працює на обох —
+  зміна драйвера це зміна `rhaix.toml`, а не коду (перевірено на `bench/`);
 - **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (11.3 МБ), який
   нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
   із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
@@ -75,7 +77,7 @@ page.title = "ToDo";
 `examples/demo/migrations/001_todos.sql`.
 
 Чого ще немає: автентифікації з паролями й `markdown()` (M12),
-драйверів Postgres/Mongo/SurrealDB (M11).
+драйверів MongoDB/SurrealDB (решта M11).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -130,6 +132,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M8-FINDINGS.md](M8-FINDINGS.md) | прод: трейт `Files`, один бінарник, два режими сервера |
 | [M5.2-FINDINGS.md](M5.2-FINDINGS.md) | сесії, CSRF без ручної роботи, `http`, дати й гроші |
 | [M9-FINDINGS.md](M9-FINDINGS.md) | доки як тест: шість розбіжностей між спекою й кодом |
+| [M11-FINDINGS.md](M11-FINDINGS.md) | драйвер PostgreSQL: `?`→`$N`, `RETURNING`, коерція типів |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 
@@ -137,7 +140,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 
 | Крейт | Роль |
 |---|---|
-| `rhaix-db` | трейт драйвера, переносимий CRUD → SQL, драйвер SQLite, транзакції, міграції |
+| `rhaix-db` | трейт драйвера, переносимий CRUD → SQL, драйвери SQLite і PostgreSQL, транзакції, міграції |
 | `rhaix-parser` | джерела, спани, `файл:рядок:колонка`, розділення frontmatter |
 | `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, сесії й CSRF, `http`, дати й рядки, бенчмарк |
 | `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |
