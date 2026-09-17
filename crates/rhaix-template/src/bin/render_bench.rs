@@ -12,7 +12,7 @@ use std::time::Instant;
 use rhai::{Dynamic, Map, Scope};
 use rhaix_parser::Source;
 use rhaix_script::{engine, Limits};
-use rhaix_template::{Slots, Template};
+use rhaix_template::{Globals, Slots, Template};
 
 const ROWS: usize = 1000;
 /// Ворота M1 — інша величина, ніж ворота M0.
@@ -122,7 +122,7 @@ fn measure(engine: &rhai::Engine, text: &str, rows: &Dynamic, iters: usize) -> (
         scope.push_dynamic("rows", rows.clone());
         let started = Instant::now();
         let rendered = template
-            .render(engine, &mut scope, Slots::default())
+            .render(engine, &mut scope, Slots::default(), &Globals::default())
             .expect("рендер має працювати");
         samples.push(started.elapsed());
         std::hint::black_box(rendered);

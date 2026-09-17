@@ -86,8 +86,15 @@ impl Source {
         &self.text
     }
 
+    /// Текст за спаном. Межі підрізаються: спан із чужого файлу має давати
+    /// порожній рядок, а не паніку посеред запиту.
     pub fn slice(&self, span: Span) -> &str {
-        &self.text[span.start..span.end]
+        let end = span.end.min(self.text.len());
+        let start = span.start.min(end);
+        if !self.text.is_char_boundary(start) || !self.text.is_char_boundary(end) {
+            return "";
+        }
+        &self.text[start..end]
     }
 
     /// Кількість рядків (порожній файл — один рядок).

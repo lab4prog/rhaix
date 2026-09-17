@@ -1,0 +1,12 @@
+---
+let todos = props.todos ?? [];
+let left = todos.filter(|t| !t.done).len();
+---
+<ul class="todo-list">
+  <TodoItem @for={t in todos} todo={t} />
+  <li @if={todos.is_empty()} class="empty">Порожньо</li>
+</ul>
+
+<p class="hint">
+  Лишилось: <b>{{ left }}</b> із {{ todos.len() }}.
+</p>

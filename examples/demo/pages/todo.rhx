@@ -41,35 +41,25 @@ if req.method == "DELETE" {
     state.set("todos", todos);
     hx.toast("Видалено", "info");
 }
-
-let left = todos.filter(|t| !t.done).len();
 ---
 
 <div id="todo-app">
-  <h1>ToDo</h1>
+  <Ui.Card tone="wide">
+    <template slot="header"><h1>ToDo</h1></template>
 
-  <form hx-post="/todo" hx-target="#todo-app" hx-swap="outerHTML"
-        hx-on::after-request="this.reset()">
-    <input name="title" placeholder="Що зробити?" autocomplete="off"
-           @class={#{"invalid": error != ""}}>
-    <button>Додати</button>
-    <small @if={error} class="err">{{ error }}</small>
-  </form>
+    <form hx-post="/todo" hx-target="#todo-app" hx-swap="outerHTML"
+          hx-on::after-request="this.reset()">
+      <input name="title" placeholder="Що зробити?" autocomplete="off"
+             @class={#{"invalid": error != ""}}>
+      <button>Додати</button>
+      <small @if={error} class="err">{{ error }}</small>
+    </form>
 
-  <ul class="todo-list">
-    <li @for={t in todos} class="todo-item" @class={#{"completed": t.done}}>
-      <input type="checkbox" @attr={#{"checked": t.done}}
-             hx-patch={url("/todo", #{ id: t.id })}
-             hx-target="#todo-app" hx-swap="outerHTML">
-      <span>{{ t.title }}</span>
-      <button class="del" hx-delete={url("/todo", #{ id: t.id })}
-              hx-target="#todo-app" hx-swap="outerHTML">×</button>
-    </li>
-    <li @if={todos.is_empty()} class="empty">Порожньо</li>
-  </ul>
+    <TodoList todos={todos} />
+  </Ui.Card>
 
   <p class="hint">
-    Лишилось: <b>{{ left }}</b> із {{ todos.len() }}.
-    Уся логіка — у frontmatter цього файлу, дані в `state` (до M5 замість БД).
+    Розмітка списку — у <code>components/TodoList.rhx</code> і
+    <code>components/TodoItem.rhx</code>, картка — <code>components/ui/Card.rhx</code>.
   </p>
 </div>

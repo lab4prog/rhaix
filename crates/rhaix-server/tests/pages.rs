@@ -183,6 +183,56 @@ async fn script_error_is_shown_in_rhx_coordinates() {
     assert!(!body.contains("EvalAltResult"), "{body}");
 }
 
+// ------------------------------------------------------------- компоненти
+
+#[tokio::test]
+async fn components_render_with_props_and_slots() {
+    let (status, _, body) = call(htmx("/card")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    // іменований слот, props як змінні, булевий prop, вкладений компонент
+    assert!(body.contains("<header><h2>Картка</h2></header>"), "{body}");
+    assert!(body.contains(r#"<p class="greeting loud">"#), "{body}");
+    assert!(body.contains("Привіт, рhaix!"), "{body}");
+    assert!(body.contains("і слот теж"), "{body}");
+    assert!(
+        !body.contains("без додатку"),
+        "слот передано — запасний вміст не потрібен"
+    );
+}
+
+#[tokio::test]
+async fn component_does_not_see_page_variables() {
+    // Ізоляція scope (SYNTAX 5.3): змінна є на сторінці, але компонент її не
+    // бачить — і дізнається про це зрозумілою помилкою, а не порожнім місцем.
+    let (status, _, body) = call(htmx("/secret")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("невідома змінна `secret`"), "{body}");
+    assert!(body.contains("components/Nosy.rhx:1:"), "{body}");
+    assert!(body.contains("у ланцюжку"), "{body}");
+}
+
+#[tokio::test]
+async fn unknown_component_suggests_a_similar_name() {
+    let (status, _, body) = call(htmx("/typo")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("не знайдено"), "{body}");
+    assert!(body.contains("Greeting"), "підказка про схоже ім'я: {body}");
+}
+
+#[tokio::test]
+async fn component_cycle_is_caught_before_rendering() {
+    // Node-RED-стартер ловив це лімітом рекурсії під час запиту; тут цикл
+    // виявляється при компіляції, разом із повним ланцюжком.
+    let (status, _, body) = call(htmx("/cycle")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("циклічна залежність"), "{body}");
+    assert!(body.contains("ланцюжок"), "{body}");
+}
+
 #[tokio::test]
 async fn missing_page_is_a_404() {
     let (status, _, _) = call(get("/nope")).await;

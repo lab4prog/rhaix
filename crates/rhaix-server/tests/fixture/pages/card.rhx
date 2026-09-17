@@ -1,0 +1,8 @@
+---
+page.title = "Картка";
+let who = "рhaix";
+---
+<Ui.Card>
+  <template slot="header"><h2>{{ page.title }}</h2></template>
+  <Greeting name={who} loud>і слот теж</Greeting>
+</Ui.Card>

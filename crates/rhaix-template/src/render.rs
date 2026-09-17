@@ -3,19 +3,59 @@
 //! Дерево незмінне, тож на запит створюється лише буфер і `Scope`. Значення
 //! пишуться прямо в буфер (`write_display`), а екранування вибирається за
 //! контекстом, порахованим ще при компіляції.
+//!
+//! Компонент рендериться у **власному** `Scope`: він бачить лише свої props,
+//! слоти й глобальні об'єкти. Змінні батька йому недоступні — саме це робить
+//! компонент переносимим (SYNTAX 5.3).
+
+use std::collections::BTreeMap;
 
 use rhai::{Array, Dynamic, Engine, ImmutableString, Map, Scope};
 use rhaix_parser::{Source, Span};
-use rhaix_script::{truthy, write_display, Html};
+use rhaix_script::{truthy, write_display, Html, SlotSet};
 
 use crate::ast::*;
 use crate::error::{Diagnostic, Result};
 use crate::escape::{escape_html, is_event_attribute, sanitize_url, Context};
 use crate::expr::{Expr, Fast};
 
-/// Те, що ядро підставляє у службові теги layout.
+/// Скільки рівнів вкладених компонентів дозволено.
+///
+/// Циклічні залежності ловляться ще при компіляції, тож сюди можна дійти лише
+/// дуже глибокою (але скінченною) вкладеністю.
+const MAX_DEPTH: usize = 32;
+
+/// Значення, які бачить кожен файл: `req`, `res`, `hx`, `state`, `log`, `page`.
+///
+/// Компонент не успадковує scope батька, тому глобальні об'єкти передаються
+/// явно — інакше в компоненті не було б ні `req`, ні `page`.
+#[derive(Debug, Default, Clone)]
+pub struct Globals {
+    entries: Vec<(String, Dynamic)>,
+}
+
+impl Globals {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&mut self, name: impl Into<String>, value: Dynamic) -> &mut Self {
+        self.entries.push((name.into(), value));
+        self
+    }
+
+    /// Покласти глобальні об'єкти у свіжий scope.
+    pub fn apply(&self, scope: &mut Scope) {
+        for (name, value) in &self.entries {
+            scope.push_dynamic(name.as_str(), value.clone());
+        }
+    }
+}
+
+/// Те, що ядро підставляє у службові теги.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Slots<'a> {
+    /// Вміст `<slot/>` верхнього рівня — сторінка для layout.
     pub slot: &'a str,
     pub head: &'a str,
     pub scripts: &'a str,
@@ -28,17 +68,26 @@ pub struct Rendered {
     pub warnings: Vec<String>,
 }
 
-pub fn render(
-    source: &Source,
-    engine: &Engine,
+pub fn render<'a>(
+    source: &'a Source,
+    engine: &'a Engine,
     scope: &mut Scope,
-    nodes: &[Node],
-    slots: Slots<'_>,
+    nodes: &'a [Node],
+    slots: Slots<'a>,
+    globals: &'a Globals,
 ) -> Result<Rendered> {
+    let mut frame = SlotFrame::new();
+    if !slots.slot.is_empty() {
+        frame.insert(String::new(), slots.slot.to_owned());
+    }
+
     let mut renderer = Renderer {
         source,
         engine,
+        globals,
         slots,
+        frames: vec![frame],
+        depth: 0,
         out: String::with_capacity(source.text().len() * 2),
         scratch: String::new(),
         warnings: Vec::new(),
@@ -51,26 +100,36 @@ pub fn render(
     })
 }
 
+/// Слоти одного рівня: `""` — слот за замовчуванням.
+type SlotFrame = BTreeMap<String, String>;
+
 struct Renderer<'a> {
+    /// Джерело поточного файлу. Під час рендеру компонента підмінюється на його
+    /// власне — інакше спани текстових вузлів вказували б не туди.
     source: &'a Source,
     engine: &'a Engine,
+    globals: &'a Globals,
     slots: Slots<'a>,
+    frames: Vec<SlotFrame>,
+    depth: usize,
     out: String,
+    /// Буфери, що живуть довше за один вузол: інакше кожен рядок таблиці
+    /// коштував би кількох алокацій.
     scratch: String,
     warnings: Vec<String>,
     /// Встановлюється маркером `-}}`: наступний текст іде без початкових пробілів.
     trim_next: bool,
 }
 
-impl Renderer<'_> {
-    fn nodes(&mut self, nodes: &[Node], scope: &mut Scope) -> Result<()> {
+impl<'a> Renderer<'a> {
+    fn nodes(&mut self, nodes: &'a [Node], scope: &mut Scope) -> Result<()> {
         for node in nodes {
             self.node(node, scope)?;
         }
         Ok(())
     }
 
-    fn node(&mut self, node: &Node, scope: &mut Scope) -> Result<()> {
+    fn node(&mut self, node: &'a Node, scope: &mut Scope) -> Result<()> {
         match node {
             Node::Text(span) => {
                 let text = self.source.slice(*span);
@@ -87,26 +146,22 @@ impl Renderer<'_> {
             Node::Element(element) => self.element(element, scope),
             Node::Conditional(conditional) => self.conditional(conditional, scope),
             Node::Each(each) => self.each(each, scope),
+            Node::Component(component) => self.component(component, scope),
+            Node::Slot(slot) => self.slot(slot, scope),
             Node::Special(special) => {
                 let text = match special {
-                    Special::Slot(_) => self.slots.slot,
                     Special::Head(_) => self.slots.head,
                     Special::Scripts(_) => self.slots.scripts,
                 };
                 self.out.push_str(text);
                 Ok(())
             }
-            Node::Component(component) => Err(Diagnostic::new(
-                format!("компонент `<{}>` ще не підтримується", component.name),
-                component.span,
-            )
-            .with_hint("компоненти, props і слоти з'являться в M3")),
         }
     }
 
     // ------------------------------------------------------------ вивід
 
-    fn interp(&mut self, interp: &Interp, scope: &mut Scope) -> Result<()> {
+    fn interp(&mut self, interp: &'a Interp, scope: &mut Scope) -> Result<()> {
         if interp.trim_left {
             let trimmed = self.out.trim_end().len();
             self.out.truncate(trimmed);
@@ -121,9 +176,7 @@ impl Renderer<'_> {
         match interp.expr.fast() {
             Fast::Var(name) => {
                 if let Some(value) = scope.get(name) {
-                    let value: &Dynamic = value;
                     let (context, span) = (interp.context, interp.expr.span());
-                    // SAFETY немає: це звичайні непересічні позичення
                     let out = &mut *self;
                     out.write_value(value, context, span)?;
                     handled = true;
@@ -190,7 +243,7 @@ impl Renderer<'_> {
 
     // ---------------------------------------------------------- елементи
 
-    fn element(&mut self, element: &Element, scope: &mut Scope) -> Result<()> {
+    fn element(&mut self, element: &'a Element, scope: &mut Scope) -> Result<()> {
         let dynamic_class = match &element.bind.class {
             Some(expr) => Some(class_list(&expr.eval(self.engine, scope)?)),
             None => None,
@@ -278,8 +331,8 @@ impl Renderer<'_> {
 
         if let Some(expr) = &element.bind.html {
             let value = expr.eval(self.engine, scope)?;
-            self.scratch.clear();
             let mut scratch = std::mem::take(&mut self.scratch);
+            scratch.clear();
             write_display(&mut scratch, &value);
             self.out.push_str(&scratch);
             self.scratch = scratch;
@@ -296,7 +349,7 @@ impl Renderer<'_> {
         Ok(())
     }
 
-    fn attribute(&mut self, attr: &Attribute, scope: &mut Scope) -> Result<()> {
+    fn attribute(&mut self, attr: &'a Attribute, scope: &mut Scope) -> Result<()> {
         match &attr.value {
             AttrValue::Boolean => {
                 self.out.push(' ');
@@ -340,7 +393,7 @@ impl Renderer<'_> {
     }
 
     /// Вміст значення атрибута (частини тексту й інтерполяції) без лапок.
-    fn attr_value(&mut self, attr: &Attribute, scope: &mut Scope) -> Result<()> {
+    fn attr_value(&mut self, attr: &'a Attribute, scope: &mut Scope) -> Result<()> {
         let AttrValue::Parts(parts) = &attr.value else {
             return Ok(());
         };
@@ -435,7 +488,7 @@ impl Renderer<'_> {
 
     // ------------------------------------------------------ потік керування
 
-    fn conditional(&mut self, conditional: &Conditional, scope: &mut Scope) -> Result<()> {
+    fn conditional(&mut self, conditional: &'a Conditional, scope: &mut Scope) -> Result<()> {
         for branch in &conditional.branches {
             match &branch.condition {
                 Some(expr) => {
@@ -450,7 +503,7 @@ impl Renderer<'_> {
         Ok(())
     }
 
-    fn each(&mut self, each: &Each, scope: &mut Scope) -> Result<()> {
+    fn each(&mut self, each: &'a Each, scope: &mut Scope) -> Result<()> {
         let list = each.list.eval(self.engine, scope)?;
 
         // Колекція не матеріалізується: клонується лише той елемент, який
@@ -509,7 +562,7 @@ impl Renderer<'_> {
 
     fn iteration(
         &mut self,
-        each: &Each,
+        each: &'a Each,
         scope: &mut Scope,
         index: usize,
         total: usize,
@@ -547,6 +600,147 @@ impl Renderer<'_> {
         scope.rewind(base);
         Ok(())
     }
+
+    // ---------------------------------------------------------- компоненти
+
+    fn component(&mut self, component: &'a Component, scope: &mut Scope) -> Result<()> {
+        if self.depth >= MAX_DEPTH {
+            return Err(Diagnostic::new(
+                format!("забагато вкладених компонентів (більше {MAX_DEPTH})"),
+                component.span,
+            ));
+        }
+
+        // 1. props обчислюються у scope батька
+        let props = self.collect_props(component, scope)?;
+
+        // 2. слоти теж рендеряться у scope батька (SYNTAX 5.4)
+        let mut frame = SlotFrame::new();
+        if !component.children.is_empty() {
+            let html = self.capture(&component.children, scope)?;
+            frame.insert(String::new(), html);
+        }
+        for (name, nodes) in &component.named {
+            let html = self.capture(nodes, scope)?;
+            frame.insert(name.clone(), html);
+        }
+
+        // 3. свій scope: props, слоти й глобальні об'єкти — і більше нічого
+        let mut child = Scope::new();
+        self.globals.apply(&mut child);
+        for (key, value) in props.iter() {
+            if is_plain_name(key) {
+                child.push_dynamic(key.as_str(), value.clone());
+            }
+        }
+        child.push_dynamic("props", Dynamic::from_map(props));
+        child.push(
+            "slots",
+            SlotSet::new(frame.keys().filter(|k| !k.is_empty()).cloned().collect()),
+        );
+
+        let template = &component.template;
+        let frame_name = template.source().path().display().to_string();
+
+        // 4. логіка компонента
+        let returned = template
+            .run_script(self.engine, &mut child)
+            .map_err(|diagnostic| {
+                diagnostic
+                    .in_file(template.source_arc())
+                    .in_frame(frame_name.clone())
+            })?;
+        if !returned.is_unit() {
+            // Компонент, як і сторінка, може віддати готове тіло замість розмітки
+            self.out.push_str(&rhaix_script::display(&returned));
+            return Ok(());
+        }
+
+        // 5. рендер розмітки компонента — у його власному джерелі
+        let previous_source = std::mem::replace(&mut self.source, template.source());
+        self.frames.push(frame);
+        self.depth += 1;
+
+        let result = self
+            .nodes(template.nodes(), &mut child)
+            .map_err(|diagnostic| {
+                diagnostic
+                    .in_file(template.source_arc())
+                    .in_frame(frame_name)
+            });
+
+        self.depth -= 1;
+        self.frames.pop();
+        self.source = previous_source;
+        result
+    }
+
+    /// Обчислити props у порядку запису: пізніший `{...spread}` перекриває раніші.
+    fn collect_props(&mut self, component: &'a Component, scope: &mut Scope) -> Result<Map> {
+        let mut props = Map::new();
+        for attr in &component.attrs {
+            match &attr.value {
+                AttrValue::Boolean => {
+                    props.insert(attr.name.as_str().into(), Dynamic::from(true));
+                }
+                AttrValue::Expr(expr) => {
+                    let value = expr.eval(self.engine, scope)?;
+                    props.insert(attr.name.as_str().into(), value);
+                }
+                AttrValue::Parts(parts) => {
+                    let mut text = String::new();
+                    for part in parts {
+                        match part {
+                            AttrPart::Text(span) => text.push_str(self.source.slice(*span)),
+                            AttrPart::Interp(expr) => {
+                                let value = expr.eval(self.engine, scope)?;
+                                write_display(&mut text, &value);
+                            }
+                        }
+                    }
+                    props.insert(attr.name.as_str().into(), Dynamic::from(text));
+                }
+                AttrValue::Spread(expr) => {
+                    let value = expr.eval(self.engine, scope)?;
+                    let Some(map) = value.read_lock::<Map>() else {
+                        return Err(Diagnostic::new("розпакувати можна лише мапу", expr.span()));
+                    };
+                    for (key, value) in map.iter() {
+                        props.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        Ok(props)
+    }
+
+    /// Відрендерити вузли в окремий рядок — так збирається вміст слота.
+    fn capture(&mut self, nodes: &'a [Node], scope: &mut Scope) -> Result<String> {
+        let saved = std::mem::take(&mut self.out);
+        let saved_trim = std::mem::replace(&mut self.trim_next, false);
+        let result = self.nodes(nodes, scope);
+        let captured = std::mem::replace(&mut self.out, saved);
+        self.trim_next = saved_trim;
+        result.map(|_| captured)
+    }
+
+    fn slot(&mut self, slot: &'a SlotNode, scope: &mut Scope) -> Result<()> {
+        let name = slot.name.clone().unwrap_or_default();
+        let content = self
+            .frames
+            .last()
+            .and_then(|frame| frame.get(&name))
+            .cloned();
+
+        match content {
+            Some(html) if !html.trim().is_empty() => {
+                self.out.push_str(&html);
+                Ok(())
+            }
+            // слот не передали — показуємо запасний вміст
+            _ => self.nodes(&slot.fallback, scope),
+        }
+    }
 }
 
 /// Умова `@if` обчислюється тим самим шляхом, що й інтерполяція, але без виводу.
@@ -557,6 +751,17 @@ fn eval_condition(expr: &Expr, engine: &Engine, scope: &mut Scope) -> Result<Dyn
         }
     }
     expr.eval(engine, scope)
+}
+
+/// Чи можна зробити з імені prop-а звичайну змінну (`data-x` — ні).
+fn is_plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .next()
+            .map(|ch| ch.is_alphabetic() || ch == '_')
+            .unwrap_or(false)
+        && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
 }
 
 /// Контекст значення атрибута визначається його іменем.

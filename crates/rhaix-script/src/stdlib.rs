@@ -27,6 +27,16 @@ impl std::fmt::Display for Html {
     }
 }
 
+/// Які слоти передав батько — видно в компоненті як `slots`.
+#[derive(Debug, Default, Clone)]
+pub struct SlotSet(std::sync::Arc<Vec<String>>);
+
+impl SlotSet {
+    pub fn new(names: Vec<String>) -> Self {
+        Self(std::sync::Arc::new(names))
+    }
+}
+
 /// Зареєструвати базові функції в рушії.
 pub fn register_core(engine: &mut Engine) {
     // `trim()` у Rhai змінює рядок на місці й повертає `()`. Через це
@@ -39,6 +49,13 @@ pub fn register_core(engine: &mut Engine) {
         *text = trimmed.clone();
         trimmed
     });
+
+    engine
+        .register_type_with_name::<SlotSet>("SlotSet")
+        .register_fn("has", |slots: &mut SlotSet, name: &str| {
+            slots.0.iter().any(|found| found == name)
+        })
+        .register_fn("is_empty", |slots: &mut SlotSet| slots.0.is_empty());
 
     engine.register_type_with_name::<Html>("Html");
     engine.register_fn("to_string", |html: &mut Html| html.0.clone());

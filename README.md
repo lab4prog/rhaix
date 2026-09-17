@@ -19,12 +19,14 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M2 (логіка у файлі)
+## Стан: M3 (компоненти)
 
 Що вже працює:
 
 - `rhaix dev <тека>` — маршрути будуються зі структури `pages/`;
 - **frontmatter виконується**: `req`, `res`, `hx`, `log`, `state` доступні в кожному `.rhx`;
+- **компоненти**: `<TodoItem todo={t} />`, `<Ui.Card>` з props, `{...spread}`, слотами
+  (звичайними та іменованими) та ізольованим scope;
 - layout вантажиться лише при звичайному заході, на `HX-Request` іде фрагмент;
 - `{{ вираз }}` з контекстним екрануванням і директиви `@if` / `@else` / `@for` /
   `@class` / `@style` / `@attr` / `@html` / `@text` / `@oob`;
@@ -35,7 +37,10 @@ page.title = "ToDo";
 У демо працює живий Todo: додати, перемкнути, видалити — уся логіка у
 `examples/demo/pages/todo.rhx`.
 
-Чого ще немає: компонентів (M3), БД (M5), watcher-а й кешу (M6).
+Невідомий компонент і циклічна залежність — помилка **компіляції**, з підказкою
+про схоже ім'я й повним ланцюжком.
+
+Чого ще немає: БД (M5), watcher-а й кешу (M6).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -62,6 +67,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M0-FINDINGS.md](M0-FINDINGS.md) | результати спайку: виміри й сім знайдених тертя |
 | [M1-FINDINGS.md](M1-FINDINGS.md) | шаблонізатор: три зміни в спеці й оптимізації рендеру |
 | [M2-FINDINGS.md](M2-FINDINGS.md) | frontmatter: пастка `trim()`, кирилиця в заголовках, ворота M2 |
+| [M3-FINDINGS.md](M3-FINDINGS.md) | компоненти: діагностика з чужого файлу, слоти проти згортання |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 
@@ -71,11 +77,11 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 |---|---|
 | `rhaix-parser` | джерела, спани, `файл:рядок:колонка`, розділення frontmatter |
 | `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, бенчмарк |
-| `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, рендер, екранування |
+| `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |
 | `rhaix-server` | axum: маршрути, layout, правило фрагмента, статика |
 | `rhaix-cli` | `rhaix dev` |
 
-`rhaix-runtime` відокремиться від `rhaix-template` у M3, коли з'явиться реєстр
-компонентів.
+`rhaix-runtime` поки лишається частиною `rhaix-template`: реєстр компонентів
+виявився надто зв'язаним із парсером, щоб ділити їх зараз.
 
 Ліцензія: MIT або Apache-2.0.

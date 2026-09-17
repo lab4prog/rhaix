@@ -1,0 +1,8 @@
+---
+let name = props.name ?? "світ";
+let loud = props.loud ?? false;
+---
+<p class="greeting" @class={#{"loud": loud}}>
+  <span>Привіт, {{ name }}!</span>
+  <slot>без додатку</slot>
+</p>

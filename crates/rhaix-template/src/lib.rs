@@ -14,6 +14,7 @@ pub mod ast;
 pub mod error;
 pub mod escape;
 mod expr;
+mod loader;
 mod parse;
 mod render;
 
@@ -24,7 +25,8 @@ use rhaix_parser::{Source, Span};
 
 pub use ast::Node;
 pub use error::Diagnostic;
-pub use render::{Rendered, Slots};
+pub use loader::{Components, Loader, NoComponents};
+pub use render::{Globals, Rendered, Slots};
 
 use expr::Expr;
 
@@ -41,19 +43,32 @@ pub struct Template {
 }
 
 impl Template {
+    /// Скомпілювати файл без компонентів — для тестів і найпростіших сторінок.
     pub fn compile(source: Arc<Source>, engine: &Engine) -> Result<Self, Diagnostic> {
+        Self::compile_with(source, engine, &NoComponents)
+    }
+
+    /// Скомпілювати файл, резолвлячи компоненти через `components`.
+    pub fn compile_with(
+        source: Arc<Source>,
+        engine: &Engine,
+        components: &dyn Components,
+    ) -> Result<Self, Diagnostic> {
         let split = rhaix_parser::split(&source).map_err(|err| {
             let diagnostic = Diagnostic::new(err.message, err.span);
-            match err.hint {
+            let diagnostic = match err.hint {
                 Some(hint) => diagnostic.with_hint(hint),
                 None => diagnostic,
-            }
+            };
+            diagnostic.in_file(source.clone())
         })?;
-        let nodes = parse::parse(&source, engine, split.markup)?;
+        let nodes = parse::parse(&source, engine, components, split.markup)
+            .map_err(|diagnostic| diagnostic.in_file(source.clone()))?;
         let script = match split.frontmatter {
-            Some(span) if !source.slice(span).trim().is_empty() => {
-                Some(Expr::compile_script(engine, &source, span)?)
-            }
+            Some(span) if !source.slice(span).trim().is_empty() => Some(
+                Expr::compile_script(engine, &source, span)
+                    .map_err(|diagnostic| diagnostic.in_file(source.clone()))?,
+            ),
             _ => None,
         };
         Ok(Self {
@@ -70,7 +85,9 @@ impl Template {
     /// будь-що інше — готове тіло відповіді (`return "";` — порожнє).
     pub fn run_script(&self, engine: &Engine, scope: &mut Scope) -> Result<Dynamic, Diagnostic> {
         match &self.script {
-            Some(script) => script.eval(engine, scope),
+            Some(script) => script
+                .eval(engine, scope)
+                .map_err(|diagnostic| diagnostic.in_file(self.source.clone())),
             None => Ok(Dynamic::UNIT),
         }
     }
@@ -88,17 +105,24 @@ impl Template {
         &self.source
     }
 
+    /// Джерело як `Arc` — щоб діагностика могла нести його з собою.
+    pub fn source_arc(&self) -> Arc<Source> {
+        self.source.clone()
+    }
+
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
     }
 
-    pub fn render(
-        &self,
-        engine: &Engine,
+    pub fn render<'a>(
+        &'a self,
+        engine: &'a Engine,
         scope: &mut Scope,
-        slots: Slots<'_>,
+        slots: Slots<'a>,
+        globals: &'a Globals,
     ) -> Result<Rendered, Diagnostic> {
-        render::render(&self.source, engine, scope, &self.nodes, slots)
+        render::render(&self.source, engine, scope, &self.nodes, slots, globals)
+            .map_err(|diagnostic| diagnostic.in_file(self.source.clone()))
     }
 
     /// Готовий текст помилки з підсвіченим рядком файлу.
@@ -121,7 +145,7 @@ mod tests {
         let mut scope = Scope::new();
         fill(&mut scope);
         template
-            .render(&engine, &mut scope, Slots::default())
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
             .map(|rendered| rendered.html)
             .map_err(|d| template.describe(&d))
     }
@@ -405,7 +429,7 @@ mod tests {
         scope.push_dynamic("attrs", Dynamic::from_map(map));
 
         let rendered = template
-            .render(&engine, &mut scope, Slots::default())
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
             .unwrap();
         assert_eq!(rendered.html, "<div title=\"ок\"></div>");
         assert_eq!(rendered.warnings.len(), 1);
@@ -501,10 +525,210 @@ mod tests {
         assert!(message.contains("todoz"), "{message}");
     }
 
+    // ------------------------------------------------------- компоненти
+
+    /// Компоненти в пам'яті: тести не мають залежати від файлової системи.
+    struct TestComponents {
+        engine: Arc<rhai::Engine>,
+        sources: std::collections::BTreeMap<String, String>,
+        cache: std::sync::Mutex<std::collections::BTreeMap<String, Arc<Template>>>,
+    }
+
+    impl TestComponents {
+        fn new(engine: Arc<rhai::Engine>, files: &[(&str, &str)]) -> Self {
+            Self {
+                engine,
+                sources: files
+                    .iter()
+                    .map(|(name, text)| ((*name).to_owned(), (*text).to_owned()))
+                    .collect(),
+                cache: std::sync::Mutex::new(Default::default()),
+            }
+        }
+    }
+
+    impl Components for TestComponents {
+        fn resolve(&self, name: &str, span: Span) -> Result<Arc<Template>, Diagnostic> {
+            if let Some(found) = self.cache.lock().unwrap().get(name) {
+                return Ok(found.clone());
+            }
+            let text = self.sources.get(name).ok_or_else(|| {
+                Diagnostic::new(format!("компонент `<{name}>` не знайдено"), span)
+            })?;
+            let source = Arc::new(Source::new(format!("components/{name}.rhx"), text.clone()));
+            let template = Arc::new(Template::compile_with(source, &self.engine, self)?);
+            self.cache
+                .lock()
+                .unwrap()
+                .insert(name.to_owned(), template.clone());
+            Ok(template)
+        }
+    }
+
+    fn render_app(
+        page: &str,
+        components: &[(&str, &str)],
+        fill: impl FnOnce(&mut Scope),
+    ) -> Result<String, String> {
+        let engine = Arc::new(engine(Limits::default()));
+        let registry = TestComponents::new(engine.clone(), components);
+        let source = Arc::new(Source::new("pages/page.rhx", page));
+        let template = Template::compile_with(source.clone(), &engine, &registry)
+            .map_err(|d| d.render(&source))?;
+
+        let mut scope = Scope::new();
+        fill(&mut scope);
+        let _ = template
+            .run_script(&engine, &mut scope)
+            .map_err(|d| template.describe(&d))?;
+        template
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
+            .map(|rendered| rendered.html)
+            .map_err(|d| template.describe(&d))
+    }
+
     #[test]
-    fn components_report_that_they_arrive_in_m3() {
-        let message = error("<TodoItem todo={t} />");
-        assert!(message.contains("M3"), "{message}");
+    fn component_receives_props() {
+        let html = render_app(
+            "<ul><TodoItem @for={t in todos} todo={t} editable /></ul>",
+            &[(
+                "TodoItem",
+                "---\nlet todo = props.todo;\nlet editable = props.editable ?? false;\n---\n<li @class={#{\"done\": todo.done, \"editable\": editable}}>{{ todo.title }}</li>",
+            )],
+            |scope| {
+                scope.push_dynamic("todos", todos());
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            html,
+            "<ul><li class=\"done editable\">Купити молоко</li>\
+             <li class=\"editable\">Зробити домашку</li></ul>"
+        );
+    }
+
+    #[test]
+    fn props_are_visible_as_variables_too() {
+        let html = render_app(
+            "<Badge text=\"новий\" count={3} />",
+            &[("Badge", "<b>{{ text }}: {{ count }}</b>")],
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(html, "<b>новий: 3</b>");
+    }
+
+    #[test]
+    fn component_cannot_see_parent_variables() {
+        // Ізоляція scope (SYNTAX 5.3): компонент бачить лише props і глобальні
+        // об'єкти. Інакше він перестав би бути переносимим.
+        let message = render_app("<Leak />", &[("Leak", "<b>{{ secret }}</b>")], |scope| {
+            scope.push("secret", "таємниця");
+        })
+        .unwrap_err();
+        assert!(message.contains("невідома змінна `secret`"), "{message}");
+        assert!(message.contains("components/Leak.rhx"), "{message}");
+    }
+
+    #[test]
+    fn spread_fills_props() {
+        let html = render_app(
+            "<Badge {...data} />",
+            &[("Badge", "<b>{{ props.text }}/{{ props.count }}</b>")],
+            |scope| {
+                let mut map = rhai::Map::new();
+                map.insert("text".into(), Dynamic::from("з мапи"));
+                map.insert("count".into(), Dynamic::from(7_i64));
+                scope.push_dynamic("data", Dynamic::from_map(map));
+            },
+        )
+        .unwrap();
+        assert_eq!(html, "<b>з мапи/7</b>");
+    }
+
+    #[test]
+    fn slots_default_named_and_fallback() {
+        let card = "<div class=\"card\">\
+                    <header><slot name=\"header\">без назви</slot></header>\
+                    <div class=\"body\"><slot /></div>\
+                    <footer @if={slots.has(\"footer\")}><slot name=\"footer\" /></footer>\
+                    </div>";
+
+        let with_all = render_app(
+            "<Card><template slot=\"header\"><h2>Заголовок</h2></template>Вміст<button slot=\"footer\">OK</button></Card>",
+            &[("Card", card)],
+            |_| {},
+        )
+        .unwrap();
+        assert!(
+            with_all.contains("<header><h2>Заголовок</h2></header>"),
+            "{with_all}"
+        );
+        assert!(
+            with_all.contains("<div class=\"body\">Вміст</div>"),
+            "{with_all}"
+        );
+        assert!(
+            with_all.contains("<footer><button>OK</button></footer>"),
+            "{with_all}"
+        );
+
+        let bare = render_app("<Card>тільки вміст</Card>", &[("Card", card)], |_| {}).unwrap();
+        assert!(bare.contains("<header>без назви</header>"), "{bare}");
+        assert!(
+            !bare.contains("<footer>"),
+            "порожній слот ховає footer: {bare}"
+        );
+    }
+
+    #[test]
+    fn slot_content_uses_the_parent_scope() {
+        let html = render_app(
+            "<Card>{{ title }}</Card>",
+            &[("Card", "<div><slot /></div>")],
+            |scope| {
+                scope.push("title", "зі сторінки");
+            },
+        )
+        .unwrap();
+        assert_eq!(html, "<div>зі сторінки</div>");
+    }
+
+    #[test]
+    fn nested_components_work() {
+        let html = render_app(
+            "<TodoList todos={todos} />",
+            &[
+                (
+                    "TodoList",
+                    "<ul><TodoItem @for={t in props.todos} todo={t} /></ul>",
+                ),
+                ("TodoItem", "<li>{{ props.todo.title }}</li>"),
+            ],
+            |scope| {
+                scope.push_dynamic("todos", todos());
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            html,
+            "<ul><li>Купити молоко</li><li>Зробити домашку</li></ul>"
+        );
+    }
+
+    #[test]
+    fn unknown_component_is_a_compile_error() {
+        let message = render_app("<Missing />", &[], |_| {}).unwrap_err();
+        assert!(message.contains("не знайдено"), "{message}");
+        assert!(message.contains("pages/page.rhx:1:"), "{message}");
+    }
+
+    #[test]
+    fn error_inside_a_component_names_the_component_file() {
+        let message =
+            render_app("<Broken />", &[("Broken", "<p>{{ 1 / oops }}</p>")], |_| {}).unwrap_err();
+        assert!(message.contains("components/Broken.rhx:1:"), "{message}");
+        assert!(message.contains("у ланцюжку"), "{message}");
     }
 
     // ------------------------------------------------------- frontmatter
@@ -519,7 +743,7 @@ mod tests {
 
         let mut scope = Scope::new();
         let rendered = template
-            .render(&engine, &mut scope, Slots::default())
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
             .unwrap();
         assert_eq!(rendered.html, "<p>видно</p>");
     }
@@ -544,7 +768,7 @@ mod tests {
         let mut scope = Scope::new();
         let _ = template.run_script(&engine, &mut scope).unwrap();
         let rendered = template
-            .render(&engine, &mut scope, Slots::default())
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
             .unwrap();
         assert_eq!(rendered.html, "<p>2</p><li>перше</li><li>друге</li>");
     }
@@ -612,6 +836,7 @@ return \"<b>готово</b>\";
                     head: "<link rel=\"stylesheet\" href=\"/s.css\">",
                     scripts: "<script src=\"/app.js\"></script>",
                 },
+                &Globals::default(),
             )
             .unwrap();
         assert_eq!(

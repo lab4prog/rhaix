@@ -1,0 +1,4 @@
+<section class="card">
+  <header @if={slots.has("header")}><slot name="header" /></header>
+  <div class="body"><slot /></div>
+</section>

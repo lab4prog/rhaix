@@ -7,7 +7,7 @@
 mod stdlib;
 mod web;
 
-pub use stdlib::{register_core, Html};
+pub use stdlib::{register_core, Html, SlotSet};
 pub use web::{
     parse_cookies, parse_urlencoded, register_web, triggers_header, Hx, Log, Request, RequestData,
     Response, ResponseData, State,

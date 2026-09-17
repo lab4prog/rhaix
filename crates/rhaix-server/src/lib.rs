@@ -3,9 +3,9 @@
 //! Сервер знаходить сторінку, рендерить її шаблонізатором і віддає — з layout
 //! при звичайному заході й без нього при HTMX-запиті.
 //!
-//! Обсяг M2: frontmatter виконується, `req`/`res`/`hx`/`log` працюють, рендер
-//! іде в `spawn_blocking` з обмеженням часу. Компоненти — в M3, кеш шаблонів
-//! і watcher — у M6.
+//! Обсяг M3: frontmatter виконується, компоненти резолвляться при компіляції,
+//! рендер іде в `spawn_blocking` з обмеженням часу. Кеш шаблонів і watcher —
+//! у M6.
 
 use std::fs;
 use std::net::SocketAddr;
@@ -20,13 +20,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use rhai::{Dynamic, Engine, Map, Scope};
-use rhaix_parser::Source;
 use rhaix_script::{
     display, engine as build_engine, parse_cookies, parse_urlencoded, Deadline, Hx, Limits, Log,
     Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData,
     State as ScriptState,
 };
-use rhaix_template::{Slots, Template};
+use rhaix_template::{Globals, Loader, Slots};
 use tower_http::services::ServeDir;
 
 /// Скільки часу дається скрипту сторінки. Далі — явна помилка, а не мовчазне
@@ -344,19 +343,32 @@ fn render_page(
     let is_htmx = data.is_htmx;
     let path = data.path.clone();
     let response = ScriptResponse::new();
-    let template = load_template(&state.engine, file, &state.config.root)?;
 
-    let mut scope = new_scope(
+    // Один завантажувач на запит: він компілює сторінку разом з усіма її
+    // компонентами й кешує їх на час цього рендеру (постійний кеш — M6).
+    let loader = Loader::new(state.config.root.clone(), state.engine.clone());
+    let template = loader
+        .load(file)
+        .map_err(|diagnostic| PageError::Template {
+            diagnostic: diagnostic.text(),
+        })?;
+
+    // `page` — спільне значення: компонент і layout бачать те саме, що й сторінка.
+    let page = Dynamic::from_map(Map::new()).into_shared();
+    let globals = globals_for(
         &response,
         &state.state,
         data,
         display_path(&state.config.root, file),
-        Map::new(),
+        page,
     );
+
+    let mut scope = Scope::new();
+    globals.apply(&mut scope);
     let returned = template
         .run_script(&state.engine, &mut scope)
         .map_err(|diagnostic| PageError::Template {
-            diagnostic: template.describe(&diagnostic),
+            diagnostic: diagnostic.text(),
         })?;
 
     let mut state_now = response.take();
@@ -371,9 +383,9 @@ fn render_page(
         display(&returned)
     } else {
         let rendered = template
-            .render(&state.engine, &mut scope, Slots::default())
+            .render(&state.engine, &mut scope, Slots::default(), &globals)
             .map_err(|diagnostic| PageError::Template {
-                diagnostic: template.describe(&diagnostic),
+                diagnostic: diagnostic.text(),
             })?;
         for warning in &rendered.warnings {
             tracing::warn!("{path}: {warning}");
@@ -392,25 +404,19 @@ fn render_page(
         return Ok((page_html, state_now));
     }
 
-    // `page` (title та інше) переїжджає зі сторінки в layout — саме тому layout
-    // рендериться після неї, а не навколо неї.
-    let page_map = scope.get_value::<Map>("page").unwrap_or_default();
-    let request = scope
-        .get_value::<ScriptRequest>("req")
-        .expect("req завжди в scope");
-
-    let layout = load_template(&state.engine, &layout_path, &state.config.root)?;
-    let mut layout_scope = new_scope(
-        &response,
-        &state.state,
-        request.data().clone(),
-        display_path(&state.config.root, &layout_path),
-        page_map,
-    );
+    // `page` (title та інше) переїжджає зі сторінки в layout сам собою: це те
+    // саме спільне значення. Саме тому layout рендериться після сторінки.
+    let layout = loader
+        .load(&layout_path)
+        .map_err(|diagnostic| PageError::Template {
+            diagnostic: diagnostic.text(),
+        })?;
+    let mut layout_scope = Scope::new();
+    globals.apply(&mut layout_scope);
     let _ = layout
         .run_script(&state.engine, &mut layout_scope)
         .map_err(|diagnostic| PageError::Template {
-            diagnostic: layout.describe(&diagnostic),
+            diagnostic: diagnostic.text(),
         })?;
 
     let head = collect_head(&state.config.public_dir());
@@ -424,9 +430,10 @@ fn render_page(
                 head: &head,
                 scripts: &scripts,
             },
+            &globals,
         )
         .map_err(|diagnostic| PageError::Template {
-            diagnostic: layout.describe(&diagnostic),
+            diagnostic: diagnostic.text(),
         })?;
     for warning in &wrapped.warnings {
         tracing::warn!("{path}: {warning}");
@@ -436,48 +443,16 @@ fn render_page(
     Ok((wrapped.html, state_now))
 }
 
-/// Scope одного рендеру: об'єкти зі специфікації і більше нічого.
-fn new_scope(
-    response: &ScriptResponse,
-    state: &ScriptState,
-    data: RequestData,
-    source: String,
-    page: Map,
-) -> Scope<'static> {
-    let mut scope = Scope::new();
-    scope.push("req", ScriptRequest::new(data));
-    scope.push("res", response.clone());
-    scope.push("hx", Hx::new(response.clone()));
-    scope.push("state", state.clone());
-    scope.push("log", Log { source });
-    scope.push_dynamic("page", Dynamic::from_map(page));
-    scope
-}
-
-/// Прочитати й скомпілювати `.rhx`.
-///
-/// M6: тут з'явиться кеш `шлях + mtime → Arc<Template>`; поки що компіляція
-/// на кожен запит — так dev-режим завжди показує свіжий файл.
-fn load_template(engine: &Engine, file: &Path, root: &Path) -> Result<Template, PageError> {
-    let raw = fs::read_to_string(file).map_err(|err| PageError::Io {
-        file: file.to_path_buf(),
-        message: err.to_string(),
-    })?;
-    // У діагностиці показуємо шлях так, як його бачить людина: відносно кореня
-    // проєкту, а не UNC-шлях, який дає canonicalize на Windows.
-    let source = Arc::new(Source::new(display_path(root, file), raw));
-    Template::compile(source.clone(), engine).map_err(|diagnostic| PageError::Template {
-        diagnostic: diagnostic.render(&source),
-    })
-}
-
 /// Усі `public/**.css` — у `<head>`.
 fn collect_head(public: &Path) -> String {
     list_assets(public, "css")
         .into_iter()
         .map(|href| format!("<link rel=\"stylesheet\" href=\"{href}\">"))
         .collect::<Vec<_>>()
-        .join("\n  ")
+        .join(
+            "
+  ",
+        )
 }
 
 /// htmx першим, далі решта `public/**.js` — саме те, що в Node-RED-стартері
@@ -489,7 +464,10 @@ fn collect_scripts(public: &Path) -> String {
         .into_iter()
         .map(|src| format!("<script src=\"{src}\"></script>"))
         .collect::<Vec<_>>()
-        .join("\n  ")
+        .join(
+            "
+  ",
+        )
 }
 
 fn list_assets(public: &Path, extension: &str) -> Vec<String> {
@@ -517,6 +495,28 @@ fn list_assets(public: &Path, extension: &str) -> Vec<String> {
 
 async fn not_found(_: HttpRequest<Body>) -> Response {
     (StatusCode::NOT_FOUND, "404").into_response()
+}
+
+/// Об'єкти, які бачить кожен файл рендеру — і сторінка, і layout, і компоненти.
+///
+/// Компонент не успадковує scope батька (SYNTAX 5.3), тому глобальні об'єкти
+/// передаються окремо — інакше в компоненті не було б ні `req`, ні `page`.
+fn globals_for(
+    response: &ScriptResponse,
+    state: &ScriptState,
+    data: RequestData,
+    source: String,
+    page: Dynamic,
+) -> Globals {
+    let mut globals = Globals::new();
+    globals
+        .set("req", Dynamic::from(ScriptRequest::new(data)))
+        .set("res", Dynamic::from(response.clone()))
+        .set("hx", Dynamic::from(Hx::new(response.clone())))
+        .set("state", Dynamic::from(state.clone()))
+        .set("log", Dynamic::from(Log { source }))
+        .set("page", page);
+    globals
 }
 
 enum PageError {
@@ -581,7 +581,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             display_path(&config.root, &route.file)
         );
     }
-    println!("  M2: frontmatter виконується; компоненти — з M3, кеш і watcher — з M6\n");
+    println!("  M3: логіка й компоненти працюють; кеш і watcher — з M6\n");
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     axum::serve(listener, router)

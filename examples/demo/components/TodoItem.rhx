@@ -1,0 +1,11 @@
+---
+let todo = props.todo;
+---
+<li class="todo-item" @class={#{"completed": todo.done}}>
+  <input type="checkbox" @attr={#{"checked": todo.done}}
+         hx-patch={url("/todo", #{ id: todo.id })}
+         hx-target="#todo-app" hx-swap="outerHTML">
+  <span>{{ todo.title }}</span>
+  <button class="del" hx-delete={url("/todo", #{ id: todo.id })}
+          hx-target="#todo-app" hx-swap="outerHTML">×</button>
+</li>

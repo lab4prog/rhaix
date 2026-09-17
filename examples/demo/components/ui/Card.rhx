@@ -1,0 +1,7 @@
+---
+let tone = props.tone ?? "plain";
+---
+<section class="card" @class={tone}>
+  <header @if={slots.has("header")}><slot name="header" /></header>
+  <div class="card-body"><slot>Порожня картка</slot></div>
+</section>

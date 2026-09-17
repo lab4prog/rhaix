@@ -4,6 +4,8 @@
 //! змінюється лише `Scope`. Тому директиви тут уже розібрані, вирази
 //! скомпільовані, а `@if`/`@for` перетворені на вузли [`Conditional`] і [`Each`].
 
+use std::sync::Arc;
+
 use rhaix_parser::Span;
 
 use crate::escape::Context;
@@ -15,8 +17,9 @@ pub enum Node {
     Text(Span),
     Interp(Interp),
     Element(Box<Element>),
-    /// Компонент розбирається вже зараз, але рендериться з M3.
     Component(Box<Component>),
+    /// `<slot />` усередині компонента або layout.
+    Slot(Box<SlotNode>),
     Conditional(Box<Conditional>),
     Each(Box<Each>),
     Special(Special),
@@ -124,15 +127,28 @@ pub struct Each {
 pub struct Component {
     pub name: String,
     pub attrs: Vec<Attribute>,
+    /// Вміст між тегами — слот за замовчуванням.
     pub children: Vec<Node>,
+    /// Вміст із `slot="ім'я"` — іменовані слоти.
+    pub named: Vec<(String, Vec<Node>)>,
+    /// Компонент знайдено й скомпільовано ще при компіляції сторінки.
+    pub template: Arc<crate::Template>,
+    pub span: Span,
+}
+
+/// `<slot />`, `<slot name="header">запасний вміст</slot>`.
+#[derive(Debug, Clone)]
+pub struct SlotNode {
+    /// `None` — слот за замовчуванням.
+    pub name: Option<String>,
+    /// Що показати, якщо слот не передали.
+    pub fallback: Vec<Node>,
     pub span: Span,
 }
 
 /// Службові теги, які розкриває ядро.
 #[derive(Debug, Clone, Copy)]
 pub enum Special {
-    /// `<slot />` — сюди layout вставляє сторінку.
-    Slot(Span),
     /// `<rhaix:head />`
     Head(Span),
     /// `<rhaix:scripts />`

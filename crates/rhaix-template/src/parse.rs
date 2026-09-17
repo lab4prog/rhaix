@@ -12,15 +12,22 @@ use crate::ast::*;
 use crate::error::{Diagnostic, Result};
 use crate::escape::{is_event_attribute, is_url_attribute, Context};
 use crate::expr::Expr;
+use crate::loader::Components;
 
 const DIRECTIVES: [&str; 11] = [
     "if", "else-if", "else", "for", "key", "class", "style", "attr", "html", "text", "oob",
 ];
 
-pub fn parse(source: &Source, engine: &Engine, markup: Span) -> Result<Vec<Node>> {
+pub fn parse(
+    source: &Source,
+    engine: &Engine,
+    components: &dyn Components,
+    markup: Span,
+) -> Result<Vec<Node>> {
     let mut parser = Parser {
         source,
         engine,
+        components,
         pos: markup.start,
         end: markup.end,
         dropped: 0,
@@ -36,6 +43,7 @@ pub fn parse(source: &Source, engine: &Engine, markup: Span) -> Result<Vec<Node>
 struct Parser<'a> {
     source: &'a Source,
     engine: &'a Engine,
+    components: &'a dyn Components,
     pos: usize,
     end: usize,
     /// Скільки коментарів викинуто. Якщо всередині елемента лічильник
@@ -252,12 +260,6 @@ impl<'a> Parser<'a> {
 
         // службові теги ядра
         if let Some(special) = self.special_kind(&name, Span::new(open, tag_end)) {
-            if !parsed.attrs.is_empty() && matches!(special, Special::Slot(_)) {
-                return Err(Diagnostic::new(
-                    "іменовані слоти з'являться разом із компонентами (M3)",
-                    name_span,
-                ));
-            }
             if !parsed.empty {
                 self.expect_close(&name, Span::new(open, tag_end))?;
             }
@@ -265,6 +267,27 @@ impl<'a> Parser<'a> {
                 node: Node::Special(special),
                 flow: parsed.flow,
                 span: Span::new(open, self.pos),
+            });
+        }
+
+        if name == "slot" {
+            let slot_name = self.slot_name(&parsed.attrs, name_span)?;
+            let fallback = if parsed.empty {
+                Vec::new()
+            } else {
+                let items = self.parse_items(Some(&name))?;
+                self.expect_close(&name, Span::new(open, tag_end))?;
+                finish(self.source, items)?
+            };
+            let span = Span::new(open, self.pos);
+            return Ok(Item {
+                node: Node::Slot(Box::new(SlotNode {
+                    name: slot_name,
+                    fallback,
+                    span,
+                })),
+                flow: parsed.flow,
+                span,
             });
         }
 
@@ -297,6 +320,25 @@ impl<'a> Parser<'a> {
 
         let span = Span::new(open, self.pos);
 
+        if is_component {
+            // Компонент шукається вже зараз: невідомий тег і цикл — це помилка
+            // компіляції, а не сюрприз під час запиту.
+            let template = self.components.resolve(&name, name_span)?;
+            let (children, named) = split_slots(self.source, children);
+            return Ok(Item {
+                node: Node::Component(Box::new(Component {
+                    name,
+                    attrs: parsed.attrs,
+                    children,
+                    named,
+                    template,
+                    span,
+                })),
+                flow: parsed.flow,
+                span,
+            });
+        }
+
         // Якщо в піддереві немає нічого динамічного, його вивід дослівно
         // збігається зі шматком джерела — тоді весь елемент стає одним
         // текстовим вузлом, і рендер не обходить його взагалі.
@@ -305,20 +347,15 @@ impl<'a> Parser<'a> {
             && parsed.flow.is_empty()
             && parsed.bind.is_empty()
             && parsed.attrs.iter().all(attribute_is_static)
+            // елемент, що позначає слот, має лишитись елементом
+            && !parsed.attrs.iter().any(|attr| attr.name == "slot")
             && children.iter().all(|child| matches!(child, Node::Text(_)))
         {
             return Ok(self.plain(Node::Text(span), span));
         }
 
-        let node = if is_component {
-            Node::Component(Box::new(Component {
-                name,
-                attrs: parsed.attrs,
-                children,
-                span,
-            }))
-        } else {
-            Node::Element(Box::new(Element {
+        Ok(Item {
+            node: Node::Element(Box::new(Element {
                 name,
                 name_span,
                 attrs: parsed.attrs,
@@ -326,11 +363,7 @@ impl<'a> Parser<'a> {
                 children,
                 empty,
                 span,
-            }))
-        };
-
-        Ok(Item {
-            node,
+            })),
             flow: parsed.flow,
             span,
         })
@@ -338,11 +371,45 @@ impl<'a> Parser<'a> {
 
     fn special_kind(&self, name: &str, span: Span) -> Option<Special> {
         match name {
-            "slot" => Some(Special::Slot(span)),
             "rhaix:head" => Some(Special::Head(span)),
             "rhaix:scripts" => Some(Special::Scripts(span)),
             _ => None,
         }
+    }
+
+    /// `<slot name="header">` — єдиний дозволений атрибут слота.
+    fn slot_name(&self, attrs: &[Attribute], span: Span) -> Result<Option<String>> {
+        let mut name = None;
+        for attr in attrs {
+            if attr.name != "name" {
+                return Err(Diagnostic::new(
+                    format!("`<slot>` не має атрибута `{}`", attr.name),
+                    attr.span,
+                )
+                .with_hint("слот приймає лише `name`"));
+            }
+            match &attr.value {
+                AttrValue::Parts(parts) => {
+                    let mut text = String::new();
+                    for part in parts {
+                        match part {
+                            AttrPart::Text(span) => text.push_str(self.source.slice(*span)),
+                            AttrPart::Interp(expr) => {
+                                return Err(Diagnostic::new(
+                                    "ім'я слота має бути сталим",
+                                    expr.span(),
+                                ))
+                            }
+                        }
+                    }
+                    name = Some(text);
+                }
+                _ => {
+                    return Err(Diagnostic::new("ім'я слота має бути рядком", span));
+                }
+            }
+        }
+        Ok(name)
     }
 
     /// Вміст `<script>`, `<style>`, `<pre>`, `<textarea>` розміткою не є.
@@ -771,6 +838,51 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Розкласти вміст компонента на слот за замовчуванням і іменовані.
+///
+/// `<template slot="header">…</template>` віддає лише свій вміст, будь-який
+/// інший елемент із `slot="…"` потрапляє в слот цілком (без самого атрибута).
+fn split_slots(source: &Source, children: Vec<Node>) -> (Vec<Node>, Vec<(String, Vec<Node>)>) {
+    let mut default = Vec::new();
+    let mut named: Vec<(String, Vec<Node>)> = Vec::new();
+
+    for child in children {
+        let Node::Element(element) = child else {
+            default.push(child);
+            continue;
+        };
+
+        let slot = element
+            .attrs
+            .iter()
+            .position(|attr| attr.name == "slot")
+            .and_then(|index| match &element.attrs[index].value {
+                AttrValue::Parts(parts) => match parts.as_slice() {
+                    [AttrPart::Text(span)] => Some((index, *span)),
+                    _ => None,
+                },
+                _ => None,
+            });
+
+        let Some((index, span)) = slot else {
+            default.push(Node::Element(element));
+            continue;
+        };
+
+        let mut element = *element;
+        element.attrs.remove(index);
+        let name = source.slice(span).to_owned();
+        let nodes = if element.name == "template" {
+            std::mem::take(&mut element.children)
+        } else {
+            vec![Node::Element(Box::new(element))]
+        };
+        named.push((name, nodes));
+    }
+
+    (default, named)
+}
+
 /// Атрибут без жодного виразу — його можна віддати як частину тексту.
 fn attribute_is_static(attr: &Attribute) -> bool {
     match &attr.value {
@@ -1020,6 +1132,8 @@ fn has_expressions(node: &Node) -> bool {
 
     match node {
         Node::Text(_) | Node::Special(_) => false,
+        // слот у тілі компонента робить піддерево динамічним
+        Node::Slot(_) => true,
         Node::Interp(_) => true,
         Node::Element(element) => {
             !element.bind.is_empty()
@@ -1050,7 +1164,7 @@ fn mentions_loop(node: &Node) -> bool {
     }
 
     match node {
-        Node::Text(_) | Node::Special(_) => false,
+        Node::Text(_) | Node::Special(_) | Node::Slot(_) => false,
         Node::Interp(interp) => expr_mentions(&interp.expr),
         Node::Element(element) => {
             let bind = &element.bind;
