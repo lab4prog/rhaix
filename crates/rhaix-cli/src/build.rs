@@ -28,8 +28,12 @@ pub fn build(root: &Path, framework: &Path, out: Option<PathBuf>) -> anyhow::Res
         anyhow::bail!("нема чого вшивати: у проєкті не знайдено файлів");
     }
 
-    std::fs::write(workdir.join("Cargo.toml"), manifest(&name, framework))?;
+    let driver = read_driver(root);
+    std::fs::write(workdir.join("Cargo.toml"), manifest(&name, framework, driver.as_deref()))?;
     std::fs::write(workdir.join("src/main.rs"), main_rs(root, &files))?;
+    if let Some(driver) = &driver {
+        println!("Драйвер бази: {driver}");
+    }
 
     println!("Вшито файлів: {}", files.len());
     println!("Збірка: cargo build --release");
@@ -136,8 +140,48 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, extensions: Option<&[&str]>) {
     }
 }
 
-fn manifest(name: &str, framework: &Path) -> String {
+/// Драйвер бази з `rhaix.toml`, щоб `rhaix build` увімкнув лише його feature.
+///
+/// Без цього прод-бінарник SQLite-застосунку тягнув би й залежності Postgres
+/// (~20 крейтів). Легкий парсер, щоб не залежати від `toml` заради одного рядка.
+fn read_driver(root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join("rhaix.toml")).ok()?;
+    let mut in_db = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_db = line == "[db]";
+            continue;
+        }
+        if in_db {
+            if let Some(rest) = line.strip_prefix("driver") {
+                if let Some(value) = rest.split('=').nth(1) {
+                    return Some(value.trim().trim_matches('"').to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Cargo-feature драйвера, який треба увімкнути в rhaix-server.
+///
+/// SQLite вбудований завжди (feature за замовчуванням), тож для нього нічого не
+/// додаємо. Невідомий драйвер теж лишаємо без feature — про його відсутність
+/// скаже вже сам сервер при старті.
+fn server_features(driver: Option<&str>) -> &'static str {
+    match driver {
+        Some("postgres" | "postgresql") => r#", default-features = false, features = ["postgres"]"#,
+        _ => "",
+    }
+}
+
+fn manifest(name: &str, framework: &Path, driver: Option<&str>) -> String {
     let framework = framework.to_string_lossy().replace('\\', "/");
+    let server_features = server_features(driver);
     format!(
         r##"# Згенеровано `rhaix build`. Правити цей файл сенсу немає:
 # наступна збірка перезапише його.
@@ -151,7 +195,7 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-rhaix-server = {{ path = "{framework}/crates/rhaix-server" }}
+rhaix-server = {{ path = "{framework}/crates/rhaix-server"{server_features} }}
 rhaix-template = {{ path = "{framework}/crates/rhaix-template" }}
 anyhow = "1"
 tokio = {{ version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }}
@@ -245,9 +289,15 @@ mod tests {
 
     #[test]
     fn manifest_declares_its_own_workspace() {
-        let text = manifest("demo", Path::new("C:/rhaix"));
+        let text = manifest("demo", Path::new("C:/rhaix"), None);
         assert!(text.contains("[workspace]"), "{text}");
         assert!(text.contains("C:/rhaix/crates/rhaix-server"), "{text}");
         assert!(text.contains("tracing-subscriber"), "{text}");
+        // SQLite-застосунок не тягне feature postgres.
+        assert!(!text.contains("postgres"), "{text}");
+
+        // А postgres-застосунок вмикає його точково.
+        let pg = manifest("demo", Path::new("C:/rhaix"), Some("postgres"));
+        assert!(pg.contains(r#"features = ["postgres"]"#), "{pg}");
     }
 }

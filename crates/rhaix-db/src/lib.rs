@@ -10,8 +10,10 @@
 //! параметризований SQL. Драйвер, для якого SQL не рідний (Mongo, Surreal),
 //! перевизначить ці методи — саме заради цього вони й у трейті.
 
+#[cfg(feature = "postgres")]
 mod postgres;
 mod query;
+#[cfg(feature = "sqlite")]
 mod sqlite;
 
 use std::fmt;
@@ -21,7 +23,9 @@ use std::sync::Arc;
 use rhai::{Dynamic, Map};
 
 pub use query::{Sql, PRIMARY_KEY};
+#[cfg(feature = "postgres")]
 pub use postgres::PostgresDriver;
+#[cfg(feature = "sqlite")]
 pub use sqlite::SqliteDriver;
 
 /// Помилка роботи з базою.
@@ -168,13 +172,31 @@ impl Database {
     /// Відкрити базу за налаштуваннями з `rhaix.toml`.
     pub fn open(driver: &str, url: &str) -> Result<Self, DbError> {
         match driver {
+            #[cfg(feature = "sqlite")]
             "sqlite" => Ok(Self::new(SqliteDriver::open(url)?)),
+            #[cfg(feature = "postgres")]
             "postgres" | "postgresql" => Ok(Self::new(PostgresDriver::open(url)?)),
+
+            // Драйвер відомий, але не увімкнений при збірці — кажемо, який
+            // feature додати, а не «невідомий драйвер».
+            #[cfg(not(feature = "sqlite"))]
+            "sqlite" => Err(Self::disabled("sqlite")),
+            #[cfg(not(feature = "postgres"))]
+            "postgres" | "postgresql" => Err(Self::disabled("postgres")),
+
             // Mongo й Surreal — далі; трейт до них уже готовий.
             other => Err(DbError::Config(format!(
                 "невідомий драйвер `{other}`; підтримуються `sqlite` і `postgres`"
             ))),
         }
+    }
+
+    /// Драйвер відомий rhaix, але цей бінарник зібрано без нього.
+    #[allow(dead_code)]
+    fn disabled(name: &str) -> DbError {
+        DbError::Config(format!(
+            "драйвер `{name}` не увімкнено в цій збірці; додайте feature `{name}`              для rhaix-db (у проді це робить `rhaix build` за секцією [db])"
+        ))
     }
 
     pub fn driver(&self) -> &Arc<dyn DbDriver> {
@@ -231,6 +253,28 @@ impl Database {
 impl fmt::Debug for Database {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Database({})", self.0.kind())
+    }
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(not(feature = "postgres"))]
+    fn a_disabled_driver_names_the_feature_to_enable() {
+        // Збірка без postgres, але конфіг просить його: помилка має підказати,
+        // який feature додати, а не «невідомий драйвер».
+        let err = Database::open("postgres", "postgres://x").unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("postgres"), "{text}");
+        assert!(text.contains("feature"), "{text}");
+    }
+
+    #[test]
+    fn an_unknown_driver_is_still_unknown() {
+        let err = Database::open("oracle", "x").unwrap_err();
+        assert!(err.to_string().contains("невідомий драйвер"), "{err}");
     }
 }
 

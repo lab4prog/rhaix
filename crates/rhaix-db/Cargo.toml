@@ -1,17 +1,27 @@
 [package]
 name = "rhaix-db"
-description = "Database layer for rhaix: driver trait, portable CRUD and the SQLite driver"
+description = "Database layer for rhaix: driver trait, portable CRUD and pluggable drivers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# SQLite вбудований (bundled), тож ним і за замовчуванням: застосунок без явного
+# вибору драйвера все одно збирається й працює.
+default = ["sqlite"]
+sqlite = ["dep:rusqlite"]
+# Postgres тягне ~20 крейтів (tokio-postgres, chrono, uuid, rust_decimal, …),
+# тому опційний: SQLite-застосунок за них не платить ні часом збірки, ні розміром.
+postgres = ["dep:postgres", "dep:rust_decimal", "dep:chrono", "dep:uuid", "dep:serde_json"]
+
 [dependencies]
-postgres = { version = "0.19", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-0_8"] }
-rust_decimal = { version = "1", features = ["db-postgres"] }
-chrono = { version = "0.4", default-features = false }
-uuid = "0.8"
 rhai.workspace = true
-rusqlite = { version = "0.32", features = ["bundled"] }
 tracing.workspace = true
-serde_json = "1"
+
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+postgres = { version = "0.19", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-0_8"], optional = true }
+rust_decimal = { version = "1", features = ["db-postgres"], optional = true }
+chrono = { version = "0.4", default-features = false, optional = true }
+uuid = { version = "0.8", optional = true }
+serde_json = { version = "1", optional = true }

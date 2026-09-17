@@ -6,6 +6,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Драйвери прокидаються в rhaix-db. SQLite завжди доступний (bundled), Postgres
+# опційний — щоб SQLite-застосунок не тягнув його залежності.
+default = ["sqlite"]
+sqlite = ["rhaix-db/sqlite"]
+postgres = ["rhaix-db/postgres"]
+
 [dependencies]
 rhaix-db.workspace = true
 rhaix-parser.workspace = true
