@@ -1,0 +1,7 @@
+---
+let text = props.text ?? "мітка";
+---
+<b class="chip">{{ text }}</b>
+
+<style>.chip { color: teal }</style>
+<script>window.chipReady = true;</script>

@@ -1,0 +1,4 @@
+---
+page.title = "Асети";
+---
+<p><Chip text="перша" /><Chip text="друга" /></p>

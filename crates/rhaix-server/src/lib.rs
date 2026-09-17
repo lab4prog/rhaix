@@ -8,8 +8,10 @@
 //! Прод-збірка в один бінарник — M8.
 
 mod check;
+mod client;
 
 pub use check::{check, Issue};
+pub use client::{CLIENT_JS, CLIENT_ROUTE};
 
 use std::fs;
 use std::net::SocketAddr;
@@ -250,6 +252,22 @@ pub fn build_watched(
             let stream = BroadcastStream::new(reload.subscribe())
                 .map(|_| Ok::<Event, std::convert::Infallible>(Event::default().event("reload")));
             std::future::ready(Sse::new(stream).keep_alive(KeepAlive::default()))
+        }),
+    );
+
+    let router = router.route(
+        CLIENT_ROUTE,
+        axum::routing::get(|| async {
+            (
+                [
+                    (
+                        header::CONTENT_TYPE,
+                        "application/javascript; charset=utf-8",
+                    ),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                CLIENT_JS,
+            )
         }),
     );
 
@@ -595,6 +613,7 @@ fn render_page(
 
     // Значення, повернуте скриптом, стає тілом як є: `return "";` прибирає
     // елемент, `return raw(...)` віддає готовий HTML.
+    let mut assets = Assets::default();
     let page_html = if !returned.is_unit() {
         display(&returned)
     } else {
@@ -606,6 +625,7 @@ fn render_page(
         for warning in &rendered.warnings {
             tracing::warn!("{path}: {warning}");
         }
+        assets = Assets::from(&rendered);
         rendered.html
     };
 
@@ -613,7 +633,9 @@ fn render_page(
     // існує, щоб приїхати в уже відкриту сторінку.
     if is_htmx || kind == RouteKind::Partial {
         state_now = response.take();
-        return Ok((page_html, state_now));
+        // Асети їдуть разом із фрагментом: стиль позначений хешем, скрипт
+        // загорнутий у перевірку реєстру, тож повторно не виконається.
+        return Ok((assets.append_to(page_html), state_now));
     }
 
     let layout_path = state.config.layout_path();
@@ -637,10 +659,15 @@ fn render_page(
             diagnostic: diagnostic.text(),
         })?;
 
-    let head = collect_head(&state.config.public_dir());
-    let scripts = collect_scripts(&state.config);
+    // Підняті стилі — у `<rhaix:head/>`, підняті скрипти — у `<rhaix:scripts/>`.
+    let head = format!(
+        "{}{}",
+        collect_head(&state.config.public_dir()),
+        assets.head()
+    );
+    let scripts = format!("{}{}", collect_scripts(&state.config), assets.scripts());
     let wrapped = layout
-        .render(
+        .render_with(
             &state.engine,
             &mut layout_scope,
             Slots {
@@ -649,6 +676,8 @@ fn render_page(
                 scripts: &scripts,
             },
             &globals,
+            // layout сам є документом: його власні теги лишаються на місці
+            false,
         )
         .map_err(|diagnostic| PageError::Template {
             diagnostic: diagnostic.text(),
@@ -678,10 +707,15 @@ fn collect_head(public: &Path) -> String {
 fn collect_scripts(config: &Config) -> String {
     let mut scripts = list_assets(&config.public_dir(), "js");
     scripts.sort_by_key(|src| !src.contains("htmx"));
-    let mut out: Vec<String> = scripts
-        .into_iter()
-        .map(|src| format!("<script src=\"{src}\"></script>"))
-        .collect();
+
+    // `rhaix.js` іде перший: підняті скрипти компонентів питають у нього
+    // реєстр, тому він має бути вже завантажений.
+    let mut out: Vec<String> = vec![format!("<script src=\"{CLIENT_ROUTE}\"></script>")];
+    out.extend(
+        scripts
+            .into_iter()
+            .map(|src| format!("<script src=\"{src}\"></script>")),
+    );
 
     // У режимі розробки додається крихітний клієнт живого перезавантаження:
     // сторінка оновлюється сама, щойно watcher побачив зміну.
@@ -718,6 +752,49 @@ fn list_assets(public: &Path, extension: &str) -> Vec<String> {
 
 async fn not_found(_: HttpRequest<Body>) -> Response {
     (StatusCode::NOT_FOUND, "404").into_response()
+}
+
+/// Підняті зі сторінки й компонентів `<style>`/`<script>`.
+#[derive(Debug, Default)]
+struct Assets {
+    styles: Vec<rhaix_template::Asset>,
+    scripts: Vec<rhaix_template::Asset>,
+}
+
+impl Assets {
+    fn from(rendered: &rhaix_template::Rendered) -> Self {
+        Self {
+            styles: rendered.styles.clone(),
+            scripts: rendered.scripts.clone(),
+        }
+    }
+
+    fn head(&self) -> String {
+        self.styles
+            .iter()
+            .map(|asset| client::style_tag(&asset.hash, &asset.body))
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    }
+
+    fn scripts(&self) -> String {
+        self.scripts
+            .iter()
+            .map(|asset| client::script_tag(&asset.hash, &asset.body))
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    }
+
+    /// Для фрагмента асети додаються в кінець — іншого місця немає.
+    fn append_to(&self, mut html: String) -> String {
+        for asset in &self.styles {
+            html.push_str(&client::style_tag(&asset.hash, &asset.body));
+        }
+        for asset in &self.scripts {
+            html.push_str(&client::script_tag(&asset.hash, &asset.body));
+        }
+        html
+    }
 }
 
 /// Об'єкти, які бачить кожен файл рендеру — і сторінка, і layout, і компоненти.

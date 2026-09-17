@@ -61,20 +61,39 @@ pub struct Slots<'a> {
     pub scripts: &'a str,
 }
 
-/// Результат рендеру: HTML і попередження, які не є помилками.
+/// Піднятий `<style>` або `<script>` компонента.
+///
+/// Хеш рахується від вмісту, тому той самий компонент, вставлений десять разів,
+/// дає один асет — і на сторінці, і у фрагменті.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asset {
+    pub hash: String,
+    pub body: String,
+}
+
+/// Результат рендеру: HTML, підняті асети й попередження.
 #[derive(Debug, Default)]
 pub struct Rendered {
     pub html: String,
+    pub styles: Vec<Asset>,
+    pub scripts: Vec<Asset>,
     pub warnings: Vec<String>,
 }
 
-pub fn render<'a>(
+/// Відрендерити дерево.
+///
+/// `hoist` вирішує долю вбудованих `<style>`/`<script>`: сторінка й компоненти
+/// віддають їх ядру, а layout лишає на місці — він і є документом, його теги
+/// стоять там, де їх поставив автор.
+#[allow(clippy::too_many_arguments)]
+pub fn render_with<'a>(
     source: &'a Source,
     engine: &'a Engine,
     scope: &mut Scope,
     nodes: &'a [Node],
     slots: Slots<'a>,
     globals: &'a Globals,
+    hoist: bool,
 ) -> Result<Rendered> {
     let mut frame = SlotFrame::new();
     if !slots.slot.is_empty() {
@@ -92,12 +111,30 @@ pub fn render<'a>(
         scratch: String::new(),
         warnings: Vec::new(),
         trim_next: false,
+        hoist,
+        styles: Vec::new(),
+        scripts: Vec::new(),
     };
     renderer.nodes(nodes, scope)?;
     Ok(Rendered {
         html: renderer.out,
+        styles: renderer.styles,
+        scripts: renderer.scripts,
         warnings: renderer.warnings,
     })
+}
+
+/// Короткий стабільний хеш вмісту (FNV-1a).
+///
+/// Криптостійкість тут ні до чого: треба лише відрізнити два різні `<script>`
+/// і впізнати той самий.
+fn hash(text: &str) -> String {
+    let mut value: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        value ^= u64::from(*byte);
+        value = value.wrapping_mul(0x1000_0000_01b3);
+    }
+    format!("{value:016x}")
 }
 
 /// Слоти одного рівня: `""` — слот за замовчуванням.
@@ -119,6 +156,10 @@ struct Renderer<'a> {
     warnings: Vec<String>,
     /// Встановлюється маркером `-}}`: наступний текст іде без початкових пробілів.
     trim_next: bool,
+    /// Чи піднімати вбудовані `<style>`/`<script>` замість виводу на місці.
+    hoist: bool,
+    styles: Vec<Asset>,
+    scripts: Vec<Asset>,
 }
 
 impl<'a> Renderer<'a> {
@@ -244,6 +285,26 @@ impl<'a> Renderer<'a> {
     // ---------------------------------------------------------- елементи
 
     fn element(&mut self, element: &'a Element, scope: &mut Scope) -> Result<()> {
+        // Вбудовані стилі й скрипти піднімаються в layout: інакше стиль
+        // компонента, вставленого в цикл, приїхав би в документ десять разів,
+        // а скрипт стільки ж разів виконався б.
+        if self.hoist && is_inline_asset(element) {
+            let body = self.capture(&element.children, scope)?;
+            let asset = Asset {
+                hash: hash(&body),
+                body,
+            };
+            let bucket = if element.name == "style" {
+                &mut self.styles
+            } else {
+                &mut self.scripts
+            };
+            if !bucket.iter().any(|found| found.hash == asset.hash) {
+                bucket.push(asset);
+            }
+            return Ok(());
+        }
+
         let dynamic_class = match &element.bind.class {
             Some(expr) => Some(class_list(&expr.eval(self.engine, scope)?)),
             None => None,
@@ -751,6 +812,17 @@ fn eval_condition(expr: &Expr, engine: &Engine, scope: &mut Scope) -> Result<Dyn
         }
     }
     expr.eval(engine, scope)
+}
+
+/// `<style>` або `<script>` без `src` — те, що має сенс піднімати.
+///
+/// Тег із `src` лишається на місці: він і так вантажиться один раз, а його
+/// порядок відносно решти документа часто важливий.
+fn is_inline_asset(element: &Element) -> bool {
+    if element.name != "style" && element.name != "script" {
+        return false;
+    }
+    !element.attrs.iter().any(|attr| attr.name == "src")
 }
 
 /// Чи можна зробити з імені prop-а звичайну змінну (`data-x` — ні).

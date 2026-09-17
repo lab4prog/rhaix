@@ -332,6 +332,56 @@ async fn database_errors_point_at_the_rhx_file() {
     assert!(body.contains("no_such_table"), "{body}");
 }
 
+// ------------------------------------------------------------------ асети
+
+#[tokio::test]
+async fn component_styles_and_scripts_are_hoisted_once() {
+    let (status, _, body) = call(get("/assets")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Компонент ужито двічі — стиль і скрипт по одному разу.
+    assert_eq!(body.matches("<style data-rhx=").count(), 1, "{body}");
+    assert_eq!(body.matches("<script data-rhx=").count(), 1, "{body}");
+
+    // Стиль — у <head>, скрипт — після розмітки.
+    let head_end = body.find("</head>").expect("є head");
+    let style_at = body.find("<style data-rhx=").expect("є стиль");
+    let script_at = body.find("<script data-rhx=").expect("є скрипт");
+    assert!(style_at < head_end, "стиль має бути в head");
+    assert!(script_at > head_end, "скрипт — нижче");
+
+    // `rhaix.js` іде раніше за піднятий скрипт: той питає в нього реєстр.
+    let client_at = body.find("/_rhaix/rhaix.js").expect("є rhaix.js");
+    assert!(client_at < script_at, "{body}");
+}
+
+#[tokio::test]
+async fn fragments_carry_their_assets_with_a_guard() {
+    let (status, _, body) = call(htmx("/assets")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(!body.contains("<!DOCTYPE html>"), "це фрагмент: {body}");
+    assert!(body.contains("<style data-rhx="), "{body}");
+    // Скрипт у фрагменті загорнутий у перевірку реєстру, інакше htmx виконував
+    // би його на кожному свопі.
+    assert!(body.contains("__rhaix.seen("), "{body}");
+}
+
+#[tokio::test]
+async fn the_client_script_is_served_by_the_core() {
+    let (status, headers, body) = call(get("/_rhaix/rhaix.js")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        header(&headers, "content-type")
+            .unwrap_or_default()
+            .contains("javascript"),
+        "{headers:?}"
+    );
+    assert!(body.contains("showToast"), "тости з коробки");
+    assert!(body.contains("window.__rhaix"), "реєстр асетів");
+}
+
 #[tokio::test]
 async fn missing_page_is_a_404() {
     let (status, _, _) = call(get("/nope")).await;

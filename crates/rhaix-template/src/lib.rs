@@ -26,7 +26,7 @@ use rhaix_parser::{Source, Span};
 pub use ast::Node;
 pub use error::Diagnostic;
 pub use loader::{Components, Loader, NoComponents, TemplateCache};
-pub use render::{Globals, Rendered, Slots};
+pub use render::{Asset, Globals, Rendered, Slots};
 
 use expr::Expr;
 
@@ -121,8 +121,29 @@ impl Template {
         slots: Slots<'a>,
         globals: &'a Globals,
     ) -> Result<Rendered, Diagnostic> {
-        render::render(&self.source, engine, scope, &self.nodes, slots, globals)
-            .map_err(|diagnostic| diagnostic.in_file(self.source.clone()))
+        self.render_with(engine, scope, slots, globals, true)
+    }
+
+    /// Рендер із вибором: піднімати вбудовані `<style>`/`<script>` чи ні.
+    /// Layout рендериться без підйому — він сам є документом.
+    pub fn render_with<'a>(
+        &'a self,
+        engine: &'a Engine,
+        scope: &mut Scope,
+        slots: Slots<'a>,
+        globals: &'a Globals,
+        hoist: bool,
+    ) -> Result<Rendered, Diagnostic> {
+        render::render_with(
+            &self.source,
+            engine,
+            scope,
+            &self.nodes,
+            slots,
+            globals,
+            hoist,
+        )
+        .map_err(|diagnostic| diagnostic.in_file(self.source.clone()))
     }
 
     /// Готовий текст помилки з підсвіченим рядком файлу.
@@ -465,14 +486,24 @@ mod tests {
         let message = error("<script>const id = {{ todo.id }};</script>");
         assert!(message.contains("json"), "{message}");
 
-        let html = render_with("<script>const t = {{ json(todo) }};</script>", |scope| {
-            let mut map = rhai::Map::new();
-            map.insert("title".into(), Dynamic::from("</script>"));
-            scope.push_dynamic("todo", Dynamic::from_map(map));
-        })
-        .unwrap();
-        assert!(!html.contains("</script><"), "{html}");
-        assert!(html.contains("\\u003C"), "{html}");
+        // Скрипт сторінки піднімається (M7), тому перевіряємо піднятий асет.
+        let engine = engine(Limits::default());
+        let source = Arc::new(Source::new(
+            "test.rhx",
+            "<script>const t = {{ json(todo) }};</script>",
+        ));
+        let template = Template::compile(source, &engine).unwrap();
+        let mut scope = Scope::new();
+        let mut map = rhai::Map::new();
+        map.insert("title".into(), Dynamic::from("</script>"));
+        scope.push_dynamic("todo", Dynamic::from_map(map));
+
+        let rendered = template
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
+            .unwrap();
+        let body = &rendered.scripts[0].body;
+        assert!(!body.contains("</script>"), "{body}");
+        assert!(body.contains("\\u003C"), "{body}");
     }
 
     #[test]
@@ -713,6 +744,95 @@ mod tests {
         assert_eq!(
             html,
             "<ul><li>Купити молоко</li><li>Зробити домашку</li></ul>"
+        );
+    }
+
+    #[test]
+    fn component_assets_are_hoisted_and_deduplicated() {
+        let engine = Arc::new(engine(Limits::default()));
+        let registry = TestComponents::new(
+            engine.clone(),
+            &[(
+                "Chip",
+                concat!(
+                    "<b>{{ props.text }}</b>",
+                    "<style>.chip { color: red }</style>",
+                    "<script>console.log(\"chip\");</script>"
+                ),
+            )],
+        );
+        let source = Arc::new(Source::new(
+            "pages/page.rhx",
+            "<Chip text=\"a\" /><Chip text=\"b\" />",
+        ));
+        let template = Template::compile_with(source, &engine, &registry).unwrap();
+
+        let mut scope = Scope::new();
+        let rendered = template
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
+            .unwrap();
+
+        // Компонент ужито двічі — асет один.
+        assert_eq!(rendered.styles.len(), 1);
+        assert_eq!(rendered.scripts.len(), 1);
+        assert!(
+            rendered.styles[0].body.contains(".chip"),
+            "{:?}",
+            rendered.styles
+        );
+        // З розмітки вони зникли: їх ставить ядро, а не вміст сторінки.
+        assert_eq!(rendered.html, "<b>a</b><b>b</b>");
+    }
+
+    #[test]
+    fn layout_keeps_its_own_tags_in_place() {
+        let engine = engine(Limits::default());
+        let source = Arc::new(Source::new(
+            "layouts/main.rhx",
+            "<head><style>body{margin:0}</style></head><body><slot /></body>",
+        ));
+        let template = Template::compile(source, &engine).unwrap();
+
+        let mut scope = Scope::new();
+        let rendered = template
+            .render_with(
+                &engine,
+                &mut scope,
+                Slots {
+                    slot: "<p>сторінка</p>",
+                    ..Slots::default()
+                },
+                &Globals::default(),
+                false,
+            )
+            .unwrap();
+
+        assert!(rendered.styles.is_empty(), "layout нічого не піднімає");
+        assert!(
+            rendered.html.contains("<style>body{margin:0}</style>"),
+            "{}",
+            rendered.html
+        );
+    }
+
+    #[test]
+    fn script_with_src_stays_where_it_is() {
+        let engine = engine(Limits::default());
+        let source = Arc::new(Source::new(
+            "pages/page.rhx",
+            "<p>a</p><script src=\"/app.js\"></script>",
+        ));
+        let template = Template::compile(source, &engine).unwrap();
+        let mut scope = Scope::new();
+        let rendered = template
+            .render(&engine, &mut scope, Slots::default(), &Globals::default())
+            .unwrap();
+
+        assert!(rendered.scripts.is_empty(), "тег із src не піднімається");
+        assert!(
+            rendered.html.contains("src=\"/app.js\""),
+            "{}",
+            rendered.html
         );
     }
 

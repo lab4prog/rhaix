@@ -9,3 +9,16 @@ let todo = props.todo;
   <button class="del" hx-delete={url("/todo", #{ id: todo.id })}
           hx-target="#todo-app" hx-swap="outerHTML">×</button>
 </li>
+
+<style>
+  /* Стиль компонента: піднімається в <head> один раз, скільки б разів
+     компонент не траплявся у списку. */
+  .todo-item .del { border: 0; background: none; cursor: pointer; opacity: .4 }
+  .todo-item:hover .del { opacity: 1 }
+</style>
+
+<script>
+  // Скрипт компонента виконується один раз на життя сторінки — навіть якщо
+  // список приїхав фрагментом ще десять разів.
+  console.log("rhaix: TodoItem готовий");
+</script>

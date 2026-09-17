@@ -360,6 +360,9 @@ impl<'a> Parser<'a> {
             && parsed.attrs.iter().all(attribute_is_static)
             // елемент, що позначає слот, має лишитись елементом
             && !parsed.attrs.iter().any(|attr| attr.name == "slot")
+            // `<style>` і `<script>` теж: рендерер піднімає їх у layout, а з
+            // тексту підняти вже нічого не можна (та сама пастка, що зі слотами)
+            && !matches!(name.as_str(), "style" | "script")
             && children.iter().all(|child| matches!(child, Node::Text(_)))
         {
             return Ok(self.plain(Node::Text(span), span));
