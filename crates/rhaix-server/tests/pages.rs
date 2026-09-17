@@ -233,6 +233,62 @@ async fn component_cycle_is_caught_before_rendering() {
     assert!(body.contains("ланцюжок"), "{body}");
 }
 
+// ------------------------------------------------ маршрути, middleware, HTMX
+
+#[tokio::test]
+async fn middleware_guards_a_page() {
+    // Охорона живе в одному файлі, а не копіюється в кожну закриту сторінку.
+    let (status, headers, body) = call(get("/closed")).await;
+
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(header(&headers, "location"), Some("/"));
+    assert!(body.is_empty(), "сторінка не виконується: {body}");
+}
+
+#[tokio::test]
+async fn middleware_runs_before_the_page() {
+    let (status, _, body) = call(htmx("/traced")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("middleware виконався: true"), "{body}");
+}
+
+#[tokio::test]
+async fn partials_are_fragments_even_without_hx_request() {
+    // `partials/Row.rhx` → `/components/row`, layout не додається ніколи:
+    // це прямий аналог `/components/todo` з Node-RED-стартера.
+    let (status, _, body) = call(get("/components/row")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("<!DOCTYPE html>"),
+        "фрагмент без layout: {body}"
+    );
+    assert!(body.contains("рядок із partials/"), "{body}");
+}
+
+#[tokio::test]
+async fn oob_directive_produces_an_out_of_band_fragment() {
+    let (status, _, body) = call(htmx("/oob")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#"<span id="side" hx-swap-oob="outerHTML:#side">збоку</span>"#),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn attribute_directives_on_a_component_are_rejected() {
+    // Мовчки проігнорована директива — найгірший варіант: людина бачить, що
+    // клас не застосувався, і не розуміє чому.
+    let (status, _, body) = call(htmx("/badcomp")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("компонент"), "{body}");
+    assert!(body.contains("props"), "підказка про props: {body}");
+}
+
 #[tokio::test]
 async fn missing_page_is_a_404() {
     let (status, _, _) = call(get("/nope")).await;

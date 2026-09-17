@@ -1,0 +1,4 @@
+---
+let seen = state.get("middleware_ran") ?? false;
+---
+<p>middleware виконався: {{ seen }}</p>

@@ -19,7 +19,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M3 (компоненти)
+## Стан: M4 (маршрути, middleware, HTMX)
 
 Що вже працює:
 
@@ -27,6 +27,10 @@ page.title = "ToDo";
 - **frontmatter виконується**: `req`, `res`, `hx`, `log`, `state` доступні в кожному `.rhx`;
 - **компоненти**: `<TodoItem todo={t} />`, `<Ui.Card>` з props, `{...spread}`, слотами
   (звичайними та іменованими) та ізольованим scope;
+- **маршрути зі структури тек**: `pages/` → сторінки, `partials/` → фрагмент-ендпоінти
+  (`partials/Stats.rhx` → `/components/stats`), `[id].rhx` → динамічні сегменти;
+- **`middleware.rhx`** — спільна охорона: закрита сторінка захищена одним файлом;
+- **`@oob`** — одна відповідь оновлює і основну ціль, і блок поза нею;
 - layout вантажиться лише при звичайному заході, на `HX-Request` іде фрагмент;
 - `{{ вираз }}` з контекстним екрануванням і директиви `@if` / `@else` / `@for` /
   `@class` / `@style` / `@attr` / `@html` / `@text` / `@oob`;
@@ -68,6 +72,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M1-FINDINGS.md](M1-FINDINGS.md) | шаблонізатор: три зміни в спеці й оптимізації рендеру |
 | [M2-FINDINGS.md](M2-FINDINGS.md) | frontmatter: пастка `trim()`, кирилиця в заголовках, ворота M2 |
 | [M3-FINDINGS.md](M3-FINDINGS.md) | компоненти: діагностика з чужого файлу, слоти проти згортання |
+| [M4-FINDINGS.md](M4-FINDINGS.md) | маршрути й HTMX: чому прибрано `route()`, порт стартера |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 

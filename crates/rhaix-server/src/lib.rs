@@ -3,9 +3,8 @@
 //! Сервер знаходить сторінку, рендерить її шаблонізатором і віддає — з layout
 //! при звичайному заході й без нього при HTMX-запиті.
 //!
-//! Обсяг M3: frontmatter виконується, компоненти резолвляться при компіляції,
-//! рендер іде в `spawn_blocking` з обмеженням часу. Кеш шаблонів і watcher —
-//! у M6.
+//! Обсяг M4: сторінки з `pages/`, фрагменти з `partials/`, спільна охорона в
+//! `middleware.rhx`, правило фрагмента для HTMX. Кеш шаблонів і watcher — у M6.
 
 use std::fs;
 use std::net::SocketAddr;
@@ -58,9 +57,27 @@ impl Config {
         self.root.join("public")
     }
 
+    pub fn partials_dir(&self) -> PathBuf {
+        self.root.join("partials")
+    }
+
     pub fn layout_path(&self) -> PathBuf {
         self.root.join("layouts").join("main.rhx")
     }
+
+    /// Код, що виконується перед кожним запитом (SYNTAX 6.6).
+    pub fn middleware_path(&self) -> PathBuf {
+        self.root.join("middleware.rhx")
+    }
+}
+
+/// Що саме віддає маршрут.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteKind {
+    /// Сторінка з `pages/`: при звичайному заході загортається в layout.
+    Page,
+    /// Фрагмент із `partials/`: layout не додається ніколи.
+    Partial,
 }
 
 /// Сторінка, знайдена при скануванні `pages/`.
@@ -69,6 +86,7 @@ pub struct PageRoute {
     /// Шлях у стилі axum: `/todo`, `/todo/{id}`, `/blog/{*rest}`.
     pub pattern: String,
     pub file: PathBuf,
+    pub kind: RouteKind,
 }
 
 #[derive(Clone)]
@@ -83,7 +101,8 @@ struct AppState {
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
 pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
-    let routes = scan_pages(&config.pages_dir())?;
+    let mut routes = scan_pages(&config.pages_dir())?;
+    routes.extend(scan_partials(&config.partials_dir())?);
     let state = AppState {
         config: config.clone(),
         engine: Arc::new(build_engine(Limits::default())),
@@ -93,12 +112,13 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
     let mut router = Router::new();
     for route in &routes {
         let file = route.file.clone();
+        let kind = route.kind;
         router = router.route(
             &route.pattern,
             any(
                 move |state: State<AppState>, params: RawPathParams, request: HttpRequest<Body>| {
                     let file = file.clone();
-                    async move { serve_page(state.0, params, request, file).await }
+                    async move { serve_page(state.0, params, request, file, kind).await }
                 },
             ),
         );
@@ -137,6 +157,23 @@ pub fn scan_pages(dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
     Ok(routes)
 }
 
+/// Просканувати `partials/`: `Stats.rhx` → `/components/stats`.
+///
+/// Це прямий аналог `/components/todo` з Node-RED-стартера, тільки без окремого
+/// ендпоінта на кожен компонент — файл і є ендпоінтом.
+pub fn scan_partials(dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
+    let mut routes = Vec::new();
+    if !dir.is_dir() {
+        return Ok(routes);
+    }
+    collect_pages(dir, dir, &mut routes)?;
+    for route in &mut routes {
+        route.kind = RouteKind::Partial;
+        route.pattern = format!("/components{}", route.pattern.to_lowercase());
+    }
+    Ok(routes)
+}
+
 fn collect_pages(root: &Path, dir: &Path, out: &mut Vec<PageRoute>) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -152,6 +189,7 @@ fn collect_pages(root: &Path, dir: &Path, out: &mut Vec<PageRoute>) -> anyhow::R
         out.push(PageRoute {
             pattern: route_pattern(relative),
             file: path,
+            kind: RouteKind::Page,
         });
     }
     Ok(())
@@ -189,6 +227,7 @@ async fn serve_page(
     params: RawPathParams,
     request: HttpRequest<Body>,
     file: PathBuf,
+    kind: RouteKind,
 ) -> Response {
     let data = match collect_request(params, request).await {
         Ok(data) => data,
@@ -198,7 +237,7 @@ async fn serve_page(
 
     // Скрипт користувача синхронний і може ходити в БД, тому виконується на
     // окремому потоці; рушій спільний (`sync`-збірка Rhai), шаблон — теж.
-    let outcome = tokio::task::spawn_blocking(move || render_page(&state, &file, data)).await;
+    let outcome = tokio::task::spawn_blocking(move || render_page(&state, &file, kind, data)).await;
 
     let (body, response_state) = match outcome {
         Ok(Ok(result)) => result,
@@ -336,6 +375,7 @@ fn insert_header(headers: &mut axum::http::HeaderMap, name: &str, value: &str) {
 fn render_page(
     state: &AppState,
     file: &Path,
+    kind: RouteKind,
     data: RequestData,
 ) -> Result<(String, ResponseData), PageError> {
     let _deadline = Deadline::new(SCRIPT_BUDGET);
@@ -362,6 +402,34 @@ fn render_page(
         display_path(&state.config.root, file),
         page,
     );
+
+    // `middleware.rhx` виконується перед сторінкою: автентифікація, права,
+    // локаль — усе, що інакше довелось би дублювати в кожному файлі (SYNTAX 6.6).
+    let middleware_path = state.config.middleware_path();
+    if middleware_path.is_file() {
+        let middleware =
+            loader
+                .load(&middleware_path)
+                .map_err(|diagnostic| PageError::Template {
+                    diagnostic: diagnostic.text(),
+                })?;
+        let mut middleware_scope = Scope::new();
+        globals.apply(&mut middleware_scope);
+        let returned = middleware
+            .run_script(&state.engine, &mut middleware_scope)
+            .map_err(|diagnostic| PageError::Template {
+                diagnostic: diagnostic.text(),
+            })?;
+
+        let state_now = response.take();
+        if state_now.stop {
+            return Ok((String::new(), state_now));
+        }
+        if !returned.is_unit() {
+            // middleware віддав готове тіло — сторінка не виконується взагалі
+            return Ok((display(&returned), state_now));
+        }
+    }
 
     let mut scope = Scope::new();
     globals.apply(&mut scope);
@@ -393,7 +461,9 @@ fn render_page(
         rendered.html
     };
 
-    if is_htmx {
+    // Фрагмент із `partials/` не загортається в layout ніколи: він для того й
+    // існує, щоб приїхати в уже відкриту сторінку.
+    if is_htmx || kind == RouteKind::Partial {
         state_now = response.take();
         return Ok((page_html, state_now));
     }
@@ -575,11 +645,18 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     println!("rhaix dev — http://{}", config.addr);
     println!("  корінь : {}", config.root.display());
     for route in &routes {
+        let mark = match route.kind {
+            RouteKind::Page => "сторінка",
+            RouteKind::Partial => "фрагмент",
+        };
         println!(
-            "  маршрут: {:<22} {}",
+            "  {mark}: {:<22} {}",
             route.pattern,
             display_path(&config.root, &route.file)
         );
+    }
+    if config.middleware_path().is_file() {
+        println!("  middleware: middleware.rhx — виконується перед кожним запитом");
     }
     println!("  M3: логіка й компоненти працюють; кеш і watcher — з M6\n");
 
@@ -615,10 +692,12 @@ mod tests {
             PageRoute {
                 pattern: "/todo/{id}".into(),
                 file: PathBuf::new(),
+                kind: RouteKind::Page,
             },
             PageRoute {
                 pattern: "/todo/new".into(),
                 file: PathBuf::new(),
+                kind: RouteKind::Page,
             },
         ];
         routes.sort_by(|a, b| {

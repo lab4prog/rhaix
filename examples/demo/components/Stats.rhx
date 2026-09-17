@@ -1,0 +1,7 @@
+---
+let todos = state.get("todos") ?? [];
+let done = todos.filter(|t| t.done).len();
+---
+Усього: <b>{{ todos.len() }}</b> ·
+зроблено: <b>{{ done }}</b> ·
+лишилось: <b>{{ todos.len() - done }}</b>

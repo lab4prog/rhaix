@@ -1,0 +1,7 @@
+---
+// Спільна охорона: /closed нікого не пускає, решта проходить далі.
+state.set("middleware_ran", true);
+if req.path.starts_with("/closed") {
+    res.redirect("/");
+}
+---

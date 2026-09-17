@@ -1,0 +1,4 @@
+<div id="main-block">
+  основне
+  <span @oob={"#side"}>збоку</span>
+</div>

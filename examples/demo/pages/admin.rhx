@@ -1,0 +1,7 @@
+---
+page.title = "Адмінка";
+let todos = state.get("todos") ?? [];
+---
+<h1>Адмінка</h1>
+<p>Сюди не пускає <code>middleware.rhx</code>, поки немає кукі.</p>
+<p>Записів у сховищі: <b>{{ todos.len() }}</b>.</p>

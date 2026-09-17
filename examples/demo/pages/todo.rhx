@@ -24,6 +24,7 @@ if req.method == "POST" {
         state.set("next_id", id + 1);
         state.set("todos", todos);
         hx.toast(`Додано: ${title}`, "success");
+        hx.trigger("todoChanged");
     }
 }
 
@@ -33,6 +34,7 @@ if req.method == "PATCH" {
         if todos[i].id == id { todos[i].done = !todos[i].done; }
     }
     state.set("todos", todos);
+    hx.trigger("todoChanged");
 }
 
 if req.method == "DELETE" {
@@ -40,6 +42,7 @@ if req.method == "DELETE" {
     todos = todos.filter(|t| t.id != id);
     state.set("todos", todos);
     hx.toast("Видалено", "info");
+    hx.trigger("todoChanged");
 }
 ---
 
@@ -56,7 +59,17 @@ if req.method == "DELETE" {
     </form>
 
     <TodoList todos={todos} />
+
+    {{! фрагмент підтягується сам: спершу на load, далі на кожну подію todoChanged }}
+    <div hx-get="/components/stats" hx-trigger="load"></div>
   </Ui.Card>
+
+  {{! Після зміни списку той самий блок статистики оновлюється поза основною
+      ціллю — одна відповідь, два оновлені місця (SYNTAX 4.7). }}
+  <div @if={req.method != "GET"} @oob={"#stats"} class="stats"
+       hx-get="/components/stats" hx-trigger="todoChanged from:body">
+    <Stats />
+  </div>
 
   <p class="hint">
     Розмітка списку — у <code>components/TodoList.rhx</code> і

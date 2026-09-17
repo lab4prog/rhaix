@@ -321,6 +321,17 @@ impl<'a> Parser<'a> {
         let span = Span::new(open, self.pos);
 
         if is_component {
+            // Директиви, що правлять атрибути, для компонента не мають сенсу:
+            // він сам вирішує свою розмітку (SYNTAX 4.8). Мовчки ігнорувати їх
+            // гірше, ніж сказати про це одразу.
+            if !parsed.bind.is_empty() {
+                return Err(Diagnostic::new(
+                    format!("`<{name}>` — компонент, на ньому не працюють `@class`/`@style`/`@attr`/`@html`/`@text`/`@oob`"),
+                    name_span,
+                )
+                .with_hint("передайте значення через props або обгорніть компонент елементом"));
+            }
+
             // Компонент шукається вже зараз: невідомий тег і цикл — це помилка
             // компіляції, а не сюрприз під час запиту.
             let template = self.components.resolve(&name, name_span)?;

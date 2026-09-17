@@ -1,0 +1,4 @@
+---
+page.title = "фрагмент";
+---
+<tr><td>рядок із partials/</td></tr>

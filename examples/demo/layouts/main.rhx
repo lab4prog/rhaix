@@ -4,6 +4,7 @@ let nav = [
     #{ href: "/todo", label: "ToDo" },
     #{ href: "/escaping", label: "Екранування" },
     #{ href: "/contacts", label: "Контакти" },
+    #{ href: "/admin", label: "Адмінка" },
 ];
 ---
 <!DOCTYPE html>
