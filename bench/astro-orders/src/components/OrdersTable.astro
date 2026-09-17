@@ -1,0 +1,53 @@
+---
+import { statusLabel, statusClass, money, date, url } from '../lib/format.js';
+
+const { orders, status, sort, dir } = Astro.props;
+const total = orders.reduce((sum, o) => sum + o.amount, 0);
+const flip = dir === 'asc' ? 'desc' : 'asc';
+
+const columns = [
+  { k: 'id', t: '№' },
+  { k: 'customer', t: 'Клієнт' },
+  { k: 'amount', t: 'Сума' },
+  { k: 'created', t: 'Створено' },
+];
+---
+<h1>Замовлення</h1>
+
+<p>
+  {['', 'new', 'paid', 'cancelled'].map((s) => (
+    <a href={url('/', { status: s, sort, dir })}
+       hx-get={url('/', { status: s, sort, dir })}
+       hx-target="#main" hx-push-url="true"
+       class={s === status ? 'active' : undefined}>{s === '' ? 'Усі' : statusLabel(s)}</a>
+  ))}
+</p>
+
+<table>
+  <thead>
+    <tr>
+      {columns.map((col) => (
+        <th>
+          <a href={url('/', { status, sort: col.k, dir: col.k === sort ? flip : 'asc' })}
+             hx-get={url('/', { status, sort: col.k, dir: col.k === sort ? flip : 'asc' })}
+             hx-target="#main" hx-push-url="true">{col.t}</a>
+        </th>
+      ))}
+      <th>Статус</th>
+    </tr>
+  </thead>
+  <tbody>
+    {orders.map((o) => (
+      <tr>
+        <td>{o.id}</td>
+        <td>{o.customer}</td>
+        <td>{money(o.amount)}</td>
+        <td>{date(o.created)}</td>
+        <td><span class={statusClass(o.status)}>{statusLabel(o.status)}</span></td>
+      </tr>
+    ))}
+    {orders.length === 0 ? <tr><td colspan="5">Нічого не знайдено</td></tr> : null}
+  </tbody>
+</table>
+
+<p>Разом: <b>{money(total)}</b> за {orders.length} замовлень.</p>

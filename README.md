@@ -116,6 +116,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [SYNTAX.en.md](SYNTAX.en.md) | те саме англійською |
 | [llms.txt](llms.txt) | довідник на один файл, написаний для LLM |
 | [examples/cookbook](examples/cookbook) | рецепти «задача → готовий `.rhx`», перевіряються тестом |
+| [bench](bench) | порівняння з Astro на спільній базі: методика, цифри й застереження |
 | [PLAN.md](PLAN.md) | архітектура, API, дорожня карта M0-M13 |
 | [RISKS.md](RISKS.md) | підводні камені, ворота рішень, оцінка життєздатності |
 | [M0-FINDINGS.md](M0-FINDINGS.md) | результати спайку: виміри й сім знайдених тертя |

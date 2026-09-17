@@ -1,0 +1,6 @@
+---
+// Для розділу 4: лише запит до бази, без рендеру рядків.
+import { findOrders } from '../lib/db.js';
+const orders = findOrders({ sort: 'id', dir: 'asc' });
+---
+<p>{orders.length}</p>

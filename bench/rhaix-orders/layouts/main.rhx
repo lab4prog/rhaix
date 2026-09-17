@@ -1,0 +1,25 @@
+---
+let nav = [
+    #{ href: "/", label: "Замовлення" },
+    #{ href: "/new", label: "Нове" },
+];
+---
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page.title ?? "orders" }}</title>
+  <rhaix:head />
+</head>
+<body hx-boost="true">
+  <nav>
+    <a @for={item in nav} href={item.href}
+       hx-get={item.href} hx-target="#main" hx-push-url="true"
+       @class={#{"active": item.href == req.path}}>{{ item.label }}</a>
+  </nav>
+  <main id="main"><slot /></main>
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.7/dist/htmx.min.js"></script>
+  <rhaix:scripts />
+</body>
+</html>

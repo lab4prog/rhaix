@@ -1,0 +1,49 @@
+---
+page.title = "Нове замовлення";
+
+let form   = #{ customer: "", email: "", amount: "" };
+let errors = #{};
+let saved  = ();
+
+if req.method == "POST" {
+    form.customer = req.form("customer").trim();
+    form.email    = req.form("email").trim();
+    form.amount   = req.form("amount").trim();
+
+    if is_blank(form.customer) { errors.customer = "Вкажіть ім'я"; }
+    if !form.email.contains("@") { errors.email = "Схоже, це не пошта"; }
+
+    let amount = req.form_float("amount");
+    if amount == () || amount <= 0.0 { errors.amount = "Сума має бути більшою за нуль"; }
+
+    if errors.is_empty() {
+        let id = db.insert("orders", #{
+            customer: form.customer, email: form.email,
+            amount: amount, status: "new",
+        });
+        saved = db.get("orders", id);
+        form = #{ customer: "", email: "", amount: "" };
+    } else {
+        res.status(422);
+    }
+}
+---
+<h1>Нове замовлення</h1>
+
+<form method="post" action="/new">
+  <p>
+    <label>Клієнт<br><input name="customer" value={form.customer}></label>
+    <span class="error" @if={errors.customer}>{{ errors.customer }}</span>
+  </p>
+  <p>
+    <label>Пошта<br><input name="email" value={form.email}></label>
+    <span class="error" @if={errors.email}>{{ errors.email }}</span>
+  </p>
+  <p>
+    <label>Сума<br><input name="amount" value={form.amount}></label>
+    <span class="error" @if={errors.amount}>{{ errors.amount }}</span>
+  </p>
+  <button>Створити</button>
+</form>
+
+<p @if={saved}>Створено №{{ saved.id }} на {{ money(saved.amount) }}.</p>

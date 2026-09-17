@@ -112,6 +112,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [llms.txt](llms.txt) | one-file reference written for LLMs |
 | [examples/cookbook](examples/cookbook) | "task → finished `.rhx`" recipes, verified by a test |
 | [examples/demo](examples/demo) | the demo application running on the current code |
+| [bench](bench) | a like-for-like comparison with Astro on a shared database (Ukrainian) |
 | [SYNTAX.md](SYNTAX.md) | the Ukrainian specification (the original) |
 | [PLAN.md](PLAN.md) | architecture, API, roadmap M0–M13 (Ukrainian) |
 | [RISKS.md](RISKS.md) | pitfalls, decision gates, a viability assessment (Ukrainian) |

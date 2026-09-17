@@ -1,0 +1,13 @@
+---
+let order = db.get("orders", req.param("id"));
+page.title = if order == () { "Не знайдено" } else { `Замовлення №${order.id}` };
+if order == () { res.status(404); }
+---
+<article @if={order}>
+  <h1>Замовлення №{{ order.id }}</h1>
+  <p>{{ order.customer }} &lt;{{ order.email }}&gt;</p>
+  <p>Сума: <b>{{ money(order.amount) }}</b></p>
+  <p>Статус: <span @class={status_class(order.status)}>{{ status_label(order.status) }}</span></p>
+  <p>Створено: {{ date(order.created, "DD.MM.YYYY HH:mm") }}</p>
+</article>
+<p class="error" @else>Замовлення не знайдено.</p>

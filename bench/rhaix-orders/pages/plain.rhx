@@ -1,0 +1,14 @@
+---
+// Для розділу 4 у bench/README.md: та сама таблиця, але без викликів функцій.
+page.layout = false;
+let orders = db.find("orders", #{}, #{ sort: "id asc" });
+---
+<table><tbody>
+  <tr @for={o in orders}>
+    <td>{{ o.id }}</td>
+    <td>{{ o.customer }}</td>
+    <td>{{ o.amount }}</td>
+    <td>{{ o.created }}</td>
+    <td>{{ o.status }}</td>
+  </tr>
+</tbody></table>

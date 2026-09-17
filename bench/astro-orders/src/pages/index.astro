@@ -1,0 +1,24 @@
+---
+import Main from '../layouts/Main.astro';
+import OrdersTable from '../components/OrdersTable.astro';
+import { findOrders } from '../lib/db.js';
+
+const params = Astro.url.searchParams;
+const status = params.get('status') ?? '';
+const sort = params.get('sort') ?? 'id';
+const dir = params.get('dir') ?? 'desc';
+const orders = findOrders({ status, sort, dir });
+
+// Правило фрагмента доводиться писати руками: Astro про HTMX не знає.
+// Через це вміст сторінки довелось винести в окремий компонент, щоб не
+// дублювати його у двох гілках.
+const isHtmx = Astro.request.headers.has('hx-request');
+Astro.response.headers.set('Vary', 'HX-Request');
+---
+{isHtmx ? (
+  <OrdersTable orders={orders} status={status} sort={sort} dir={dir} />
+) : (
+  <Main title="Замовлення">
+    <OrdersTable orders={orders} status={status} sort={sort} dir={dir} />
+  </Main>
+)}

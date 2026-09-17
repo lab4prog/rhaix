@@ -1,0 +1,52 @@
+---
+import Main from '../layouts/Main.astro';
+import { insertOrder, getOrder } from '../lib/db.js';
+import { money } from '../lib/format.js';
+
+let form = { customer: '', email: '', amount: '' };
+let errors = {};
+let saved = null;
+
+if (Astro.request.method === 'POST') {
+  const data = await Astro.request.formData();
+  form = {
+    customer: String(data.get('customer') ?? '').trim(),
+    email: String(data.get('email') ?? '').trim(),
+    amount: String(data.get('amount') ?? '').trim(),
+  };
+
+  if (!form.customer) errors.customer = "Вкажіть ім'я";
+  if (!form.email.includes('@')) errors.email = 'Схоже, це не пошта';
+
+  const amount = Number.parseFloat(form.amount.replace(',', '.'));
+  if (!Number.isFinite(amount) || amount <= 0) errors.amount = 'Сума має бути більшою за нуль';
+
+  if (Object.keys(errors).length === 0) {
+    saved = getOrder(insertOrder({ ...form, amount }));
+    form = { customer: '', email: '', amount: '' };
+  } else {
+    Astro.response.status = 422;
+  }
+}
+---
+<Main title="Нове замовлення">
+  <h1>Нове замовлення</h1>
+
+  <form method="post" action="/new">
+    <p>
+      <label>Клієнт<br><input name="customer" value={form.customer}></label>
+      {errors.customer ? <span class="error">{errors.customer}</span> : null}
+    </p>
+    <p>
+      <label>Пошта<br><input name="email" value={form.email}></label>
+      {errors.email ? <span class="error">{errors.email}</span> : null}
+    </p>
+    <p>
+      <label>Сума<br><input name="amount" value={form.amount}></label>
+      {errors.amount ? <span class="error">{errors.amount}</span> : null}
+    </p>
+    <button>Створити</button>
+  </form>
+
+  {saved ? <p>Створено №{saved.id} на {money(saved.amount)}.</p> : null}
+</Main>

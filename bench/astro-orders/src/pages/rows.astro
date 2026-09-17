@@ -1,0 +1,18 @@
+---
+// Фрагмент для HTMX: сторінка без layout.
+import { findOrders } from '../lib/db.js';
+import { money } from '../lib/format.js';
+
+const q = (Astro.url.searchParams.get('q') ?? '').trim();
+const orders = findOrders({ limit: 20 }).filter((o) =>
+  q === '' ? true : o.customer.toLowerCase().includes(q.toLowerCase())
+);
+---
+{orders.map((o) => (
+  <tr>
+    <td>{o.id}</td>
+    <td>{o.customer}</td>
+    <td>{money(o.amount)}</td>
+  </tr>
+))}
+{orders.length === 0 ? <tr><td colspan="3">Нічого не знайдено</td></tr> : null}

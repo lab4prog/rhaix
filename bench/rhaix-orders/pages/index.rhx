@@ -1,0 +1,55 @@
+---
+page.title = "Замовлення";
+
+let status = req.query("status") ?? "";
+let sort   = req.query("sort") ?? "id";
+let dir    = req.query("dir") ?? "desc";
+
+if !["id", "customer", "amount", "created"].contains(sort) { sort = "id"; }
+if dir != "asc" { dir = "desc"; }
+
+let where = if status == "" { #{} } else { #{ status: status } };
+let orders = db.find("orders", where, #{ sort: `${sort} ${dir}` });
+let total = 0.0;
+for o in orders { total += o.amount; }
+
+let flip = if dir == "asc" { "desc" } else { "asc" };
+let columns = [
+    #{ k: "id", t: "№" }, #{ k: "customer", t: "Клієнт" },
+    #{ k: "amount", t: "Сума" }, #{ k: "created", t: "Створено" },
+];
+---
+<h1>Замовлення</h1>
+
+<p>
+  <a @for={s in ["", "new", "paid", "cancelled"]}
+     href={url("/", #{ status: s, sort: sort, dir: dir })}
+     hx-get={url("/", #{ status: s, sort: sort, dir: dir })}
+     hx-target="#main" hx-push-url="true"
+     @class={#{"active": s == status}}>{{ if s == "" { "Усі" } else { status_label(s) } }}</a>
+</p>
+
+<table>
+  <thead>
+    <tr>
+      <th @for={col in columns}>
+        <a href={url("/", #{ status: status, sort: col.k, dir: if col.k == sort { flip } else { "asc" } })}
+           hx-get={url("/", #{ status: status, sort: col.k, dir: if col.k == sort { flip } else { "asc" } })}
+           hx-target="#main" hx-push-url="true">{{ col.t }}</a>
+      </th>
+      <th>Статус</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr @for={o in orders}>
+      <td>{{ o.id }}</td>
+      <td>{{ o.customer }}</td>
+      <td>{{ money(o.amount) }}</td>
+      <td>{{ date(o.created, "DD.MM.YYYY HH:mm") }}</td>
+      <td><span @class={status_class(o.status)}>{{ status_label(o.status) }}</span></td>
+    </tr>
+    <tr @if={orders.is_empty()}><td colspan="5">Нічого не знайдено</td></tr>
+  </tbody>
+</table>
+
+<p>Разом: <b>{{ money(total) }}</b> за {{ orders.len() }} замовлень.</p>

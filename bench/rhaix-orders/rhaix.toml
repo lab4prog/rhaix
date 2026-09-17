@@ -1,0 +1,12 @@
+[server]
+port = 4322
+
+[db]
+driver = "sqlite"
+url = "../data/orders.db"
+
+[app]
+secret = "bench"
+# CSRF вимкнено лише для того, щоб навантажувальний тест міг слати POST без
+# попереднього GET. У бойовому застосунку він увімкнений за замовчуванням.
+csrf = false

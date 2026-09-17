@@ -1,0 +1,21 @@
+---
+import Main from '../../layouts/Main.astro';
+import { getOrder } from '../../lib/db.js';
+import { statusLabel, statusClass, money, date } from '../../lib/format.js';
+
+const order = getOrder(Number(Astro.params.id));
+if (!order) Astro.response.status = 404;
+---
+<Main title={order ? `Замовлення №${order.id}` : 'Не знайдено'}>
+  {order ? (
+    <article>
+      <h1>Замовлення №{order.id}</h1>
+      <p>{order.customer} &lt;{order.email}&gt;</p>
+      <p>Сума: <b>{money(order.amount)}</b></p>
+      <p>Статус: <span class={statusClass(order.status)}>{statusLabel(order.status)}</span></p>
+      <p>Створено: {date(order.created)}</p>
+    </article>
+  ) : (
+    <p class="error">Замовлення не знайдено.</p>
+  )}
+</Main>

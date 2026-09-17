@@ -134,39 +134,51 @@ pub fn format(timestamp: i64, pattern: &str) -> String {
                 continue;
             }
         }
-        let rest = &pattern[i..];
-        let matched = [
-            ("YYYY", format!("{:04}", p.year)),
-            ("YY", format!("{:02}", p.year.rem_euclid(100))),
-            ("MM", format!("{:02}", p.month)),
-            ("DD", format!("{:02}", p.day)),
-            ("HH", format!("{:02}", p.hour)),
-            ("mm", format!("{:02}", p.minute)),
-            ("ss", format!("{:02}", p.second)),
-            ("M", p.month.to_string()),
-            ("D", p.day.to_string()),
-            ("H", p.hour.to_string()),
-            ("m", p.minute.to_string()),
-            ("s", p.second.to_string()),
-        ]
-        .into_iter()
-        .find(|(token, _)| rest.starts_with(token));
 
-        match matched {
-            Some((token, value)) => {
-                out.push_str(&value);
+        let rest = &pattern[i..];
+        match TOKENS.iter().find(|token| rest.starts_with(**token)) {
+            Some(token) => {
+                write_token(&mut out, token, &p);
                 i += token.len();
             }
             None => {
                 // Не токен — просто символ. Ідемо по символах, щоб не
                 // розрізати кирилицю навпіл.
-                let ch = pattern[i..].chars().next().expect("рядок не порожній");
+                let ch = rest.chars().next().expect("рядок не порожній");
                 out.push(ch);
                 i += ch.len_utf8();
             }
         }
     }
     out
+}
+
+/// Довші токени — першими, інакше `YYYY` розпізнався б як два `YY`.
+const TOKENS: [&str; 12] = [
+    "YYYY", "YY", "MM", "DD", "HH", "mm", "ss", "M", "D", "H", "m", "s",
+];
+
+/// Дописати значення токена прямо в буфер.
+///
+/// Раніше тут був масив із дванадцяти готових рядків, який будувався **на
+/// кожній позиції** шаблону: `date()` на таблиці в 1000 рядків давав близько
+/// 190 тисяч зайвих алокацій. Знайдено при порівнянні з Astro (`bench/`).
+fn write_token(out: &mut String, token: &str, p: &Parts) {
+    use std::fmt::Write as _;
+    let _ = match token {
+        "YYYY" => write!(out, "{:04}", p.year),
+        "YY" => write!(out, "{:02}", p.year.rem_euclid(100)),
+        "MM" => write!(out, "{:02}", p.month),
+        "DD" => write!(out, "{:02}", p.day),
+        "HH" => write!(out, "{:02}", p.hour),
+        "mm" => write!(out, "{:02}", p.minute),
+        "ss" => write!(out, "{:02}", p.second),
+        "M" => write!(out, "{}", p.month),
+        "D" => write!(out, "{}", p.day),
+        "H" => write!(out, "{}", p.hour),
+        "m" => write!(out, "{}", p.minute),
+        _ => write!(out, "{}", p.second),
+    };
 }
 
 /// Розібрати `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]`, ISO-8601 із `T` і `Z`.

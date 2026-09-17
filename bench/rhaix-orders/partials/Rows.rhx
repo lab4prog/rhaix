@@ -1,0 +1,11 @@
+---
+let q = req.query("q") ?? "";
+let where = if is_blank(q) { #{} } else { #{ customer: #{ contains: q } } };
+let orders = db.find("orders", where, #{ sort: "id asc", limit: 20 });
+---
+<tr @for={o in orders}>
+  <td>{{ o.id }}</td>
+  <td>{{ o.customer }}</td>
+  <td>{{ money(o.amount) }}</td>
+</tr>
+<tr @if={orders.is_empty()}><td colspan="3">Нічого не знайдено</td></tr>

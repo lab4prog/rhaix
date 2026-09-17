@@ -1,0 +1,16 @@
+---
+// Для розділу 4 у bench/README.md: та сама таблиця, але без викликів функцій.
+import { findOrders } from '../lib/db.js';
+const orders = findOrders({ sort: 'id', dir: 'asc' });
+---
+<table><tbody>
+  {orders.map((o) => (
+    <tr>
+      <td>{o.id}</td>
+      <td>{o.customer}</td>
+      <td>{o.amount}</td>
+      <td>{o.created}</td>
+      <td>{o.status}</td>
+    </tr>
+  ))}
+</tbody></table>

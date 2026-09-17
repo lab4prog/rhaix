@@ -1,0 +1,6 @@
+---
+// Для розділу 4: лише запит до бази, без рендеру рядків.
+page.layout = false;
+let orders = db.find("orders", #{}, #{ sort: "id asc" });
+---
+<p>{{ orders.len() }}</p>

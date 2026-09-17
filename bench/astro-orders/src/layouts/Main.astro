@@ -1,0 +1,27 @@
+---
+const { title = 'orders' } = Astro.props;
+const nav = [
+  { href: '/', label: 'Замовлення' },
+  { href: '/new', label: 'Нове' },
+];
+const path = Astro.url.pathname;
+---
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body hx-boost="true">
+  <nav>
+    {nav.map((item) => (
+      <a href={item.href} hx-get={item.href} hx-target="#main" hx-push-url="true"
+         class={item.href === path ? 'active' : undefined}>{item.label}</a>
+    ))}
+  </nav>
+  <main id="main"><slot /></main>
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.7/dist/htmx.min.js"></script>
+</body>
+</html>
