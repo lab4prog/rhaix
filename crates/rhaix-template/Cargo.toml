@@ -15,3 +15,6 @@ rhai.workspace = true
 [[bin]]
 name = "rhaix-render-bench"
 path = "src/bin/render_bench.rs"
+
+[dev-dependencies]
+rhaix-script.workspace = true

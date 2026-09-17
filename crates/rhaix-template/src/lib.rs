@@ -25,7 +25,7 @@ use rhaix_parser::{Source, Span};
 
 pub use ast::Node;
 pub use error::Diagnostic;
-pub use loader::{Components, Loader, NoComponents};
+pub use loader::{Components, Loader, NoComponents, TemplateCache};
 pub use render::{Globals, Rendered, Slots};
 
 use expr::Expr;

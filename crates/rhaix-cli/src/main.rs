@@ -1,11 +1,13 @@
 //! `rhaix` — командний рядок фреймворку.
 //!
-//! У M0 є лише `dev`: підняти сервер над текою проєкту. `new`, `check` і `build`
-//! приїдуть у M6 і M8.
+//! `dev` — сервер розробки, `new` — скелет проєкту, `check` — перевірка всіх
+//! `.rhx` без запуску. `build` приїде в M8.
 
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+
+mod scaffold;
 
 #[derive(Parser)]
 #[command(
@@ -30,6 +32,23 @@ enum Command {
         #[arg(short, long)]
         port: Option<u16>,
     },
+
+    /// Створити новий проєкт
+    New {
+        /// Тека для проєкту
+        path: PathBuf,
+    },
+
+    /// Перевірити всі `.rhx` проєкту, не запускаючи сервер
+    Check {
+        /// Корінь проєкту
+        #[arg(default_value = ".")]
+        root: PathBuf,
+
+        /// Машинний вивід — для редакторів і агентів
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -53,6 +72,32 @@ async fn main() -> anyhow::Result<()> {
             };
             let config = rhaix_server::Config::load(root, port)?;
             rhaix_server::serve(config).await
+        }
+
+        Command::New { path } => scaffold::create(&path),
+
+        Command::Check { root, json } => {
+            let config = rhaix_server::Config::load(root, None)?;
+            let issues = rhaix_server::check(&config);
+
+            if json {
+                let body: Vec<String> = issues.iter().map(|issue| issue.to_json()).collect();
+                println!("[{}]", body.join(","));
+            } else if issues.is_empty() {
+                println!("Помилок не знайдено.");
+            } else {
+                for issue in &issues {
+                    println!("{}", issue.rendered);
+                }
+                println!("Знайдено проблем: {}", issues.len());
+            }
+
+            // Ненульовий код — щоб `rhaix check` можна було поставити в CI.
+            if issues.is_empty() {
+                Ok(())
+            } else {
+                std::process::exit(1);
+            }
         }
     }
 }

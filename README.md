@@ -19,7 +19,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M5 (дані)
+## Стан: M6 (DX)
 
 Що вже працює:
 
@@ -34,6 +34,8 @@ page.title = "ToDo";
 - **база даних**: `rhaix.toml` з секцією `[db]`, міграції з `migrations/*.sql` на
   старті, рідні запити (`db.query`) і переносимий CRUD (`db.find/get/insert/…`)
   зі словником операторів;
+- **живе перезавантаження**: правка файлу видима за ~70 мс, кеш шаблонів знає
+  про залежності — правка компонента оновлює сторінки, що його вбудували;
 - layout вантажиться лише при звичайному заході, на `HX-Request` іде фрагмент;
 - `{{ вираз }}` з контекстним екрануванням і директиви `@if` / `@else` / `@for` /
   `@class` / `@style` / `@attr` / `@html` / `@text` / `@oob`;
@@ -50,10 +52,21 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: `http` і `session` (M5.2), watcher-а й кешу шаблонів (M6).
+Чого ще немає: `http` і `session` (M5.2), підйому `<style>`/`<script>` із
+компонентів (M7), прод-збірки в один бінарник (M8).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
+```
+
+Новий проєкт і перевірка без запуску:
+
+```bash
+cargo run --release -p rhaix-cli -- new myapp
+```
+
+```bash
+cargo run --release -p rhaix-cli -- check myapp --json
 ```
 
 Ворота продуктивності. M0 міряє обчислення виразів (4.88 мс при межі 5 мс),
@@ -80,6 +93,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M3-FINDINGS.md](M3-FINDINGS.md) | компоненти: діагностика з чужого файлу, слоти проти згортання |
 | [M4-FINDINGS.md](M4-FINDINGS.md) | маршрути й HTMX: чому прибрано `route()`, порт стартера |
 | [M5-FINDINGS.md](M5-FINDINGS.md) | дані: булеві в SQLite, шлях до бази, захист від ін'єкції |
+| [M6-FINDINGS.md](M6-FINDINGS.md) | DX: кеш із залежностями, 68 мс до оновлення, межа `check` |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 
@@ -92,7 +106,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, бенчмарк |
 | `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |
 | `rhaix-server` | axum: маршрути, layout, правило фрагмента, статика |
-| `rhaix-cli` | `rhaix dev` |
+| `rhaix-cli` | `rhaix dev`, `rhaix new`, `rhaix check` |
 
 `rhaix-runtime` поки лишається частиною `rhaix-template`: реєстр компонентів
 виявився надто зв'язаним із парсером, щоб ділити їх зараз.

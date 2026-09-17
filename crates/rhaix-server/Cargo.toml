@@ -21,6 +21,8 @@ tower-http.workspace = true
 tracing.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+notify = "7"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

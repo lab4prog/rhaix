@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use rhai::Engine;
 use rhaix_parser::{Source, Span};
@@ -36,23 +37,126 @@ impl Components for NoComponents {
     }
 }
 
+/// Відбиток файлу, за яким видно, що його змінили.
+///
+/// Час зміни плюс розмір: редактори, що зберігають файл за ту саму секунду,
+/// майже завжди міняють і довжину, тож разом ці двоє надійніші за кожного окремо.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<SystemTime>,
+    size: u64,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(meta) => Self {
+                modified: meta.modified().ok(),
+                size: meta.len(),
+            },
+            Err(_) => Self {
+                modified: None,
+                size: 0,
+            },
+        }
+    }
+}
+
+/// Скомпільований шаблон разом із файлами, від яких він залежить.
+struct CacheEntry {
+    template: Arc<Template>,
+    /// Сам файл і всі компоненти, що в нього потрапили. Зміна будь-кого з них
+    /// робить запис несвіжим — інакше правка компонента не була б видна на
+    /// сторінці, яка його вбудувала.
+    stamps: Vec<(PathBuf, Stamp)>,
+}
+
+/// Спільний кеш шаблонів: живе стільки, скільки процес.
+pub struct TemplateCache {
+    entries: Mutex<HashMap<PathBuf, CacheEntry>>,
+    /// У dev перевіряємо свіжість на кожен запит, у проді — ніколи.
+    check_freshness: bool,
+}
+
+impl TemplateCache {
+    /// Кеш для розробки: помічає зміни файлів.
+    pub fn watching() -> Arc<Self> {
+        Arc::new(Self {
+            entries: Mutex::new(HashMap::new()),
+            check_freshness: true,
+        })
+    }
+
+    /// Кеш для продакшну: жодних звернень до файлової системи після компіляції.
+    pub fn frozen() -> Arc<Self> {
+        Arc::new(Self {
+            entries: Mutex::new(HashMap::new()),
+            check_freshness: false,
+        })
+    }
+
+    /// Викинути все — так реагуємо на подію watcher-а.
+    pub fn clear(&self) {
+        self.entries.lock().expect("кеш не отруєний").clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.lock().expect("кеш не отруєний").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, file: &Path) -> Option<Arc<Template>> {
+        let entries = self.entries.lock().expect("кеш не отруєний");
+        let entry = entries.get(file)?;
+        if self.check_freshness
+            && entry
+                .stamps
+                .iter()
+                .any(|(path, stamp)| Stamp::of(path) != *stamp)
+        {
+            return None;
+        }
+        Some(entry.template.clone())
+    }
+
+    fn put(&self, file: PathBuf, template: Arc<Template>, deps: Vec<PathBuf>) {
+        let stamps = deps
+            .into_iter()
+            .map(|path| {
+                let stamp = Stamp::of(&path);
+                (path, stamp)
+            })
+            .collect();
+        self.entries
+            .lock()
+            .expect("кеш не отруєний")
+            .insert(file, CacheEntry { template, stamps });
+    }
+}
+
 /// Завантажувач компонентів із теки `components/`.
 pub struct Loader {
     root: PathBuf,
     engine: Arc<Engine>,
-    /// Компоненти, скомпільовані під час поточного завантаження сторінки.
-    /// У M6 цей кеш стане постійним (шлях + mtime → `Arc<Template>`).
-    cache: Mutex<HashMap<PathBuf, Arc<Template>>>,
+    /// Спільний кеш між запитами.
+    cache: Arc<TemplateCache>,
+    /// Файли, скомпільовані під час поточного завантаження: і дедуплікація,
+    /// і список залежностей для кешу.
+    visited: Mutex<HashMap<PathBuf, Arc<Template>>>,
     /// Стек файлів, які зараз компілюються — так ловляться цикли.
     stack: Mutex<Vec<PathBuf>>,
 }
 
 impl Loader {
-    pub fn new(root: impl Into<PathBuf>, engine: Arc<Engine>) -> Self {
+    pub fn new(root: impl Into<PathBuf>, engine: Arc<Engine>, cache: Arc<TemplateCache>) -> Self {
         Self {
             root: root.into(),
             engine,
-            cache: Mutex::new(HashMap::new()),
+            cache,
+            visited: Mutex::new(HashMap::new()),
             stack: Mutex::new(Vec::new()),
         }
     }
@@ -62,8 +166,25 @@ impl Loader {
     }
 
     /// Завантажити сторінку або layout.
+    ///
+    /// Результат кешується разом зі списком залежностей, тому правка
+    /// компонента робить несвіжими всі сторінки, що його вбудували.
     pub fn load(&self, file: &Path) -> Result<Arc<Template>, Diagnostic> {
-        self.compile_file(file, Span::new(0, 0))
+        if let Some(cached) = self.cache.get(file) {
+            return Ok(cached);
+        }
+
+        let template = self.compile_file(file, Span::new(0, 0))?;
+
+        let deps: Vec<PathBuf> = self
+            .visited
+            .lock()
+            .expect("список файлів не отруєний")
+            .keys()
+            .cloned()
+            .collect();
+        self.cache.put(file.to_path_buf(), template.clone(), deps);
+        Ok(template)
     }
 
     /// `Ui.Button` → `components/ui/Button.rhx`.
@@ -87,7 +208,12 @@ impl Loader {
     fn compile_file(&self, file: &Path, span: Span) -> Result<Arc<Template>, Diagnostic> {
         let key = file.to_path_buf();
 
-        if let Some(found) = self.cache.lock().expect("кеш не отруєний").get(&key) {
+        if let Some(found) = self
+            .visited
+            .lock()
+            .expect("список файлів не отруєний")
+            .get(&key)
+        {
             return Ok(found.clone());
         }
 
@@ -110,9 +236,9 @@ impl Loader {
         self.stack.lock().expect("стек не отруєний").pop();
 
         let template = result?;
-        self.cache
+        self.visited
             .lock()
-            .expect("кеш не отруєний")
+            .expect("список файлів не отруєний")
             .insert(key, template.clone());
         Ok(template)
     }
@@ -236,7 +362,7 @@ mod tests {
 
     #[test]
     fn component_names_map_to_files() {
-        let loader = Loader::new("/app", Arc::new(Engine::new()));
+        let loader = Loader::new("/app", Arc::new(Engine::new()), TemplateCache::watching());
         assert!(loader
             .component_path("TodoItem")
             .ends_with("components/TodoItem.rhx"));
@@ -246,6 +372,38 @@ mod tests {
         assert!(loader
             .component_path("Forms.Field.Text")
             .ends_with("components/forms/field/Text.rhx"));
+    }
+
+    #[test]
+    fn cache_returns_the_same_tree_and_notices_changes() {
+        let dir = std::env::temp_dir().join(format!("rhaix-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("components")).unwrap();
+        let page = dir.join("page.rhx");
+        std::fs::write(&page, "<p><Box /></p>").unwrap();
+        std::fs::write(dir.join("components/Box.rhx"), "<b>перше</b>").unwrap();
+
+        let engine = Arc::new(rhaix_script::engine(rhaix_script::Limits::default()));
+        let cache = TemplateCache::watching();
+
+        let first = Loader::new(&dir, engine.clone(), cache.clone())
+            .load(&page)
+            .unwrap();
+        let second = Loader::new(&dir, engine.clone(), cache.clone())
+            .load(&page)
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &second), "друге завантаження — з кешу");
+
+        // Правка компонента має робити несвіжою сторінку, яка його вбудувала.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("components/Box.rhx"), "<b>друге і довше</b>").unwrap();
+        let third = Loader::new(&dir, engine, cache).load(&page).unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "після правки — перекомпіляція"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -3,9 +3,13 @@
 //! Сервер знаходить сторінку, рендерить її шаблонізатором і віддає — з layout
 //! при звичайному заході й без нього при HTMX-запиті.
 //!
-//! Обсяг M5: сторінки з `pages/`, фрагменти з `partials/`, спільна охорона в
-//! `middleware.rhx`, база з `rhaix.toml` і міграції на старті. Кеш шаблонів і
-//! watcher — у M6.
+//! Обсяг M6: сторінки з `pages/`, фрагменти з `partials/`, спільна охорона в
+//! `middleware.rhx`, база з `rhaix.toml`, кеш шаблонів і живе перезавантаження.
+//! Прод-збірка в один бінарник — M8.
+
+mod check;
+
+pub use check::{check, Issue};
 
 use std::fs;
 use std::net::SocketAddr;
@@ -16,6 +20,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::{RawPathParams, State};
 use axum::http::{header, HeaderName, HeaderValue, Request as HttpRequest, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
@@ -26,7 +31,10 @@ use rhaix_script::{
     Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData,
     State as ScriptState,
 };
-use rhaix_template::{Globals, Loader, Slots};
+use rhaix_template::{Globals, Loader, Slots, TemplateCache};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use tower_http::services::ServeDir;
 
 /// Скільки часу дається скрипту сторінки. Далі — явна помилка, а не мовчазне
@@ -36,6 +44,15 @@ const SCRIPT_BUDGET: Duration = Duration::from_secs(5);
 /// Обмеження на тіло запиту.
 const MAX_BODY: usize = 1024 * 1024;
 
+/// Скільки чекати після події файлової системи, перш ніж перезбирати.
+///
+/// Редактори пишуть файл кількома операціями, тож без паузи одне збереження
+/// давало б два-три перезавантаження сторінки.
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// Канал, яким `rhaix dev` повідомляє браузеру, що пора перезавантажитись.
+const RELOAD_ROUTE: &str = "/_rhaix/events";
+
 /// Налаштування застосунку: `rhaix.toml` плюс те, що задав CLI.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -43,6 +60,8 @@ pub struct Config {
     pub addr: SocketAddr,
     /// Секція `[db]`. Якщо її немає, `db` у скрипті пояснить, чого бракує.
     pub database: Option<DatabaseConfig>,
+    /// Режим розробки: живе перезавантаження й перевірка свіжості файлів.
+    pub dev: bool,
 }
 
 /// Секція `[db]` з `rhaix.toml`.
@@ -69,6 +88,7 @@ impl Config {
             root: root.into(),
             addr,
             database: None,
+            dev: true,
         }
     }
 
@@ -94,6 +114,7 @@ impl Config {
             root,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
             database: file.db,
+            dev: true,
         })
     }
 
@@ -151,10 +172,27 @@ struct AppState {
     state: ScriptState,
     /// Підключення до бази (або заглушка, якщо `[db]` немає).
     database: Database,
+    /// Кеш скомпільованих шаблонів, спільний для всіх запитів.
+    templates: Arc<TemplateCache>,
+    /// Сповіщення про зміну файлів для відкритих сторінок.
+    reload: broadcast::Sender<()>,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
 pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
+    build_watched(config).map(|(router, routes, _)| (router, routes))
+}
+
+/// Те саме, але ще й віддає кеш і канал перезавантаження — щоб `serve`
+/// міг повісити на них watcher.
+#[allow(clippy::type_complexity)]
+pub fn build_watched(
+    config: Config,
+) -> anyhow::Result<(
+    Router,
+    Vec<PageRoute>,
+    (Arc<TemplateCache>, broadcast::Sender<()>),
+)> {
     let mut routes = scan_pages(&config.pages_dir())?;
     routes.extend(scan_partials(&config.partials_dir())?);
 
@@ -183,6 +221,9 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
         engine: Arc::new(build_engine(Limits::default())),
         state: ScriptState::new(),
         database,
+        // У dev кеш перевіряє свіжість файлів; `rhaix build` (M8) візьме frozen.
+        templates: TemplateCache::watching(),
+        reload: broadcast::channel(16).0,
     };
 
     let mut router = Router::new();
@@ -200,6 +241,18 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
         );
     }
 
+    // Канал живого перезавантаження. У проді маршрут просто не потрібен, але
+    // тримати його окремо від сторінок усе одно правильно: це службовий шлях.
+    let reload = state.reload.clone();
+    let router = router.route(
+        RELOAD_ROUTE,
+        axum::routing::get(move || {
+            let stream = BroadcastStream::new(reload.subscribe())
+                .map(|_| Ok::<Event, std::convert::Infallible>(Event::default().event("reload")));
+            std::future::ready(Sse::new(stream).keep_alive(KeepAlive::default()))
+        }),
+    );
+
     let public = config.public_dir();
     let router = if public.is_dir() {
         // `public/style.css` віддається як `/style.css` — без префікса, як в Astro.
@@ -208,7 +261,8 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
         router.fallback(not_found)
     };
 
-    Ok((router.with_state(state), routes))
+    let watched = (state.templates.clone(), state.reload.clone());
+    Ok((router.with_state(state), routes, watched))
 }
 
 /// Просканувати `pages/` і побудувати маршрути.
@@ -473,9 +527,13 @@ fn render_page(
     let path = data.path.clone();
     let response = ScriptResponse::new();
 
-    // Один завантажувач на запит: він компілює сторінку разом з усіма її
-    // компонентами й кешує їх на час цього рендеру (постійний кеш — M6).
-    let loader = Loader::new(state.config.root.clone(), state.engine.clone());
+    // Завантажувач створюється на запит, але кеш у нього спільний: повторний
+    // запит бере готове дерево, а правка файлу робить запис несвіжим.
+    let loader = Loader::new(
+        state.config.root.clone(),
+        state.engine.clone(),
+        state.templates.clone(),
+    );
     let template = loader
         .load(file)
         .map_err(|diagnostic| PageError::Template {
@@ -580,7 +638,7 @@ fn render_page(
         })?;
 
     let head = collect_head(&state.config.public_dir());
-    let scripts = collect_scripts(&state.config.public_dir());
+    let scripts = collect_scripts(&state.config);
     let wrapped = layout
         .render(
             &state.engine,
@@ -617,17 +675,22 @@ fn collect_head(public: &Path) -> String {
 
 /// htmx першим, далі решта `public/**.js` — саме те, що в Node-RED-стартері
 /// доводилось вписувати в `index.html` руками.
-fn collect_scripts(public: &Path) -> String {
-    let mut scripts = list_assets(public, "js");
+fn collect_scripts(config: &Config) -> String {
+    let mut scripts = list_assets(&config.public_dir(), "js");
     scripts.sort_by_key(|src| !src.contains("htmx"));
-    scripts
+    let mut out: Vec<String> = scripts
         .into_iter()
         .map(|src| format!("<script src=\"{src}\"></script>"))
-        .collect::<Vec<_>>()
-        .join(
-            "
-  ",
-        )
+        .collect();
+
+    // У режимі розробки додається крихітний клієнт живого перезавантаження:
+    // сторінка оновлюється сама, щойно watcher побачив зміну.
+    if config.dev {
+        out.push(format!(
+            "<script>new EventSource(\"{RELOAD_ROUTE}\").addEventListener(\"reload\", () => location.reload());</script>"
+        ));
+    }
+    out.join("\n  ")
 }
 
 fn list_assets(public: &Path, extension: &str) -> Vec<String> {
@@ -718,7 +781,7 @@ impl IntoResponse for PageError {
 }
 
 /// Шлях для показу людині: відносний до кореня, з прямими слешами.
-fn display_path(root: &Path, file: &Path) -> String {
+pub(crate) fn display_path(root: &Path, file: &Path) -> String {
     file.strip_prefix(root)
         .unwrap_or(file)
         .to_string_lossy()
@@ -731,9 +794,57 @@ fn html_escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Стежити за файлами проєкту: чистити кеш і будити відкриті сторінки.
+///
+/// Watcher живе у власному потоці `notify` і зупиняється разом із процесом.
+fn watch(root: PathBuf, templates: Arc<TemplateCache>, reload: broadcast::Sender<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = match notify::recommended_watcher(tx) {
+        Ok(watcher) => watcher,
+        Err(err) => {
+            tracing::warn!("стеження за файлами недоступне: {err}");
+            return;
+        }
+    };
+    if let Err(err) = notify::Watcher::watch(&mut watcher, &root, notify::RecursiveMode::Recursive)
+    {
+        tracing::warn!("стеження за файлами недоступне: {err}");
+        return;
+    }
+
+    std::thread::spawn(move || {
+        // watcher має жити стільки ж, скільки цикл: інакше події просто
+        // перестануть приходити
+        let _watcher = watcher;
+        while let Ok(event) = rx.recv() {
+            let Ok(event) = event else { continue };
+            if !event.paths.iter().any(|path| is_source(path)) {
+                continue;
+            }
+            // з'їдаємо решту пачки, щоб одне збереження не дало кількох перезборів
+            std::thread::sleep(WATCH_DEBOUNCE);
+            while rx.try_recv().is_ok() {}
+
+            templates.clear();
+            let _ = reload.send(());
+            tracing::info!("зміни підхоплено");
+        }
+    });
+}
+
+/// Чи варто реагувати на цей файл.
+fn is_source(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("rhx" | "rhai" | "css" | "js" | "toml" | "sql") => true,
+        // тимчасові файли редакторів ігноруємо
+        _ => false,
+    }
+}
+
 /// Запустити сервер і працювати до Ctrl+C.
 pub async fn serve(config: Config) -> anyhow::Result<()> {
-    let (router, routes) = build(config.clone())?;
+    let (router, routes, watched) = build_watched(config.clone())?;
+    watch(config.root.clone(), watched.0, watched.1);
 
     println!("rhaix dev — http://{}", config.addr);
     println!("  корінь : {}", config.root.display());
