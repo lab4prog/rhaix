@@ -1,9 +1,15 @@
 <h1>ToDo</h1>
-<ul class="todo-list">
-  <li class="todo-item completed"><input type="checkbox" checked><span>Купити молоко</span></li>
-  <li class="todo-item"><input type="checkbox"><span>Зробити домашку</span></li>
+
+<ul class="todo-list" id="list">
+  <li @for={t in todos} class="todo-item" @class={#{"completed": t.done}}>
+    <input type="checkbox" @attr={#{"checked": t.done}}>
+    <span>{{ iter.number }}. {{ t.title }}</span>
+  </li>
+  <li @if={todos.is_empty()} class="empty">Порожньо</li>
 </ul>
+
 <p class="hint">
-  M0: розмітка статична. Дані, <code>@for</code> і компонент
-  <code>&lt;TodoItem/&gt;</code> з'являться в M1-M3.
+  Виводяться {{ todos.len() }} записи, з них зроблено
+  {{ todos.filter(|t| t.done).len() }}.
+  Дані поки підставляє сервер — frontmatter почне виконуватись у M2.
 </p>

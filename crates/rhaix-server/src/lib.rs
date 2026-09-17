@@ -1,22 +1,27 @@
 //! HTTP-шар rhaix: маршрути з файлової структури, layout і правило фрагмента.
 //!
-//! Обсяг M0 навмисно вузький: сервер уміє знайти сторінку, відрізати frontmatter
-//! і віддати розмітку — з layout при звичайному заході й без нього при
-//! HTMX-запиті. Рендеру ще немає: `{{ }}`, директиви й компоненти з'являться
-//! в M1-M3, а виконання frontmatter — у M2. Усе, що тут зроблено рядковими
-//! операціями, у M1 стане вузлами AST — місця позначені `M1:`.
+//! Сервер знаходить сторінку, рендерить її шаблонізатором і віддає — з layout
+//! при звичайному заході й без нього при HTMX-запиті.
+//!
+//! Обсяг M1: `{{ }}`, директиви й екранування працюють, але дані поки
+//! підставляє сам сервер (`stub_scope`) — виконання frontmatter приїде в M2,
+//! компоненти — в M3, кеш шаблонів — в M6.
 
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
-use rhaix_parser::{render_diagnostic, split, Source};
+use rhai::{Dynamic, Engine, Map, Scope};
+use rhaix_parser::Source;
+use rhaix_script::{engine as build_engine, Limits};
+use rhaix_template::{Slots, Template};
 use tower_http::services::ServeDir;
 
 /// Налаштування застосунку. У M6 сюди приїде `rhaix.toml`.
@@ -58,6 +63,9 @@ pub struct PageRoute {
 #[derive(Clone)]
 struct AppState {
     config: Config,
+    /// Рушій спільний для всіх запитів: `sync`-збірка Rhai дозволяє тримати
+    /// його в `Arc`, а на запит створюється лише `Scope`.
+    engine: Arc<Engine>,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
@@ -65,6 +73,7 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
     let routes = scan_pages(&config.pages_dir())?;
     let state = AppState {
         config: config.clone(),
+        engine: Arc::new(build_engine(Limits::default())),
     };
 
     let mut router = Router::new();
@@ -72,10 +81,12 @@ pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
         let file = route.file.clone();
         router = router.route(
             &route.pattern,
-            any(move |state: State<AppState>, headers: HeaderMap| {
-                let file = file.clone();
-                async move { serve_page(state.0, headers, file).await }
-            }),
+            any(
+                move |state: State<AppState>, uri: Uri, headers: HeaderMap| {
+                    let file = file.clone();
+                    async move { serve_page(state.0, uri, headers, file).await }
+                },
+            ),
         );
     }
 
@@ -159,23 +170,12 @@ fn segment_pattern(name: &str) -> String {
     name.to_owned()
 }
 
-async fn serve_page(state: AppState, headers: HeaderMap, file: PathBuf) -> Response {
+async fn serve_page(state: AppState, uri: Uri, headers: HeaderMap, file: PathBuf) -> Response {
     let is_htmx = headers.contains_key("hx-request");
 
-    let markup = match read_markup(&file, &state.config.root) {
-        Ok(markup) => markup,
+    let html = match render_page(&state, &file, uri.path(), is_htmx) {
+        Ok(html) => html,
         Err(err) => return err.into_response(),
-    };
-
-    // Правило фрагмента (SYNTAX 6.3): layout додається лише тоді, коли сторінку
-    // відкривають напряму. Для HTMX-запиту віддається сама розмітка.
-    let html = if is_htmx {
-        markup
-    } else {
-        match wrap_in_layout(&state.config, markup) {
-            Ok(html) => html,
-            Err(err) => return err.into_response(),
-        }
     };
 
     let mut response = Response::new(Body::from(html));
@@ -196,46 +196,120 @@ async fn serve_page(state: AppState, headers: HeaderMap, file: PathBuf) -> Respo
     response
 }
 
-/// Прочитати `.rhx` і відрізати frontmatter.
+/// Відрендерити сторінку і, якщо треба, вкласти її в layout.
 ///
-/// M2: замість відкидання коду тут буде його виконання, а повернута розмітка
-/// піде в рендерер зі scope.
-fn read_markup(file: &Path, root: &Path) -> Result<String, PageError> {
+/// Правило фрагмента (SYNTAX 6.3): layout додається лише тоді, коли сторінку
+/// відкривають напряму. Для HTMX-запиту віддається сама розмітка сторінки.
+fn render_page(
+    state: &AppState,
+    file: &Path,
+    path: &str,
+    is_htmx: bool,
+) -> Result<String, PageError> {
+    let template = load_template(&state.engine, file, &state.config.root)?;
+    let mut scope = stub_scope(path, is_htmx);
+
+    let rendered = template
+        .render(&state.engine, &mut scope, Slots::default())
+        .map_err(|diagnostic| PageError::Template {
+            diagnostic: template.describe(&diagnostic),
+        })?;
+    for warning in &rendered.warnings {
+        tracing::warn!("{path}: {warning}");
+    }
+
+    if is_htmx {
+        return Ok(rendered.html);
+    }
+
+    let layout_path = state.config.layout_path();
+    if !layout_path.is_file() {
+        return Ok(rendered.html);
+    }
+
+    let layout = load_template(&state.engine, &layout_path, &state.config.root)?;
+    let head = collect_head(&state.config.public_dir());
+    let scripts = collect_scripts(&state.config.public_dir());
+    let mut layout_scope = stub_scope(path, is_htmx);
+    let wrapped = layout
+        .render(
+            &state.engine,
+            &mut layout_scope,
+            Slots {
+                slot: &rendered.html,
+                head: &head,
+                scripts: &scripts,
+            },
+        )
+        .map_err(|diagnostic| PageError::Template {
+            diagnostic: layout.describe(&diagnostic),
+        })?;
+    Ok(wrapped.html)
+}
+
+/// Прочитати й скомпілювати `.rhx`.
+///
+/// M6: тут з'явиться кеш `шлях + mtime → Arc<Template>`; поки що компіляція
+/// на кожен запит — так dev-режим завжди показує свіжий файл.
+fn load_template(engine: &Engine, file: &Path, root: &Path) -> Result<Template, PageError> {
     let raw = fs::read_to_string(file).map_err(|err| PageError::Io {
         file: file.to_path_buf(),
         message: err.to_string(),
     })?;
     // У діагностиці показуємо шлях так, як його бачить людина: відносно кореня
-    // проєкту, а не `\?\C:\...`, який дає canonicalize на Windows.
-    let source = Source::new(display_path(root, file), raw);
-    match split(&source) {
-        Ok(parts) => Ok(source.slice(parts.markup).to_owned()),
-        Err(err) => Err(PageError::Parse {
-            diagnostic: render_diagnostic(&source, &err),
-        }),
-    }
+    // проєкту, а не UNC-шлях, який дає canonicalize на Windows.
+    let source = Arc::new(Source::new(display_path(root, file), raw));
+    Template::compile(source.clone(), engine).map_err(|diagnostic| PageError::Template {
+        diagnostic: diagnostic.render(&source),
+    })
 }
 
-/// Вставити сторінку в layout і розкрити службові теги.
+/// Дані-заглушки замість frontmatter (M2).
 ///
-/// M1: `<slot />`, `<rhaix:head/>` і `<rhaix:scripts/>` стануть вузлами AST —
-/// зараз це рядкові заміни, щоб перевірити саме правило layout, а не рендерер.
-fn wrap_in_layout(config: &Config, page: String) -> Result<String, PageError> {
-    let layout_path = config.layout_path();
-    if !layout_path.is_file() {
-        return Ok(page);
-    }
-    let layout = read_markup(&layout_path, &config.root)?;
-    let head = collect_head(&config.public_dir());
-    let scripts = collect_scripts(&config.public_dir());
+/// Це єдине місце в M1, яке знає щось про вміст сторінок, і воно зникне
+/// повністю, щойно frontmatter почне виконуватись.
+fn stub_scope(path: &str, is_htmx: bool) -> Scope<'static> {
+    let mut scope = Scope::new();
 
-    Ok(layout
-        .replace("<slot />", &page)
-        .replace("<slot/>", &page)
-        .replace("<rhaix:head />", &head)
-        .replace("<rhaix:head/>", &head)
-        .replace("<rhaix:scripts />", &scripts)
-        .replace("<rhaix:scripts/>", &scripts))
+    let mut page = Map::new();
+    page.insert("title".into(), Dynamic::from("rhaix"));
+    scope.push_dynamic("page", Dynamic::from_map(page));
+    scope.push("path", path.to_owned());
+    scope.push("is_htmx", is_htmx);
+
+    let todos: Vec<Dynamic> = [
+        ("Купити молоко", true),
+        ("Зробити домашку", false),
+        ("Написати M2", false),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (title, done))| {
+        let mut todo = Map::new();
+        todo.insert("id".into(), Dynamic::from(index as i64 + 1));
+        todo.insert("title".into(), Dynamic::from(title));
+        todo.insert("done".into(), Dynamic::from(done));
+        Dynamic::from_map(todo)
+    })
+    .collect();
+    scope.push_dynamic("todos", Dynamic::from(todos));
+
+    let features: Vec<Dynamic> = [
+        "інтерполяція {{ }} з екрануванням за контекстом",
+        "директиви @if / @else / @for / @class / @attr",
+        "помилки з позицією у файлі .rhx",
+    ]
+    .into_iter()
+    .map(Dynamic::from)
+    .collect();
+    scope.push_dynamic("features", Dynamic::from(features));
+
+    // для сторінки про екранування
+    scope.push("dangerous", "<script>alert(1)</script>");
+    scope.push("markup", "<b>це справді жирний текст</b>");
+    scope.push("evil", "javascript:alert(document.cookie)");
+
+    scope
 }
 
 /// Усі `public/**.css` — у `<head>`.
@@ -288,7 +362,7 @@ async fn not_found(_: Request<Body>) -> Response {
 
 enum PageError {
     Io { file: PathBuf, message: String },
-    Parse { diagnostic: String },
+    Template { diagnostic: String },
 }
 
 impl IntoResponse for PageError {
@@ -303,7 +377,7 @@ impl IntoResponse for PageError {
                     file.display()
                 ),
             ),
-            PageError::Parse { diagnostic } => (StatusCode::INTERNAL_SERVER_ERROR, diagnostic),
+            PageError::Template { diagnostic } => (StatusCode::INTERNAL_SERVER_ERROR, diagnostic),
         };
         tracing::error!("{body}");
         let html = format!(
@@ -348,9 +422,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             display_path(&config.root, &route.file)
         );
     }
-    println!(
-        "  M0: frontmatter відрізається без виконання, `{{{{ }}}}` і компоненти ще не рендеряться\n"
-    );
+    println!("  M1: `{{{{ }}}}` і директиви працюють; дані — заглушки, компоненти — з M3\n");
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     axum::serve(listener, router)

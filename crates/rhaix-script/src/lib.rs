@@ -4,6 +4,10 @@
 //! не зафіксувати в одному місці: що виводиться замість `()`, що вважається
 //! хибним в `@if`, які ліміти стоять на скрипті користувача.
 
+mod stdlib;
+
+pub use stdlib::{register_core, Html};
+
 use rhai::{Dynamic, Engine, EvalAltResult, OptimizationLevel, AST};
 
 /// Ліміти за замовчуванням. Сенс у тому, щоб помилка користувача (нескінченний
@@ -35,6 +39,7 @@ pub fn engine(limits: Limits) -> Engine {
     engine.set_max_string_size(limits.max_string_size);
     engine.set_max_expr_depths(limits.max_expr_depth, limits.max_expr_depth);
     engine.set_optimization_level(OptimizationLevel::Full);
+    register_core(&mut engine);
     engine
 }
 
@@ -88,6 +93,10 @@ pub fn write_display(out: &mut String, value: &Dynamic) {
     }
     if let Some(text) = value.read_lock::<rhai::ImmutableString>() {
         out.push_str(&text);
+        return;
+    }
+    if let Some(html) = value.read_lock::<Html>() {
+        out.push_str(&html.0);
         return;
     }
     if let Ok(f) = value.as_float() {

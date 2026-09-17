@@ -271,7 +271,13 @@ fn is_fence_line(text: &str, at: usize) -> bool {
 ///   = додайте рядок `---` після коду
 /// ```
 pub fn render_diagnostic(source: &Source, error: &ParseError) -> String {
-    let start = source.line_col(error.span.start);
+    render_message(source, &error.message, error.span, error.hint.as_deref())
+}
+
+/// Те саме, але для будь-якого повідомлення: цим користуються всі шари —
+/// парсер шаблону, компілятор виразів і рантайм, щоб вигляд помилки був один.
+pub fn render_message(source: &Source, message: &str, span: Span, hint: Option<&str>) -> String {
+    let start = source.line_col(span.start);
     let line = source.line_text(start.line);
     let gutter = start.line.to_string().len().max(1);
     let pad = " ".repeat(gutter);
@@ -282,14 +288,14 @@ pub fn render_diagnostic(source: &Source, error: &ParseError) -> String {
         .map(|ch| if ch == '\t' { '\t' } else { ' ' })
         .collect();
     let caret_len = source
-        .slice(error.span)
+        .slice(span)
         .chars()
         .take_while(|ch| *ch != '\n')
         .count()
         .max(1);
 
     let mut out = String::new();
-    out.push_str(&format!("error: {}\n", error.message));
+    out.push_str(&format!("error: {message}\n"));
     out.push_str(&format!("{pad}┌─ {}:{}\n", source.path().display(), start));
     out.push_str(&format!("{pad}│\n"));
     out.push_str(&format!("{} │ {}\n", start.line, line));
@@ -298,7 +304,7 @@ pub fn render_diagnostic(source: &Source, error: &ParseError) -> String {
         caret_indent,
         "^".repeat(caret_len)
     ));
-    if let Some(hint) = &error.hint {
+    if let Some(hint) = hint {
         out.push_str(&format!("{pad}= {hint}\n"));
     }
     out

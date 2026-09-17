@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/rhaix-parser",
     "crates/rhaix-script",
+    "crates/rhaix-template",
     "crates/rhaix-server",
     "crates/rhaix-cli",
 ]
@@ -17,12 +18,13 @@ rust-version = "1.85"
 [workspace.dependencies]
 rhaix-parser = { path = "crates/rhaix-parser" }
 rhaix-script = { path = "crates/rhaix-script" }
+rhaix-template = { path = "crates/rhaix-template" }
 rhaix-server = { path = "crates/rhaix-server" }
 
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
-rhai = { version = "1", features = ["sync"] }
+rhai = { version = "1", features = ["sync", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "trace"] }

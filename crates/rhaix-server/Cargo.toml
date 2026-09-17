@@ -8,6 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 rhaix-parser.workspace = true
+rhaix-script.workspace = true
+rhaix-template.workspace = true
+rhai.workspace = true
 
 anyhow.workspace = true
 axum.workspace = true

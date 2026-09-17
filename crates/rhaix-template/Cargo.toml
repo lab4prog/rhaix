@@ -1,0 +1,17 @@
+[package]
+name = "rhaix-template"
+description = "The .rhx template engine: lexer, AST, compiled expressions and renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rhaix-parser.workspace = true
+rhaix-script.workspace = true
+
+rhai.workspace = true
+
+[[bin]]
+name = "rhaix-render-bench"
+path = "src/bin/render_bench.rs"

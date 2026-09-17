@@ -1,9 +1,16 @@
 <h1>rhaix</h1>
+
 <p>
   Серверний рендер HTMX на Rust + Rhai. Ця сторінка прийшла з
-  <code>pages/index.rhx</code>.
+  <code>pages/index.rhx</code>, шлях запиту — <code>{{ path }}</code>.
 </p>
-<p>
-  Перехід по меню не перезавантажує layout: HTMX просить сторінку, сервер бачить
-  заголовок <code>HX-Request</code> і віддає лише фрагмент.
-</p>
+
+<p @if={is_htmx}>Це фрагмент: layout не перевантажувався.</p>
+<p @else>Повне завантаження: layout зібрано разом зі сторінкою.</p>
+
+<h2>Що вже вміє M1</h2>
+<ul>
+  <li @for={(feature, index) in features}>
+    <b>{{ index + 1 }}.</b> {{ feature }}
+  </li>
+</ul>
