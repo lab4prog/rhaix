@@ -663,3 +663,73 @@ async fn a_layout_name_cannot_escape_the_layouts_directory() {
     // Відкат на layout за замовчуванням, а не на чужий файл.
     assert!(!body.contains(r#"<body class="print">"#), "{body}");
 }
+
+#[tokio::test]
+async fn passwords_are_hashed_and_verified() {
+    // Реєстрація новим іменем, потім вхід тим самим паролем, потім відмова на
+    // неправильному — усе через справжній Argon2, з тим самим застосунком, бо
+    // база `:memory:` в межах одного `app()` спільна.
+    let app = app();
+
+    async fn post(app: &axum::Router, ticket: &(String, String), password: &str) -> (StatusCode, String) {
+        let (cookie, token) = ticket;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/auth")
+            .header("HX-Request", "true")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("cookie", cookie)
+            .body(Body::from(format!("username=oksana&password={password}&_csrf={token}")))
+            .expect("запит");
+        let response = app.clone().oneshot(request).await.expect("оброблено");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // Квиток CSRF беремо зі сторінки auth (сесія одна на застосунок).
+    let (_, headers, html) = {
+        let response = app
+            .clone()
+            .oneshot(htmx("/auth"))
+            .await
+            .expect("оброблено");
+        let status = response.status();
+        assert_eq!(status, StatusCode::OK);
+        let headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .map(|(n, v)| (n.as_str().to_owned(), v.to_str().unwrap_or_default().to_owned()))
+            .collect();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        (status, headers, String::from_utf8_lossy(&bytes).into_owned())
+    };
+    let cookie = header(&headers, "set-cookie")
+        .expect("cookie сесії")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let marker = "name=\"_csrf\" value=\"";
+    let start = html.find(marker).expect("є токен") + marker.len();
+    let token = html[start..].split('"').next().unwrap().to_owned();
+    let ticket = (cookie, token);
+
+    // Реєстрація.
+    let (status, body) = post(&app, &ticket, "правильний123").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(r#"<p id="status">registered</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="user">oksana</p>"#), "{body}");
+    // У базі — Argon2id, не пароль.
+    assert!(body.contains(r#"<p id="hash">$argon2id$</p>"#), "{body}");
+
+    // Вхід правильним паролем.
+    let (status, body) = post(&app, &ticket, "правильний123").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(r#"<p id="status">ok</p>"#), "{body}");
+
+    // Відмова на неправильному.
+    let (status, body) = post(&app, &ticket, "неправильний").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.contains(r#"<p id="status">wrong</p>"#), "{body}");
+}

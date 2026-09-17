@@ -3,26 +3,42 @@ page.title = "Вхід";
 let error = "";
 
 if req.method == "POST" {
-    let name = req.form("name").trim();
-    if name == "" {
-        error = "Як до вас звертатися?";
+    let username = req.form("username").trim();
+    let password = req.form("password");
+
+    if is_blank(username) || is_blank(password) {
+        error = "Введіть ім'я та пароль";
         res.status(422);
     } else {
-        // Паролів у демо немає навмисно: справжня автентифікація — це M12.
-        // Показуємо саме сесію: те, що покладено сюди, переживе перехід
-        // між сторінками й перезапуск браузера.
-        session.set("user", name);
-        hx.toast(`Вітаємо, ${name}!`, "success");
-        res.redirect("/admin");
+        // Демо входу й реєстрації в одному: якщо такого користувача ще немає —
+        // створюємо (пароль хешується Argon2); якщо є — перевіряємо пароль.
+        let found = db.find("users", #{ username: username }, #{ limit: 1 });
+
+        if found.is_empty() {
+            db.insert("users", #{ username: username, password: hash_password(password) });
+            session.set("user", username);
+            hx.toast(`Реєстрація успішна, ${username}!`, "success");
+            res.redirect("/admin");
+        } else if verify_password(password, found[0].password) {
+            session.set("user", username);
+            hx.toast(`Вітаємо, ${username}!`, "success");
+            res.redirect("/admin");
+        } else {
+            error = "Невірний пароль";
+            res.status(422);
+        }
     }
 }
 ---
 <h1>Вхід</h1>
-<p>Сесія — це підписаний cookie. Приховане поле з токеном у форму нижче
-   фреймворк додав сам: подивіться вихідний код сторінки.</p>
+<p>Паролі хешуються <b>Argon2id</b> з випадковою сіллю — не SHA-256.
+   У базі лежить рядок формату PHC, а не пароль.</p>
+<p>Демо: перший вхід із новим іменем реєструє користувача, наступний —
+   перевіряє пароль. Приховане поле CSRF у форму фреймворк додав сам.</p>
 
 <form method="post" action="/login">
-  <input name="name" placeholder="Ваше ім'я" autofocus>
-  <button>Увійти</button>
+  <p><input name="username" placeholder="Ім'я користувача" autofocus></p>
+  <p><input name="password" type="password" placeholder="Пароль"></p>
+  <button>Увійти або зареєструватися</button>
 </form>
 <p class="error" @if={error}>{{ error }}</p>

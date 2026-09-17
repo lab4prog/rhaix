@@ -21,7 +21,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M11 (драйвер PostgreSQL)
+## Стан: M12 (автентифікація)
 
 Що вже працює:
 
@@ -57,6 +57,8 @@ page.title = "ToDo";
   `commit`; будь-яка помилка всередині означає відкат;
 - **два драйвери бази**: `sqlite` і `postgres`. Той самий `.rhx` працює на обох —
   зміна драйвера це зміна `rhaix.toml`, а не коду (перевірено на `bench/`);
+- **паролі**: `hash_password(pw)` і `verify_password(pw, hash)` на Argon2id зі
+  стандартними параметрами OWASP; у демо справжній вхід із реєстрацією;
 - **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (11.3 МБ), який
   нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
   із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
@@ -76,8 +78,8 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: автентифікації з паролями й `markdown()` (M12),
-драйверів MongoDB/SurrealDB (решта M11).
+Чого ще немає: завантаження файлів, пагінації-хелпера, пошти й `markdown()`
+(решта M12), драйверів MongoDB/SurrealDB (решта M11).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -133,6 +135,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M5.2-FINDINGS.md](M5.2-FINDINGS.md) | сесії, CSRF без ручної роботи, `http`, дати й гроші |
 | [M9-FINDINGS.md](M9-FINDINGS.md) | доки як тест: шість розбіжностей між спекою й кодом |
 | [M11-FINDINGS.md](M11-FINDINGS.md) | драйвер PostgreSQL: `?`→`$N`, `RETURNING`, коерція типів |
+| [M12-FINDINGS.md](M12-FINDINGS.md) | автентифікація: Argon2, справжній вхід у демо |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 

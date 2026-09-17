@@ -1,0 +1,32 @@
+---
+page.title = "Автентифікація";
+let status = "";
+
+if req.method == "POST" {
+    let username = req.form("username").trim();
+    let password = req.form("password");
+    let found = db.find("users", #{ username: username }, #{ limit: 1 });
+
+    if found.is_empty() {
+        db.insert("users", #{ username: username, password: hash_password(password) });
+        session.set("user", username);
+        status = "registered";
+    } else if verify_password(password, found[0].password) {
+        session.set("user", username);
+        status = "ok";
+    } else {
+        status = "wrong";
+        res.status(422);
+    }
+}
+
+// Показуємо початок збереженого хешу — щоб тест переконався, що це не пароль.
+let stored = db.find("users", #{}, #{ limit: 1 });
+let hash_head = if stored.is_empty() { "" } else { stored[0].password.sub_string(0, 10) };
+---
+<form method="post" action="/auth">
+  <input name="username"><input name="password" type="password"><button>ok</button>
+</form>
+<p id="status">{{ status }}</p>
+<p id="user">{{ session.user ?? "" }}</p>
+<p id="hash">{{ hash_head }}</p>

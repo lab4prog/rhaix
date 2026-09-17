@@ -4,6 +4,7 @@
 //! не зафіксувати в одному місці: що виводиться замість `()`, що вважається
 //! хибним в `@if`, які ліміти стоять на скрипті користувача.
 
+mod auth;
 mod crypto;
 mod data;
 mod datetime;
@@ -14,6 +15,7 @@ mod stdlib;
 mod text;
 mod web;
 
+pub use auth::{hash_password, verify_password};
 pub use crypto::{random_token, uuid_v4};
 pub use data::register_db;
 pub use datetime::{now_secs, parse_tz_offset, register_datetime, set_tz_offset};
@@ -81,6 +83,7 @@ pub fn engine(limits: Limits) -> Engine {
     register_http(&mut engine);
     register_datetime(&mut engine);
     register_text(&mut engine);
+    auth::register_auth(&mut engine);
     engine
 }
 

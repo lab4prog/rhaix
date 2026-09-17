@@ -802,6 +802,7 @@ capitalize(text)
 money(1234.5)              // "1 234,50" (non-breaking space, rounds away from zero)
 money(value, 0)
 uuid() / random_id() / sha256(text)
+hash_password(pw) / verify_password(pw, hash)   // Argon2id, salt inside the hash
 json_encode(value) / json_decode(text)
 is_blank(value)            // (), "", "   ", [], #{}
 ```
@@ -810,9 +811,12 @@ is_blank(value)            // (), "", "   ", [], #{}
 could close a tag and is meant for `<script>` (2.5); the second gives a plain
 string for a database or an API.
 
-Password hashing is deliberately not part of v1: a correct `hash_password` is
-Argon2 with tuned parameters, and passing SHA-256 off as one would be dishonest.
-It is part of M12, together with the rest of authentication.
+**Passwords — `hash_password(pw)` and `verify_password(pw, hash)`.** Argon2id
+with OWASP defaults (19 MiB, 2 passes) and a random salt. The database stores a
+PHC string (`$argon2id$…`), so no separate salt column is needed. `sha256()` is
+for checksums, **not** passwords: a fast hash is brute-forced billions per
+second. `hash_password("")` returns `()`, and `verify_password` on a broken hash
+returns `false` rather than erroring.
 
 ---
 

@@ -313,6 +313,7 @@ days(n) hours(n) minutes(n)
 slug(s) cut(s, n) strip_tags(s) capitalize(s) is_blank(v)
 money(v) money(v, 0) percent(a, b)
 uuid() random_id() sha256(s)
+hash_password(pw) verify_password(pw, hash)   // Argon2id — for passwords, not sha256()
 json(v)              // for <script> only — escapes tag-closing sequences
 json_encode(v) json_decode(s)
 raw(v) bool(v)
@@ -391,5 +392,5 @@ rhaix check <dir>    # compile everything without starting; --json for CI
 ## Not in v1, on purpose
 
 Islands / client components / partial hydration; scoped CSS (v1.1); password
-hashing and auth (planned as M12, deliberately not faked with SHA-256);
+uploads, mail and the rest of the batteries (M12);
 `markdown()`; Postgres, MongoDB, SurrealDB drivers (M11, same `DbDriver` trait).
