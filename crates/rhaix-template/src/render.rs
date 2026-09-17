@@ -29,9 +29,26 @@ const MAX_DEPTH: usize = 32;
 ///
 /// Компонент не успадковує scope батька, тому глобальні об'єкти передаються
 /// явно — інакше в компоненті не було б ні `req`, ні `page`.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct Globals {
     entries: Vec<(String, Dynamic)>,
+    csrf: Option<CsrfToken>,
+}
+
+/// Джерело CSRF-токена для розмітки.
+///
+/// Функція, а не рядок: токен народжується при першому звертанні, тому
+/// сторінка без форм не отримує ні токена, ні cookie сесії. Замикання, а не
+/// тип із `rhaix-script`, — щоб шаблонізатор не знав, звідки береться сесія.
+pub type CsrfToken = std::sync::Arc<dyn Fn() -> String + Send + Sync>;
+
+impl std::fmt::Debug for Globals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Globals")
+            .field("entries", &self.entries)
+            .field("csrf", &self.csrf.is_some())
+            .finish()
+    }
 }
 
 impl Globals {
@@ -41,6 +58,12 @@ impl Globals {
 
     pub fn set(&mut self, name: impl Into<String>, value: Dynamic) -> &mut Self {
         self.entries.push((name.into(), value));
+        self
+    }
+
+    /// Звідки брати токен для полів `<rhaix:csrf />`.
+    pub fn with_csrf(&mut self, token: CsrfToken) -> &mut Self {
+        self.csrf = Some(token);
         self
     }
 
@@ -190,14 +213,49 @@ impl<'a> Renderer<'a> {
             Node::Component(component) => self.component(component, scope),
             Node::Slot(slot) => self.slot(slot, scope),
             Node::Special(special) => {
-                let text = match special {
-                    Special::Head(_) => self.slots.head,
-                    Special::Scripts(_) => self.slots.scripts,
-                };
-                self.out.push_str(text);
+                match special {
+                    Special::Head(_) => self.out.push_str(self.slots.head),
+                    Special::Scripts(_) => self.out.push_str(self.slots.scripts),
+                    Special::Csrf(_) => self.csrf_field(),
+                }
                 Ok(())
             }
         }
+    }
+
+    /// Приховане поле з токеном. Якщо джерела токена немає (наприклад, шаблон
+    /// рендерять у тесті без сервера), поле просто не з'являється: краще
+    /// порожньо, ніж `value=""`, яке потім не пройде перевірку.
+    fn csrf_field(&mut self) {
+        let Some(source) = &self.globals.csrf else {
+            return;
+        };
+        let token = source();
+        if token.is_empty() {
+            return;
+        }
+        self.out.push_str("<input type=\"hidden\" name=\"");
+        self.out.push_str(crate::CSRF_FIELD);
+        self.out.push_str("\" value=\"");
+        escape_html(&token, &mut self.out);
+        self.out.push_str("\">");
+    }
+
+    /// `hx-headers='{"X-CSRF-Token": "..."}'` для елемента, що не є формою.
+    fn csrf_headers_attribute(&mut self) {
+        let Some(source) = &self.globals.csrf else {
+            return;
+        };
+        let token = source();
+        if token.is_empty() {
+            return;
+        }
+        // Значення атрибута в одинарних лапках: усередині — JSON із подвійними.
+        self.out.push_str(" hx-headers='{&quot;");
+        self.out.push_str(crate::CSRF_HEADER);
+        self.out.push_str("&quot;: &quot;");
+        escape_html(&token, &mut self.out);
+        self.out.push_str("&quot;}'");
     }
 
     // ------------------------------------------------------------ вивід
@@ -377,6 +435,9 @@ impl<'a> Renderer<'a> {
         if let Some(expr) = &element.bind.oob {
             let value = expr.eval(self.engine, scope)?;
             self.oob_attributes(&value, has_id);
+        }
+        if element.csrf_header {
+            self.csrf_headers_attribute();
         }
 
         self.out.push('>');

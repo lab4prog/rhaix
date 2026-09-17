@@ -1,0 +1,29 @@
+---
+page.title = "Утиліти";
+
+// Дати, гроші, транслітерація — те, що інакше довелось би писати руками
+// в кожному проєкті.
+let article = "Як ми переписали Node-RED на Rust";
+let published = timestamp("2026-09-17 14:05:00");
+
+// Виклик чужого API синхронний і **не валить сторінку**: якщо сервіс лежить,
+// у відповіді буде `ok: false` і текст помилки, а не 500. Саме тому тут немає
+// жодного try/catch.
+let nbu = http.get("https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=EUR&json");
+let euro = if nbu.ok && nbu.json.len() > 0 { nbu.json[0] } else { () };
+---
+<h1>Утиліти</h1>
+
+<table>
+  <tr><td>Заголовок</td><td>{{ article }}</td></tr>
+  <tr><td><code>slug()</code></td><td>/blog/{{ slug(article) }}</td></tr>
+  <tr><td><code>cut()</code></td><td>{{ cut(article, 20) }}</td></tr>
+  <tr><td><code>date()</code></td><td>{{ date(published) }} → {{ date(published, "DD.MM.YYYY о HH:mm") }}</td></tr>
+  <tr><td><code>money()</code></td><td>{{ money(1234567.5) }} грн</td></tr>
+  <tr><td><code>uuid()</code></td><td>{{ uuid() }}</td></tr>
+</table>
+
+<h2>Зовнішній API</h2>
+<p @if={euro}>Євро на {{ euro.exchangedate }}: <b>{{ money(euro.rate) }} грн</b>
+   <small>— дані НБУ, один рядок у frontmatter</small></p>
+<p @else>Курс зараз недоступний ({{ nbu.error ?? nbu.status }}) — сторінка від цього не впала.</p>

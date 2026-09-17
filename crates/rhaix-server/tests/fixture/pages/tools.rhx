@@ -1,0 +1,9 @@
+---
+page.title = "Утиліти";
+let when = timestamp("2026-09-17T14:05:09Z");
+---
+<p id="date">{{ date(when, "DD.MM.YYYY HH:mm") }}</p>
+<p id="slug">{{ slug("Привіт, світе!") }}</p>
+<p id="money">{{ money(1234.5) }} грн</p>
+<p id="cut">{{ cut("один два три чотири", 12) }}</p>
+<p id="json">{{ json_decode("{\"a\": 7}").a + 1 }}</p>

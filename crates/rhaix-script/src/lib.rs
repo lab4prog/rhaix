@@ -4,12 +4,26 @@
 //! не зафіксувати в одному місці: що виводиться замість `()`, що вважається
 //! хибним в `@if`, які ліміти стоять на скрипті користувача.
 
+mod crypto;
 mod data;
+mod datetime;
+mod http;
+mod json;
+mod session;
 mod stdlib;
+mod text;
 mod web;
 
+pub use crypto::{random_token, uuid_v4};
 pub use data::register_db;
+pub use datetime::{now_secs, parse_tz_offset, register_datetime, set_tz_offset};
+pub use http::{register_http, Http};
+pub use json::{parse as json_parse, to_dynamic as json_to_dynamic};
+pub use session::{
+    register_session, Csrf, Secret, Session, SessionOptions, CSRF_FIELD, CSRF_HEADER,
+};
 pub use stdlib::{register_core, Html, SlotSet};
+pub use text::register_text;
 pub use web::{
     parse_cookies, parse_urlencoded, register_web, triggers_header, Hx, Log, Request, RequestData,
     Response, ResponseData, State,
@@ -63,6 +77,10 @@ pub fn engine(limits: Limits) -> Engine {
     register_core(&mut engine);
     register_web(&mut engine);
     register_db(&mut engine);
+    register_session(&mut engine);
+    register_http(&mut engine);
+    register_datetime(&mut engine);
+    register_text(&mut engine);
     engine
 }
 
@@ -83,6 +101,19 @@ impl Deadline {
         DEADLINE.with(|cell| cell.set(Some(Instant::now() + budget)));
         Self
     }
+}
+
+/// Відсунути дедлайн на час, проведений у очікуванні вводу-виводу.
+///
+/// Скрипт, який чекає на відповідь чужого API, не «крутиться»: рахувати цей
+/// час проти бюджету сторінки неправильно — вона впала б уже після того, як
+/// дані приїхали.
+pub fn extend_deadline(by: Duration) {
+    DEADLINE.with(|cell| {
+        if let Some(at) = cell.get() {
+            cell.set(Some(at + by));
+        }
+    });
 }
 
 impl Drop for Deadline {

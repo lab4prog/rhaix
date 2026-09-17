@@ -19,12 +19,13 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M8 (прод-збірка)
+## Стан: M5.2 (сесії, CSRF, http, stdlib)
 
 Що вже працює:
 
 - `rhaix dev <тека>` — маршрути будуються зі структури `pages/`;
-- **frontmatter виконується**: `req`, `res`, `hx`, `log`, `state` доступні в кожному `.rhx`;
+- **frontmatter виконується**: `req`, `res`, `hx`, `log`, `state`, `db`, `http`,
+  `session`, `csrf` доступні в кожному `.rhx`;
 - **компоненти**: `<TodoItem todo={t} />`, `<Ui.Card>` з props, `{...spread}`, слотами
   (звичайними та іменованими) та ізольованим scope;
 - **маршрути зі структури тек**: `pages/` → сторінки, `partials/` → фрагмент-ендпоінти
@@ -40,7 +41,15 @@ page.title = "ToDo";
   піднімає їх у документ один раз; у фрагменті скрипт загорнутий у реєстр, тож
   не виконується повторно. Тости приїжджають із `rhaix.js` — власний `app.js`
   більше не потрібен;
-- **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (8.7 МБ), який
+- **сесії й CSRF**: `session.set("user", name)` — і це підписаний cookie, який
+  переживе перезапуск сервера. CSRF не треба вмикати й не треба пам'ятати:
+  форма отримує приховане поле, кнопка з `hx-delete` — заголовок, а запит без
+  токена не доходить навіть до `middleware.rhx`;
+- **`http`**: `http.get(url).json` прямо у frontmatter, без `await`. Якщо чужий
+  API лежить — у відповіді `ok: false`, а не 500 на вашій сторінці;
+- **stdlib**: `date()` розуміє і мітку часу, і рядок із бази; `slug()` транслітерує
+  кирилицю; `money()`, `cut()`, `uuid()`, `json_encode/decode`;
+- **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (10.6 МБ), який
   нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
   із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
 - layout вантажиться лише при звичайному заході, на `HX-Request` іде фрагмент;
@@ -59,7 +68,8 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: `http` і `session` (M5.2), англомовних доків і `llms.txt` (M9).
+Чого ще немає: англомовних доків і `llms.txt` (M9), автентифікації з паролями
+й `markdown()` (M12), драйверів Postgres/Mongo/SurrealDB (M11).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -108,6 +118,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M6-FINDINGS.md](M6-FINDINGS.md) | DX: кеш із залежностями, 68 мс до оновлення, межа `check` |
 | [M7-FINDINGS.md](M7-FINDINGS.md) | асети: підйом і дедуплікація, пастка оптимізації втретє |
 | [M8-FINDINGS.md](M8-FINDINGS.md) | прод: трейт `Files`, один бінарник, два режими сервера |
+| [M5.2-FINDINGS.md](M5.2-FINDINGS.md) | сесії, CSRF без ручної роботи, `http`, дати й гроші |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 
@@ -117,7 +128,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 |---|---|
 | `rhaix-db` | трейт драйвера, переносимий CRUD → SQL, драйвер SQLite, міграції |
 | `rhaix-parser` | джерела, спани, `файл:рядок:колонка`, розділення frontmatter |
-| `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, бенчмарк |
+| `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, сесії й CSRF, `http`, дати й рядки, бенчмарк |
 | `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |
 | `rhaix-server` | axum: маршрути, layout, правило фрагмента, статика |
 | `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check` |

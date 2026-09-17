@@ -1,0 +1,19 @@
+---
+page.title = "Кабінет";
+
+if req.method == "POST" {
+    if req.form("logout") != () {
+        session.clear();
+    } else {
+        session.set("user", req.form("name").trim());
+    }
+}
+
+let who = session.user ?? "гість";
+---
+<form hx-post="/account">
+  <input name="name" value="">
+  <button>Увійти</button>
+</form>
+<p id="who">привіт, {{ who }}</p>
+<button hx-delete="/fragment">видалити</button>

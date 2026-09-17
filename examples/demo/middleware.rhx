@@ -2,10 +2,8 @@
 // Виконується перед кожним запитом (SYNTAX 6.6).
 // Тут те, що інакше довелось би дублювати в кожному закритому файлі.
 
-if req.path.starts_with("/admin") {
-    if req.cookie("demo_admin") != "1" {
-        hx.toast("Спочатку увійдіть", "error");
-        res.redirect("/login");
-    }
+if req.path.starts_with("/admin") && session.user == () {
+    hx.toast("Спочатку увійдіть", "error");
+    res.redirect("/login");
 }
 ---

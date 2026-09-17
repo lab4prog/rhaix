@@ -28,7 +28,8 @@ pub use ast::Node;
 pub use error::Diagnostic;
 pub use files::{DiskFiles, EmbeddedFiles, Files};
 pub use loader::{Components, Loader, NoComponents, TemplateCache};
-pub use render::{Asset, Globals, Rendered, Slots};
+pub use render::{Asset, CsrfToken, Globals, Rendered, Slots};
+pub use rhaix_script::{CSRF_FIELD, CSRF_HEADER};
 
 use expr::Expr;
 

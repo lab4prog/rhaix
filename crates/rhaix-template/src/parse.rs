@@ -350,6 +350,18 @@ impl<'a> Parser<'a> {
             });
         }
 
+        // Форма, що змінює дані, отримує приховане поле з токеном першим
+        // нащадком. Робимо це при компіляції, а не при рендері: так вузол
+        // стає частиною дерева, і згортання статики (нижче) саме собою
+        // перестає діяти на таку форму.
+        let mut children = children;
+        if needs_csrf(self.source, &name, &parsed.attrs) {
+            children.insert(0, Node::Special(Special::Csrf(name_span)));
+        }
+        // Кнопка з `hx-delete` — така сама зміна даних, як форма, тільки
+        // прихованому полю там нема де жити. Тому токен їде заголовком.
+        let csrf_header = needs_csrf_header(&name, &parsed.attrs);
+
         // Якщо в піддереві немає нічого динамічного, його вивід дослівно
         // збігається зі шматком джерела — тоді весь елемент стає одним
         // текстовим вузлом, і рендер не обходить його взагалі.
@@ -363,6 +375,8 @@ impl<'a> Parser<'a> {
             // `<style>` і `<script>` теж: рендерер піднімає їх у layout, а з
             // тексту підняти вже нічого не можна (та сама пастка, що зі слотами)
             && !matches!(name.as_str(), "style" | "script")
+            // елемент, якому дописується токен, теж має лишитись елементом
+            && !csrf_header
             && children.iter().all(|child| matches!(child, Node::Text(_)))
         {
             return Ok(self.plain(Node::Text(span), span));
@@ -376,6 +390,7 @@ impl<'a> Parser<'a> {
                 bind: parsed.bind,
                 children,
                 empty,
+                csrf_header,
                 span,
             })),
             flow: parsed.flow,
@@ -387,6 +402,7 @@ impl<'a> Parser<'a> {
         match name {
             "rhaix:head" => Some(Special::Head(span)),
             "rhaix:scripts" => Some(Special::Scripts(span)),
+            "rhaix:csrf" => Some(Special::Csrf(span)),
             _ => None,
         }
     }
@@ -895,6 +911,72 @@ fn split_slots(source: &Source, children: Vec<Node>) -> (Vec<Node>, Vec<(String,
     }
 
     (default, named)
+}
+
+/// Чи треба цій формі приховане поле з CSRF-токеном.
+///
+/// Дивимось на `method` і на `hx-post`/`hx-put`/`hx-patch`/`hx-delete`: у HTMX
+/// формі атрибута `method` часто немає взагалі. Динамічний `method={...}` тут
+/// не врахувати — для таких випадків є явний `<rhaix:csrf />`.
+///
+/// `data-no-csrf` — свідома відмова: форма пошуку, яка шле POST кудись назовні.
+fn needs_csrf(source: &Source, name: &str, attrs: &[Attribute]) -> bool {
+    if name != "form" {
+        return false;
+    }
+    if attrs.iter().any(|attr| attr.name == "data-no-csrf") {
+        return false;
+    }
+    attrs.iter().any(|attr| match attr.name.as_str() {
+        "hx-post" | "hx-put" | "hx-patch" | "hx-delete" => true,
+        "method" => matches!(
+            static_text(source, attr)
+                .map(|value| value.to_ascii_lowercase())
+                .as_deref(),
+            Some("post" | "put" | "patch" | "delete")
+        ),
+        _ => false,
+    })
+}
+
+/// Чи дописувати елементу `hx-headers` із токеном.
+///
+/// Усе, що не форма, але змінює дані через htmx. `hx-headers`, поставлений
+/// руками, лишаємо як є: свій заголовок важливіший за наш, а обидва в одному
+/// атрибуті не поєднати.
+fn needs_csrf_header(name: &str, attrs: &[Attribute]) -> bool {
+    if name == "form" {
+        return false;
+    }
+    if attrs
+        .iter()
+        .any(|attr| attr.name == "hx-headers" || attr.name == "data-no-csrf")
+    {
+        return false;
+    }
+    attrs.iter().any(|attr| {
+        matches!(
+            attr.name.as_str(),
+            "hx-post" | "hx-put" | "hx-patch" | "hx-delete"
+        )
+    })
+}
+
+/// Текст атрибута, якщо він не містить жодного виразу.
+fn static_text(source: &Source, attr: &Attribute) -> Option<String> {
+    match &attr.value {
+        AttrValue::Parts(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                match part {
+                    AttrPart::Text(span) => out.push_str(source.slice(*span)),
+                    AttrPart::Interp(_) => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 /// Атрибут без жодного виразу — його можна віддати як частину тексту.

@@ -1,14 +1,28 @@
 ---
 page.title = "Вхід";
+let error = "";
 
 if req.method == "POST" {
-    res.cookie("demo_admin", "1");
-    hx.toast("Вітаємо!", "success");
-    res.redirect("/admin");
+    let name = req.form("name").trim();
+    if name == "" {
+        error = "Як до вас звертатися?";
+        res.status(422);
+    } else {
+        // Паролів у демо немає навмисно: справжня автентифікація — це M12.
+        // Показуємо саме сесію: те, що покладено сюди, переживе перехід
+        // між сторінками й перезапуск браузера.
+        session.set("user", name);
+        hx.toast(`Вітаємо, ${name}!`, "success");
+        res.redirect("/admin");
+    }
 }
 ---
 <h1>Вхід</h1>
-<p>Демо без паролів: кнопка просто ставить кукі, яку перевіряє <code>middleware.rhx</code>.</p>
+<p>Сесія — це підписаний cookie. Приховане поле з токеном у форму нижче
+   фреймворк додав сам: подивіться вихідний код сторінки.</p>
+
 <form method="post" action="/login">
-  <button>Увійти як адмін</button>
+  <input name="name" placeholder="Ваше ім'я" autofocus>
+  <button>Увійти</button>
 </form>
+<p class="error" @if={error}>{{ error }}</p>

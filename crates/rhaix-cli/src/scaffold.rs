@@ -141,7 +141,12 @@ document.body.addEventListener("showToast", (event) => {
 });
 "##;
 
-const GITIGNORE: &str = "data/\n";
+const GITIGNORE: &str = "\
+data/
+# Ключ підпису сесій. Генерується при першому `rhaix dev` і не має потрапляти
+# в репозиторій: у продакшні його задають через RHAIX_SECRET.
+.rhaix-secret
+";
 
 /// Створити новий проєкт у теці `path`.
 pub fn create(path: &Path) -> anyhow::Result<()> {

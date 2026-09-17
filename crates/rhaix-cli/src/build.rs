@@ -146,6 +146,7 @@ rhaix-server = {{ path = "{framework}/crates/rhaix-server" }}
 rhaix-template = {{ path = "{framework}/crates/rhaix-template" }}
 anyhow = "1"
 tokio = {{ version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }}
+tracing-subscriber = {{ version = "0.3", features = ["env-filter"] }}
 
 [profile.release]
 lto = "thin"
@@ -192,8 +193,16 @@ async fn main() -> anyhow::Result<()> {{
 }}
 
 fn tracing_init() {{
-    // Мінімальний лог: без залежності на tracing-subscriber у згенерованому крейті.
-    std::env::set_var("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_default());
+    // Без цього бінарник мовчить: попередження про незаданий секрет, завелику
+    // сесію чи загублений заголовок ішли б у нікуди. Знайдено в M5.2 —
+    // зібраний застосунок не сказав ні слова про відсутній RHAIX_SECRET.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rhaix=info".into()),
+        )
+        .with_target(false)
+        .init();
 }}
 "##
     )
@@ -220,6 +229,9 @@ mod tests {
         );
         assert!(code.contains("C:/app/pages/index.rhx"), "{code}");
         assert!(code.contains("Config::embedded"), "{code}");
+        // Зібраний застосунок має вміти говорити: інакше попередження про
+        // незаданий секрет нікуди не потрапляє.
+        assert!(code.contains("tracing_subscriber::fmt()"), "{code}");
     }
 
     #[test]
@@ -227,5 +239,6 @@ mod tests {
         let text = manifest("demo", Path::new("C:/rhaix"));
         assert!(text.contains("[workspace]"), "{text}");
         assert!(text.contains("C:/rhaix/crates/rhaix-server"), "{text}");
+        assert!(text.contains("tracing-subscriber"), "{text}");
     }
 }

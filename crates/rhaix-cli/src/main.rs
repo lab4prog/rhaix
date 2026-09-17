@@ -117,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Command::Check { root, json } => {
-            let config = rhaix_server::Config::load(root, None)?;
+            let config = rhaix_server::Config::load_for_check(root)?;
             let issues = rhaix_server::check(&config);
 
             if json {

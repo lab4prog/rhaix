@@ -1,11 +1,24 @@
 ---
 page.title = "Адмінка";
+
+if req.method == "POST" {
+    session.clear();
+    hx.toast("До зустрічі", "info");
+    res.redirect("/");
+}
+
 let recent = db.find("todos", #{}, #{ sort: "id desc", limit: 3 });
 let total = db.count("todos");
 ---
 <h1>Адмінка</h1>
-<p>Сюди не пускає <code>middleware.rhx</code>, поки немає кукі.</p>
+<p>Вітаємо, <b>{{ session.user }}</b>. Сюди не пускає <code>middleware.rhx</code>,
+   поки в сесії немає користувача.</p>
+
 <p>Записів у базі: <b>{{ total }}</b>. Останні три:</p>
 <ul>
-  <li @for={t in recent}>#{{ t.id }} — {{ t.title }}</li>
+  <li @for={t in recent}>#{{ t.id }} — {{ t.title }} <small>{{ date(t.created, "DD.MM HH:mm") }}</small></li>
 </ul>
+
+<form method="post" action="/admin">
+  <button>Вийти</button>
+</form>

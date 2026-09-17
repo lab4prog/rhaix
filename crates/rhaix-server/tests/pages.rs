@@ -58,6 +58,43 @@ fn htmx(path: &str) -> Request<Body> {
         .expect("запит")
 }
 
+/// Cookie сесії й CSRF-токен: беремо їх так само, як браузер — з відповіді
+/// на звичайний перегляд сторінки з формою.
+///
+/// Токен живе в сесії, а не в сторінці, тому одного квитка вистачає для
+/// будь-якого маршруту.
+async fn ticket() -> (String, String) {
+    let (_, headers, html) = call(htmx("/form")).await;
+    let cookie = header(&headers, "set-cookie")
+        .expect("сторінка з формою має видати cookie сесії")
+        .split(';')
+        .next()
+        .expect("значення cookie")
+        .to_owned();
+
+    let marker = "name=\"_csrf\" value=\"";
+    let start = html.find(marker).expect("у формі має бути приховане поле") + marker.len();
+    let token = html[start..]
+        .split('"')
+        .next()
+        .expect("значення токена")
+        .to_owned();
+    (cookie, token)
+}
+
+/// POST формою — з cookie й токеном, як це робить браузер.
+fn form_post(path: &str, body: &str, ticket: &(String, String)) -> Request<Body> {
+    let (cookie, token) = ticket;
+    Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("HX-Request", "true")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("cookie", cookie)
+        .body(Body::from(format!("{body}&_csrf={token}")))
+        .expect("запит")
+}
+
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
@@ -106,13 +143,8 @@ async fn dynamic_segment_reaches_the_script() {
 
 #[tokio::test]
 async fn form_post_runs_the_logic_and_sends_triggers() {
-    let request = Request::builder()
-        .method("POST")
-        .uri("/form")
-        .header("HX-Request", "true")
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(Body::from("title=%D0%9F%D1%80%D0%B8%D0%B2%D1%96%D1%82"))
-        .expect("запит");
+    let ticket = ticket().await;
+    let request = form_post("/form", "title=%D0%9F%D1%80%D0%B8%D0%B2%D1%96%D1%82", &ticket);
     let (status, headers, body) = call(request).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -127,13 +159,8 @@ async fn form_post_runs_the_logic_and_sends_triggers() {
 
 #[tokio::test]
 async fn validation_keeps_the_page_but_changes_the_status() {
-    let request = Request::builder()
-        .method("POST")
-        .uri("/form")
-        .header("HX-Request", "true")
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(Body::from("title=%20%20"))
-        .expect("запит");
+    let ticket = ticket().await;
+    let request = form_post("/form", "title=%20%20", &ticket);
     let (status, headers, body) = call(request).await;
 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -158,10 +185,15 @@ async fn redirect_differs_for_htmx_and_for_a_normal_visit() {
 
 #[tokio::test]
 async fn returned_value_becomes_the_body() {
+    let (cookie, token) = ticket().await;
     let request = Request::builder()
         .method("DELETE")
         .uri("/fragment")
         .header("HX-Request", "true")
+        .header("cookie", cookie)
+        // Кнопці прихованого поля нема де взяти — токен їде заголовком,
+        // так само, як його ставить `hx-headers`.
+        .header("x-csrf-token", token)
         .body(Body::empty())
         .expect("запит");
     let (status, _, body) = call(request).await;
@@ -305,13 +337,8 @@ async fn pages_read_from_the_database() {
 
 #[tokio::test]
 async fn pages_write_to_the_database() {
-    let request = Request::builder()
-        .method("POST")
-        .uri("/notes")
-        .header("HX-Request", "true")
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(Body::from("title=%D1%82%D1%80%D0%B5%D1%82%D1%8F"))
-        .expect("запит");
+    let ticket = ticket().await;
+    let request = form_post("/notes", "title=%D1%82%D1%80%D0%B5%D1%82%D1%8F", &ticket);
     let (status, headers, body) = call(request).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -452,4 +479,113 @@ async fn embedded_app_has_no_dev_client() {
 async fn missing_page_is_a_404() {
     let (status, _, _) = call(get("/nope")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// --------------------------------------------------- сесія, CSRF, утиліти
+
+#[tokio::test]
+async fn mutating_request_without_a_token_is_refused() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/form")
+        .header("HX-Request", "true")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from("title=%D0%B7%D0%BB%D0%BE"))
+        .expect("запит");
+    let (status, _, body) = call(request).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("Оновіть сторінку"), "{body}");
+}
+
+#[tokio::test]
+async fn a_stolen_cookie_without_the_matching_token_is_refused() {
+    // Класична CSRF-атака: cookie браузер підставить сам, а токена в чужого
+    // сайту немає.
+    let (cookie, _) = ticket().await;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/form")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("cookie", cookie)
+        .body(Body::from("title=%D0%B7%D0%BB%D0%BE"))
+        .expect("запит");
+    let (status, _, _) = call(request).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_page_without_forms_sets_no_cookie() {
+    // Токен — лінивий: сторінка, яка нічого не змінює, не має тягти за собою
+    // ні сесію, ні `Set-Cookie`.
+    let (status, headers, _) = call(htmx("/public")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(header(&headers, "set-cookie").is_none());
+}
+
+#[tokio::test]
+async fn forms_carry_a_hidden_field_and_buttons_carry_a_header() {
+    let (_, _, html) = call(htmx("/account")).await;
+
+    assert!(html.contains(r#"<input type="hidden" name="_csrf" value=""#), "{html}");
+    // Кнопка з `hx-delete` не має форми, тому токен їде заголовком.
+    assert!(html.contains("hx-headers='{&quot;x-csrf-token&quot;"), "{html}");
+}
+
+#[tokio::test]
+async fn session_survives_between_requests() {
+    let ticket = ticket().await;
+    let (status, headers, body) = call(form_post("/account", "name=%D0%9E%D0%BB%D1%8F", &ticket)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("привіт, Оля"), "{body}");
+
+    // Другий запит несе cookie, виданий першим — і застосунок пам'ятає, хто це.
+    let cookie = header(&headers, "set-cookie")
+        .expect("сесію змінили — має бути cookie")
+        .split(';')
+        .next()
+        .expect("значення")
+        .to_owned();
+    let request = Request::builder()
+        .uri("/account")
+        .header("HX-Request", "true")
+        .header("cookie", &cookie)
+        .body(Body::empty())
+        .expect("запит");
+    let (_, _, body) = call(request).await;
+    assert!(body.contains("привіт, Оля"), "{body}");
+
+    // Вихід гасить cookie, а не лишає порожній конверт.
+    let token = ticket.1.clone();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/account")
+        .header("HX-Request", "true")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("cookie", &cookie)
+        .body(Body::from(format!("logout=1&_csrf={token}")))
+        .expect("запит");
+    let (_, headers, body) = call(request).await;
+    assert!(body.contains("привіт, гість"), "{body}");
+
+    // Cookie після виходу не порожній: форма на тій самій сторінці одразу
+    // виписує новий CSRF-токен. Важливо інше — він **інший**, тобто разом із
+    // користувачем змінився й токен (захист від фіксації сесії).
+    let after = header(&headers, "set-cookie").expect("сесію змінили");
+    assert!(!after.contains("Max-Age=0"), "{after}");
+    assert_ne!(after.split(';').next(), Some(cookie.as_str()));
+}
+
+#[tokio::test]
+async fn stdlib_is_available_in_pages() {
+    let (status, _, body) = call(htmx("/tools")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#"<p id="date">17.09.2026 14:05</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="slug">pryvit-svite</p>"#), "{body}");
+    assert!(body.contains("1\u{a0}234,50 грн"), "{body}");
+    assert!(body.contains(r#"<p id="cut">один два…</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="json">8</p>"#), "{body}");
 }

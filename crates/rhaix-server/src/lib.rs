@@ -29,8 +29,10 @@ use axum::Router;
 use rhai::{Dynamic, Engine, Map, Scope};
 use rhaix_db::Database;
 use rhaix_script::{
-    display, engine as build_engine, parse_cookies, parse_urlencoded, Deadline, Hx, Limits, Log,
-    Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData,
+    display, engine as build_engine, parse_cookies, parse_tz_offset, parse_urlencoded, Csrf,
+    Deadline, Http, Hx, Limits, Log, Request as ScriptRequest, RequestData,
+    Response as ScriptResponse, ResponseData, Secret, Session, SessionOptions, CSRF_FIELD,
+    CSRF_HEADER,
     State as ScriptState,
 };
 use rhaix_template::{DiskFiles, Files, Globals, Loader, Slots, TemplateCache};
@@ -71,6 +73,35 @@ pub struct Config {
     pub files: Arc<dyn Files>,
     /// Чи застосунок вшитий у бінарник (тоді статика теж іде з таблиці).
     pub embedded: bool,
+    /// Секція `[app]`: секрет, сесія, CSRF, часовий пояс.
+    pub app: AppConfig,
+}
+
+/// Те, що налаштовує поведінку застосунку, а не сервера.
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    /// Ключ підпису cookie. Звідки він береться — див. [`resolve_secret`].
+    pub secret: Secret,
+    /// Перевіряти CSRF-токен у запитах, що змінюють дані. Увімкнено завжди,
+    /// крім явного `csrf = false`.
+    pub csrf: bool,
+    pub session: SessionOptions,
+    /// Зсув показу дат від UTC у хвилинах.
+    pub tz_offset: i32,
+    /// Скільки `http` чекає на чужий сервер.
+    pub http_timeout: Duration,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            secret: Secret::ephemeral(),
+            csrf: true,
+            session: SessionOptions::default(),
+            tz_offset: 0,
+            http_timeout: Duration::from_secs(10),
+        }
+    }
 }
 
 impl std::fmt::Debug for Config {
@@ -80,6 +111,7 @@ impl std::fmt::Debug for Config {
             .field("addr", &self.addr)
             .field("database", &self.database)
             .field("dev", &self.dev)
+            .field("app", &self.app)
             .finish()
     }
 }
@@ -95,11 +127,111 @@ pub struct DatabaseConfig {
 struct ConfigFile {
     server: Option<ServerSection>,
     db: Option<DatabaseConfig>,
+    app: Option<AppSection>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
 struct ServerSection {
     port: Option<u16>,
+}
+
+/// `[app]` у `rhaix.toml`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct AppSection {
+    /// Ключ підпису сесії. У репозиторії йому не місце — краще `RHAIX_SECRET`.
+    secret: Option<String>,
+    csrf: Option<bool>,
+    session_cookie: Option<String>,
+    /// Скільки живе сесія, у днях.
+    session_days: Option<i64>,
+    /// `Secure` на cookie сесії. За замовчуванням — у продакшні так.
+    session_secure: Option<bool>,
+    /// Зсув показу дат: `"+03:00"`.
+    tz_offset: Option<String>,
+    /// Таймаут `http`, у секундах.
+    http_timeout: Option<u64>,
+}
+
+/// Зібрати `[app]` з файлу, оточення й режиму запуску.
+fn app_config(file: Option<&AppSection>, root: &Path, dev: bool, persist: bool) -> AppConfig {
+    let mut app = AppConfig {
+        secret: resolve_secret(file.and_then(|a| a.secret.as_deref()), root, dev, persist),
+        ..AppConfig::default()
+    };
+    // `Secure` на cookie: у продакшні так, у dev ні — інакше cookie не поїде
+    // на http://localhost.
+    app.session.secure = !dev;
+    if let Some(section) = file {
+        if let Some(flag) = section.csrf {
+            app.csrf = flag;
+        }
+        if let Some(name) = &section.session_cookie {
+            app.session.cookie = name.clone();
+        }
+        if let Some(days) = section.session_days {
+            app.session.max_age = days.clamp(1, 365) * 86_400;
+        }
+        if let Some(flag) = section.session_secure {
+            app.session.secure = flag;
+        }
+        if let Some(raw) = &section.tz_offset {
+            match parse_tz_offset(raw) {
+                Some(minutes) => app.tz_offset = minutes,
+                None => tracing::warn!("`tz_offset = \"{raw}\"` не схоже на зсув на кшталт +03:00"),
+            }
+        }
+        if let Some(seconds) = section.http_timeout {
+            app.http_timeout = Duration::from_secs(seconds.clamp(1, 300));
+        }
+    }
+    app
+}
+
+/// Знайти ключ підпису cookie.
+///
+/// Порядок такий: `RHAIX_SECRET` → `[app] secret` → файл `.rhaix-secret` у
+/// корені проєкту (лише `rhaix dev`) → випадковий на час життя процесу.
+///
+/// `persist` вимикає передостанній крок: `rhaix check` і зібраний бінарник
+/// нічого в проєкт не пишуть.
+///
+/// Останній варіант робочий, але має наслідок, про який треба сказати вголос:
+/// після перезапуску всі сесії стають недійсними, а дві копії застосунку за
+/// балансиром не розуміють cookie одна одної. Тому в продакшні про це
+/// попереджаємо в лог.
+pub fn resolve_secret(from_file: Option<&str>, root: &Path, dev: bool, persist: bool) -> Secret {
+    if let Ok(value) = std::env::var("RHAIX_SECRET") {
+        if !value.trim().is_empty() {
+            return Secret::new(value.into_bytes());
+        }
+    }
+    if let Some(value) = from_file {
+        if !value.trim().is_empty() {
+            return Secret::new(value.as_bytes().to_vec());
+        }
+    }
+    if persist {
+        // У розробці сесія має переживати перезапуск сервера: інакше кожне
+        // збереження файлу розлогінювало б розробника.
+        let path = root.join(".rhaix-secret");
+        if let Ok(existing) = fs::read_to_string(&path) {
+            if !existing.trim().is_empty() {
+                return Secret::new(existing.trim().as_bytes().to_vec());
+            }
+        }
+        let generated = rhaix_script::random_token(32);
+        if fs::write(&path, &generated).is_ok() {
+            tracing::info!("створено `.rhaix-secret` — додайте його до .gitignore");
+            return Secret::new(generated.into_bytes());
+        }
+    }
+    if !dev {
+        tracing::warn!(
+            "секрет не заданий: сесії не переживуть перезапуск. \
+             Поставте змінну RHAIX_SECRET або `[app] secret` у rhaix.toml"
+        );
+    }
+    Secret::ephemeral()
 }
 
 impl Config {
@@ -111,6 +243,7 @@ impl Config {
             dev: true,
             files: DiskFiles::shared(),
             embedded: false,
+            app: AppConfig::default(),
         }
     }
 
@@ -126,6 +259,7 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
+        let app = app_config(file.app.as_ref(), Path::new(""), false, false);
         Ok(Self {
             root: PathBuf::new(),
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
@@ -133,15 +267,16 @@ impl Config {
             dev: false,
             files,
             embedded: true,
+            app,
         })
     }
 
     /// Те саме, але для продакшну: без стеження за файлами й без клієнта
     /// живого перезавантаження.
     pub fn load_release(root: impl Into<PathBuf>, port: Option<u16>) -> anyhow::Result<Self> {
-        let mut config = Self::load(root, port)?;
-        config.dev = false;
-        Ok(config)
+        // Не `load` із подальшим `dev = false`: від режиму залежить і секрет,
+        // і `Secure` на cookie, а вони вирішуються під час читання конфігу.
+        Self::load_inner(root, port, false)
     }
 
     /// Прочитати `rhaix.toml`, якщо він є.
@@ -149,6 +284,25 @@ impl Config {
     /// Порт із командного рядка сильніший за файл: під час розробки часто треба
     /// підняти другий сервер, не редагуючи конфіг.
     pub fn load(root: impl Into<PathBuf>, port: Option<u16>) -> anyhow::Result<Self> {
+        Self::load_inner(root, port, true)
+    }
+
+    /// Конфіг для `rhaix check`: те саме читання, але без побічних ефектів —
+    /// перевірка проєкту не має нічого в ньому створювати.
+    pub fn load_for_check(root: impl Into<PathBuf>) -> anyhow::Result<Self> {
+        Self::load_inner_with(root, None, true, false)
+    }
+
+    fn load_inner(root: impl Into<PathBuf>, port: Option<u16>, dev: bool) -> anyhow::Result<Self> {
+        Self::load_inner_with(root, port, dev, true)
+    }
+
+    fn load_inner_with(
+        root: impl Into<PathBuf>,
+        port: Option<u16>,
+        dev: bool,
+        persist_secret: bool,
+    ) -> anyhow::Result<Self> {
         let root = root.into();
         let path = root.join("rhaix.toml");
         let file: ConfigFile = if path.is_file() {
@@ -162,13 +316,15 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
+        let app = app_config(file.app.as_ref(), &root, dev, dev && persist_secret);
         Ok(Self {
             root,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
             database: file.db,
-            dev: true,
+            dev,
             files: DiskFiles::shared(),
             embedded: false,
+            app,
         })
     }
 
@@ -230,6 +386,8 @@ struct AppState {
     templates: Arc<TemplateCache>,
     /// Сповіщення про зміну файлів для відкритих сторінок.
     reload: broadcast::Sender<()>,
+    /// Клієнт для `http` у скриптах: пул з'єднань один на застосунок.
+    http: Http,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
@@ -247,6 +405,11 @@ pub fn build_watched(
     Vec<PageRoute>,
     (Arc<TemplateCache>, broadcast::Sender<()>),
 )> {
+    // Зсув дат глобальний на процес: `date()` у будь-якому файлі показує час
+    // у поясі застосунку, а не в UTC. Ставимо його тут, а не в `serve`, щоб
+    // застосунок, зібраний у тесті, поводився так само, як запущений.
+    rhaix_script::set_tz_offset(config.app.tz_offset);
+
     let mut routes = scan_pages(config.files.as_ref(), &config.pages_dir())?;
     routes.extend(scan_partials(
         config.files.as_ref(),
@@ -296,6 +459,7 @@ pub fn build_watched(
             TemplateCache::frozen()
         },
         reload: broadcast::channel(16).0,
+        http: Http::new(config.app.http_timeout),
     };
 
     let mut router = Router::new();
@@ -618,6 +782,10 @@ fn insert_header(headers: &mut axum::http::HeaderMap, name: &str, value: &str) {
 ///
 /// Правило фрагмента (SYNTAX 6.3): layout додається лише тоді, коли сторінку
 /// відкривають напряму. Для HTMX-запиту віддається сама розмітка сторінки.
+/// Сесія, перевірка CSRF і рендер — у цьому порядку.
+///
+/// Перевірка стоїть **перед** `middleware.rhx`: підроблений запит не має
+/// доходити до жодного рядка логіки застосунку.
 fn render_page(
     state: &AppState,
     file: &Path,
@@ -625,7 +793,50 @@ fn render_page(
     data: RequestData,
 ) -> Result<(String, ResponseData), PageError> {
     let _deadline = Deadline::new(SCRIPT_BUDGET);
+    let app = &state.config.app;
 
+    let session = Session::restore(
+        data.cookies.get(&app.session.cookie).map(String::as_str),
+        app.secret.bytes(),
+    );
+    let csrf = Csrf::new(session.clone(), app.csrf);
+
+    if is_mutating(&data.method) {
+        // Поле форми або заголовок: другий варіант потрібен для `hx-headers`
+        // і для запитів, у яких тіло — не форма.
+        let supplied = data
+            .form
+            .get(CSRF_FIELD)
+            .or_else(|| data.headers.get(CSRF_HEADER));
+        if !csrf.verify(supplied.map(String::as_str)) {
+            return Err(PageError::Forbidden {
+                path: data.path.clone(),
+            });
+        }
+    }
+
+    let (body, mut response) = render_inner(state, file, kind, data, &session, &csrf)?;
+    // Cookie ставиться, лише якщо сесію справді змінювали — інакше кожна
+    // сторінка тягла б за собою `Set-Cookie` і псувала кешування.
+    if let Some(cookie) = session.cookie(app.secret.bytes(), &app.session) {
+        response.cookies.push(cookie);
+    }
+    Ok((body, response))
+}
+
+/// Чи може цей метод щось змінити. `GET`, `HEAD` і `OPTIONS` — ні.
+fn is_mutating(method: &str) -> bool {
+    !matches!(method, "GET" | "HEAD" | "OPTIONS")
+}
+
+fn render_inner(
+    state: &AppState,
+    file: &Path,
+    kind: RouteKind,
+    data: RequestData,
+    session: &Session,
+    csrf: &Csrf,
+) -> Result<(String, ResponseData), PageError> {
     let is_htmx = data.is_htmx;
     let path = data.path.clone();
     let response = ScriptResponse::new();
@@ -650,6 +861,9 @@ fn render_page(
         &response,
         &state.state,
         &state.database,
+        &state.http,
+        session,
+        csrf,
         data,
         display_path(&state.config.root, file),
         page,
@@ -917,6 +1131,9 @@ fn globals_for(
     response: &ScriptResponse,
     state: &ScriptState,
     database: &Database,
+    http: &Http,
+    session: &Session,
+    csrf: &Csrf,
     data: RequestData,
     source: String,
     page: Dynamic,
@@ -928,14 +1145,24 @@ fn globals_for(
         .set("hx", Dynamic::from(Hx::new(response.clone())))
         .set("state", Dynamic::from(state.clone()))
         .set("db", Dynamic::from(database.clone()))
+        .set("http", Dynamic::from(http.clone()))
+        .set("session", Dynamic::from(session.clone()))
+        .set("csrf", Dynamic::from(csrf.clone()))
         .set("log", Dynamic::from(Log { source }))
         .set("page", page);
+
+    // Розмітка бере токен через замикання, а не через готовий рядок: форма в
+    // компоненті, який так і не відрендерився, не має створювати сесію.
+    let minter = csrf.clone();
+    globals.with_csrf(Arc::new(move || minter.token()));
     globals
 }
 
 enum PageError {
     Io { file: PathBuf, message: String },
     Template { diagnostic: String },
+    /// Запит, що змінює дані, без дійсного CSRF-токена.
+    Forbidden { path: String },
 }
 
 impl IntoResponse for PageError {
@@ -951,6 +1178,22 @@ impl IntoResponse for PageError {
                 ),
             ),
             PageError::Template { diagnostic } => (StatusCode::INTERNAL_SERVER_ERROR, diagnostic),
+            // Найчастіша причина — не помилка розробника, а протермінована
+            // вкладка: людина відкрила форму вчора, сесія закінчилась, токен
+            // уже не той. Тому текст для людини, а не діагностика.
+            PageError::Forbidden { path } => {
+                tracing::warn!("{path}: запит без дійсного CSRF-токена відхилено");
+                return (
+                    StatusCode::FORBIDDEN,
+                    [
+                        (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                        // htmx покаже це у своїй цілі, тому текст має сенс сам по собі.
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    "<p>Термін дії форми минув. Оновіть сторінку й спробуйте ще раз.</p>",
+                )
+                    .into_response();
+            }
         };
         tracing::error!("{body}");
         let html = format!(

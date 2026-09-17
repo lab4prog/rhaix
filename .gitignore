@@ -4,3 +4,7 @@
 
 # база демо
 examples/demo/data/
+
+# ключ підпису сесій, який rhaix dev створює сам
+.rhaix-secret
+**/.rhaix-secret

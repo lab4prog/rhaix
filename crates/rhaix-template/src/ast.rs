@@ -42,6 +42,9 @@ pub struct Element {
     pub children: Vec<Node>,
     /// Порожній елемент: `<br>` або `<div/>`.
     pub empty: bool,
+    /// Елемент змінює дані через htmx (`hx-post` і родичі), але не є формою —
+    /// тоді до нього дописується `hx-headers` із CSRF-токеном.
+    pub csrf_header: bool,
     pub span: Span,
 }
 
@@ -153,6 +156,9 @@ pub enum Special {
     Head(Span),
     /// `<rhaix:scripts />`
     Scripts(Span),
+    /// Приховане поле з CSRF-токеном. Ставиться автоматично першим нащадком
+    /// форми, що змінює дані, або вручну через `<rhaix:csrf />`.
+    Csrf(Span),
 }
 
 /// Елементи, які не мають закривального тега.
