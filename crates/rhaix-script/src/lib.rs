@@ -4,9 +4,11 @@
 //! не зафіксувати в одному місці: що виводиться замість `()`, що вважається
 //! хибним в `@if`, які ліміти стоять на скрипті користувача.
 
+mod data;
 mod stdlib;
 mod web;
 
+pub use data::register_db;
 pub use stdlib::{register_core, Html, SlotSet};
 pub use web::{
     parse_cookies, parse_urlencoded, register_web, triggers_header, Hx, Log, Request, RequestData,
@@ -60,6 +62,7 @@ pub fn engine(limits: Limits) -> Engine {
 
     register_core(&mut engine);
     register_web(&mut engine);
+    register_db(&mut engine);
     engine
 }
 

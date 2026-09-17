@@ -3,7 +3,6 @@
 //! Застосунок для тестів лежить у `tests/fixture` — окремо від демо, щоб
 //! перевірки не залежали від того, що зараз показує демо.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::body::Body;
@@ -13,7 +12,9 @@ use tower::ServiceExt;
 
 fn app() -> axum::Router {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture");
-    let config = Config::new(root, SocketAddr::from(([127, 0, 0, 1], 0)));
+    // `Config::load` читає `rhaix.toml` фікстури: база `:memory:` створюється
+    // заново на кожен виклик, тож тести не залежать одне від одного.
+    let config = Config::load(root, Some(0)).expect("конфіг фікстури");
     build(config)
         .expect("застосунок для тестів має збиратись")
         .0
@@ -287,6 +288,48 @@ async fn attribute_directives_on_a_component_are_rejected() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(body.contains("компонент"), "{body}");
     assert!(body.contains("props"), "підказка про props: {body}");
+}
+
+// -------------------------------------------------------------------- дані
+
+#[tokio::test]
+async fn pages_read_from_the_database() {
+    // Схема приїхала з `migrations/001_notes.sql` на старті застосунку.
+    let (status, _, body) = call(htmx("/notes")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<li>перша</li>"), "{body}");
+    assert!(body.contains(r#"<li class="done">друга</li>"#), "{body}");
+    assert!(body.contains("зроблено: 1 із 2"), "{body}");
+}
+
+#[tokio::test]
+async fn pages_write_to_the_database() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/notes")
+        .header("HX-Request", "true")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from("title=%D1%82%D1%80%D0%B5%D1%82%D1%8F"))
+        .expect("запит");
+    let (status, headers, body) = call(request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("третя"), "{body}");
+    assert!(body.contains("зроблено: 1 із 3"), "{body}");
+    assert!(
+        header(&headers, "hx-trigger").is_some(),
+        "тост про додавання"
+    );
+}
+
+#[tokio::test]
+async fn database_errors_point_at_the_rhx_file() {
+    let (status, _, body) = call(htmx("/dbfail")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("pages/dbfail.rhx:2:"), "{body}");
+    assert!(body.contains("no_such_table"), "{body}");
 }
 
 #[tokio::test]

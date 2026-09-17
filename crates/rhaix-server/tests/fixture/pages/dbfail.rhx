@@ -1,0 +1,4 @@
+---
+let rows = db.find("no_such_table");
+---
+<p>{{ rows.len() }}</p>

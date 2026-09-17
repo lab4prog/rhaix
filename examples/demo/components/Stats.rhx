@@ -1,7 +1,7 @@
 ---
-let todos = state.get("todos") ?? [];
-let done = todos.filter(|t| t.done).len();
+let total = db.count("todos");
+let done = db.count("todos", #{ done: true });
 ---
-Усього: <b>{{ todos.len() }}</b> ·
+Усього: <b>{{ total }}</b> ·
 зроблено: <b>{{ done }}</b> ·
-лишилось: <b>{{ todos.len() - done }}</b>
+лишилось: <b>{{ total - done }}</b>

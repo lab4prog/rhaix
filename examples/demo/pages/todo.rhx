@@ -1,16 +1,6 @@
 ---
 page.title = "ToDo";
 
-// До M5 замість БД — процесне сховище. Дані живуть до перезапуску сервера.
-if !state.has("todos") {
-    state.set("todos", [
-        #{ id: 1, title: "Купити молоко", done: true },
-        #{ id: 2, title: "Прочитати SYNTAX.md", done: false },
-    ]);
-    state.set("next_id", 3);
-}
-
-let todos = state.get("todos");
 let error = "";
 
 if req.method == "POST" {
@@ -19,10 +9,7 @@ if req.method == "POST" {
         error = "Назва не може бути порожньою";
         res.status(422);
     } else {
-        let id = state.get("next_id");
-        todos.push(#{ id: id, title: title, done: false });
-        state.set("next_id", id + 1);
-        state.set("todos", todos);
+        db.insert("todos", #{ title: title, done: false });
         hx.toast(`Додано: ${title}`, "success");
         hx.trigger("todoChanged");
     }
@@ -30,20 +17,20 @@ if req.method == "POST" {
 
 if req.method == "PATCH" {
     let id = req.query_int("id");
-    for i in 0..todos.len() {
-        if todos[i].id == id { todos[i].done = !todos[i].done; }
+    let todo = db.get("todos", id);
+    if todo != () {
+        db.update("todos", id, #{ done: !todo.done });
+        hx.trigger("todoChanged");
     }
-    state.set("todos", todos);
-    hx.trigger("todoChanged");
 }
 
 if req.method == "DELETE" {
-    let id = req.query_int("id");
-    todos = todos.filter(|t| t.id != id);
-    state.set("todos", todos);
+    db.delete("todos", req.query_int("id"));
     hx.toast("Видалено", "info");
     hx.trigger("todoChanged");
 }
+
+let todos = db.find("todos", #{}, #{ sort: "done asc, id asc" });
 ---
 
 <div id="todo-app">
@@ -72,7 +59,7 @@ if req.method == "DELETE" {
   </div>
 
   <p class="hint">
-    Розмітка списку — у <code>components/TodoList.rhx</code> і
-    <code>components/TodoItem.rhx</code>, картка — <code>components/ui/Card.rhx</code>.
+    Дані — у SQLite (<code>data/demo.db</code>), схема — у
+    <code>migrations/001_todos.sql</code>.
   </p>
 </div>

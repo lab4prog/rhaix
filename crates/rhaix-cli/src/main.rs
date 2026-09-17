@@ -3,7 +3,6 @@
 //! У M0 є лише `dev`: підняти сервер над текою проєкту. `new`, `check` і `build`
 //! приїдуть у M6 і M8.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -27,9 +26,9 @@ enum Command {
         #[arg(default_value = ".")]
         root: PathBuf,
 
-        /// Порт
-        #[arg(short, long, default_value_t = 3000)]
-        port: u16,
+        /// Порт (сильніший за `rhaix.toml`)
+        #[arg(short, long)]
+        port: Option<u16>,
     },
 }
 
@@ -52,8 +51,8 @@ async fn main() -> anyhow::Result<()> {
                 Some(stripped) => PathBuf::from(stripped),
                 None => root,
             };
-            let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            rhaix_server::serve(rhaix_server::Config::new(root, addr)).await
+            let config = rhaix_server::Config::load(root, port)?;
+            rhaix_server::serve(config).await
         }
     }
 }

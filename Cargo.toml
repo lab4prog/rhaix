@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rhaix-db",
     "crates/rhaix-parser",
     "crates/rhaix-script",
     "crates/rhaix-template",
@@ -16,6 +17,7 @@ repository = "https://github.com/lab4prog/rhaix"
 rust-version = "1.85"
 
 [workspace.dependencies]
+rhaix-db = { path = "crates/rhaix-db" }
 rhaix-parser = { path = "crates/rhaix-parser" }
 rhaix-script = { path = "crates/rhaix-script" }
 rhaix-template = { path = "crates/rhaix-template" }

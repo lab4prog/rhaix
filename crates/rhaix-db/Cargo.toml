@@ -1,0 +1,12 @@
+[package]
+name = "rhaix-db"
+description = "Database layer for rhaix: driver trait, portable CRUD and the SQLite driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rhai.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+tracing.workspace = true

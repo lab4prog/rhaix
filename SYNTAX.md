@@ -580,7 +580,8 @@ if req.path.starts_with("/admin") {
 | `page` | усюди | спільна мапа сторінки: `page.title`, `page.head`, `page.class` |
 | `req` `res` `hx` | усюди | запит/відповідь/HTMX |
 | `state` | усюди | процесне сховище: `state.get/set/has/remove` |
-| `db` `http` `session` `env` `log` | усюди | сервіси (`db`, `http`, `session` — з M5) |
+| `db` | усюди | база: `query/one/exec` і `find/get/count/insert/update/delete` |
+| `http` `session` `env` `log` | усюди | сервіси (`http`, `session` — з M5.2) |
 | хелпери | усюди | `url()`, `now()`, `uuid()`, `json()` (для `<script>`), `json_encode/decode()`, `markdown()`, `money()`, `date()`, `percent()`, `slug()`, `raw()`, `t()` … |
 
 **`url(path, params)`** — єдиний правильний спосіб зібрати посилання зі станом:
@@ -608,6 +609,11 @@ if req.path.starts_with("/admin") {
    рядок і повертає `()`, через що `let title = s.trim();` давав порожнє
    значення. У rhaix `trim()` перевизначено: він так само підрізає на місці, але
    ще й повертає результат, тож обидва записи роблять очікуване.
+3. **У SQLite немає булевого типу.** `done` приїжджає як `0`/`1`. У шаблоні це
+   не заважає (`@if={t.done}` користується істинністю rhaix), `!t.done` теж
+   працює — заперечення перевизначене за тим самим правилом. А от `if t.done`
+   у frontmatter — це вже чистий Rhai, який вимагає саме `bool`, тому пишеться
+   `if bool(t.done)`.
 
 ---
 

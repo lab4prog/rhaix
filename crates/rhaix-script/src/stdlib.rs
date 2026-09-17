@@ -57,6 +57,13 @@ pub fn register_core(engine: &mut Engine) {
         })
         .register_fn("is_empty", |slots: &mut SlotSet| slots.0.is_empty());
 
+    // У SQLite немає булевого типу: `done` приїжджає як 0 або 1, і `!todo.done`
+    // у Rhai падало б із «невідома функція `! (i64)`». Заперечення й `bool()`
+    // працюють за тим самим правилом істинності, що й `@if` у шаблоні.
+    engine.register_fn("!", |number: i64| number == 0);
+    engine.register_fn("!", |number: f64| number == 0.0);
+    engine.register_fn("bool", |value: Dynamic| super::truthy(&value));
+
     engine.register_type_with_name::<Html>("Html");
     engine.register_fn("to_string", |html: &mut Html| html.0.clone());
     engine.register_fn("raw", raw);
@@ -164,6 +171,17 @@ mod tests {
             return html.0.clone();
         }
         crate::display(&value)
+    }
+
+    #[test]
+    fn negation_and_bool_follow_rhaix_truthiness() {
+        // те, що приїхало з SQLite як 0/1, поводиться як булеве
+        assert_eq!(eval("!0"), "true");
+        assert_eq!(eval("!1"), "");
+        assert_eq!(eval("bool(0)"), "");
+        assert_eq!(eval("bool(2)"), "true");
+        assert_eq!(eval(r#"bool("")"#), "");
+        assert_eq!(eval(r#"bool("текст")"#), "true");
     }
 
     #[test]

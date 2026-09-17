@@ -1,0 +1,15 @@
+---
+page.title = "Нотатки";
+
+if req.method == "POST" {
+    db.insert("notes", #{ title: req.form("title").trim(), done: false });
+    hx.toast("Додано", "success");
+}
+
+let notes = db.find("notes", #{}, #{ sort: "id asc" });
+let done = db.count("notes", #{ done: true });
+---
+<ul>
+  <li @for={n in notes} @class={#{"done": n.done}}>{{ n.title }}</li>
+</ul>
+<p>зроблено: {{ done }} із {{ notes.len() }}</p>

@@ -3,8 +3,9 @@
 //! Сервер знаходить сторінку, рендерить її шаблонізатором і віддає — з layout
 //! при звичайному заході й без нього при HTMX-запиті.
 //!
-//! Обсяг M4: сторінки з `pages/`, фрагменти з `partials/`, спільна охорона в
-//! `middleware.rhx`, правило фрагмента для HTMX. Кеш шаблонів і watcher — у M6.
+//! Обсяг M5: сторінки з `pages/`, фрагменти з `partials/`, спільна охорона в
+//! `middleware.rhx`, база з `rhaix.toml` і міграції на старті. Кеш шаблонів і
+//! watcher — у M6.
 
 use std::fs;
 use std::net::SocketAddr;
@@ -19,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use rhai::{Dynamic, Engine, Map, Scope};
+use rhaix_db::Database;
 use rhaix_script::{
     display, engine as build_engine, parse_cookies, parse_urlencoded, Deadline, Hx, Limits, Log,
     Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData,
@@ -34,11 +36,31 @@ const SCRIPT_BUDGET: Duration = Duration::from_secs(5);
 /// Обмеження на тіло запиту.
 const MAX_BODY: usize = 1024 * 1024;
 
-/// Налаштування застосунку. У M6 сюди приїде `rhaix.toml`.
+/// Налаштування застосунку: `rhaix.toml` плюс те, що задав CLI.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub root: PathBuf,
     pub addr: SocketAddr,
+    /// Секція `[db]`. Якщо її немає, `db` у скрипті пояснить, чого бракує.
+    pub database: Option<DatabaseConfig>,
+}
+
+/// Секція `[db]` з `rhaix.toml`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DatabaseConfig {
+    pub driver: String,
+    pub url: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ConfigFile {
+    server: Option<ServerSection>,
+    db: Option<DatabaseConfig>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ServerSection {
+    port: Option<u16>,
 }
 
 impl Config {
@@ -46,7 +68,37 @@ impl Config {
         Self {
             root: root.into(),
             addr,
+            database: None,
         }
+    }
+
+    /// Прочитати `rhaix.toml`, якщо він є.
+    ///
+    /// Порт із командного рядка сильніший за файл: під час розробки часто треба
+    /// підняти другий сервер, не редагуючи конфіг.
+    pub fn load(root: impl Into<PathBuf>, port: Option<u16>) -> anyhow::Result<Self> {
+        let root = root.into();
+        let path = root.join("rhaix.toml");
+        let file: ConfigFile = if path.is_file() {
+            let text = fs::read_to_string(&path)?;
+            toml::from_str(&text).map_err(|err| anyhow::anyhow!("rhaix.toml: {err}"))?
+        } else {
+            ConfigFile::default()
+        };
+
+        let port = port
+            .or_else(|| file.server.as_ref().and_then(|s| s.port))
+            .unwrap_or(3000);
+
+        Ok(Self {
+            root,
+            addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            database: file.db,
+        })
+    }
+
+    pub fn migrations_dir(&self) -> PathBuf {
+        self.root.join("migrations")
     }
 
     pub fn pages_dir(&self) -> PathBuf {
@@ -97,16 +149,40 @@ struct AppState {
     engine: Arc<Engine>,
     /// Процесне сховище `state` — одне на весь застосунок.
     state: ScriptState,
+    /// Підключення до бази (або заглушка, якщо `[db]` немає).
+    database: Database,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
 pub fn build(config: Config) -> anyhow::Result<(Router, Vec<PageRoute>)> {
     let mut routes = scan_pages(&config.pages_dir())?;
     routes.extend(scan_partials(&config.partials_dir())?);
+
+    let database = match &config.database {
+        Some(settings) => {
+            // Відносний шлях у `rhaix.toml` — відносно **кореня проєкту**, а не
+            // теки, з якої запустили процес. Інакше `rhaix dev ../app` створює
+            // базу не там, і після деплою це виглядає як зникнення даних.
+            let url = resolve_db_url(&config.root, &settings.url);
+            let database =
+                Database::open(&settings.driver, &url).map_err(|err| anyhow::anyhow!("{err}"))?;
+            // Міграції застосовуються на старті: сервер, який піднявся, завжди
+            // має схему, яку очікують сторінки.
+            let applied = database
+                .migrate_from(&config.migrations_dir())
+                .map_err(|err| anyhow::anyhow!("{err}"))?;
+            for name in &applied {
+                tracing::info!("міграція застосована: {name}");
+            }
+            database
+        }
+        None => Database::unconfigured(),
+    };
     let state = AppState {
         config: config.clone(),
         engine: Arc::new(build_engine(Limits::default())),
         state: ScriptState::new(),
+        database,
     };
 
     let mut router = Router::new();
@@ -210,6 +286,19 @@ fn route_pattern(relative: &Path) -> String {
     } else {
         format!("/{}", segments.join("/"))
     }
+}
+
+/// `:memory:` лишається як є, абсолютний шлях — теж; відносний стає шляхом
+/// від кореня проєкту.
+fn resolve_db_url(root: &Path, url: &str) -> String {
+    if url == ":memory:" || url.contains("://") {
+        return url.to_owned();
+    }
+    let path = Path::new(url);
+    if path.is_absolute() {
+        return url.to_owned();
+    }
+    root.join(path).to_string_lossy().into_owned()
 }
 
 fn segment_pattern(name: &str) -> String {
@@ -398,6 +487,7 @@ fn render_page(
     let globals = globals_for(
         &response,
         &state.state,
+        &state.database,
         data,
         display_path(&state.config.root, file),
         page,
@@ -571,9 +661,11 @@ async fn not_found(_: HttpRequest<Body>) -> Response {
 ///
 /// Компонент не успадковує scope батька (SYNTAX 5.3), тому глобальні об'єкти
 /// передаються окремо — інакше в компоненті не було б ні `req`, ні `page`.
+#[allow(clippy::too_many_arguments)]
 fn globals_for(
     response: &ScriptResponse,
     state: &ScriptState,
+    database: &Database,
     data: RequestData,
     source: String,
     page: Dynamic,
@@ -584,6 +676,7 @@ fn globals_for(
         .set("res", Dynamic::from(response.clone()))
         .set("hx", Dynamic::from(Hx::new(response.clone())))
         .set("state", Dynamic::from(state.clone()))
+        .set("db", Dynamic::from(database.clone()))
         .set("log", Dynamic::from(Log { source }))
         .set("page", page);
     globals
@@ -658,7 +751,11 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     if config.middleware_path().is_file() {
         println!("  middleware: middleware.rhx — виконується перед кожним запитом");
     }
-    println!("  M3: логіка й компоненти працюють; кеш і watcher — з M6\n");
+    match &config.database {
+        Some(settings) => println!("  база   : {} — {}", settings.driver, settings.url),
+        None => println!("  база   : не налаштована (секція [db] у rhaix.toml)"),
+    }
+    println!("  M5: дані, маршрути й компоненти працюють; кеш і watcher — з M6\n");
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     axum::serve(listener, router)
@@ -715,6 +812,20 @@ mod tests {
         let root = Path::new("C:/proj");
         let file = Path::new("C:/proj/pages/todo.rhx");
         assert_eq!(display_path(root, file), "pages/todo.rhx");
+    }
+
+    #[test]
+    fn relative_database_paths_are_rooted_at_the_project() {
+        let resolved = resolve_db_url(Path::new("C:/app"), "data/app.db");
+        assert!(
+            resolved.replace('\\', "/").ends_with("C:/app/data/app.db"),
+            "{resolved}"
+        );
+        assert_eq!(resolve_db_url(Path::new("C:/app"), ":memory:"), ":memory:");
+        assert_eq!(
+            resolve_db_url(Path::new("C:/app"), "postgres://localhost/db"),
+            "postgres://localhost/db"
+        );
     }
 
     #[test]

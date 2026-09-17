@@ -1,7 +1,11 @@
 ---
 page.title = "Адмінка";
-let todos = state.get("todos") ?? [];
+let recent = db.find("todos", #{}, #{ sort: "id desc", limit: 3 });
+let total = db.count("todos");
 ---
 <h1>Адмінка</h1>
 <p>Сюди не пускає <code>middleware.rhx</code>, поки немає кукі.</p>
-<p>Записів у сховищі: <b>{{ todos.len() }}</b>.</p>
+<p>Записів у базі: <b>{{ total }}</b>. Останні три:</p>
+<ul>
+  <li @for={t in recent}>#{{ t.id }} — {{ t.title }}</li>
+</ul>
