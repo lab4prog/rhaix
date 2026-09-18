@@ -68,8 +68,9 @@ page.title = "ToDo";
   відсутній ключ показує сам себе, а не порожнечу;
 - **`markdown()`** за feature `markdown` — сирий HTML екранується, схеми
   посилань перевіряються, тож санітайзер не потрібен;
-- **підсвітка для VS Code**: [editors/vscode](editors/vscode), граматика
-  перевіряється тим самим токенайзером, що й у редакторі;
+- **підсвітка й мовний сервер для VS Code**: [editors/vscode](editors/vscode) —
+  діагностика прямо в редакторі (та сама, що дає `rhaix check`), перехід до
+  компонента по `F12`, доповнення компонентів, директив і глобальних об'єктів;
 - **scoped CSS**: `<style scoped>` звужує селектори до розмітки свого файлу —
   вміст слота лишається в скоупі батька;
 - **htmx їде з бінарника**: застосунок не залежить від CDN і працює без
@@ -93,8 +94,9 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: мовного сервера для редактора, драйверів MongoDB/SurrealDB
-(трейт до них готовий), scoped-слотів і `@transition` (v1.1).
+Чого ще немає: драйверів MongoDB/SurrealDB (трейт до них готовий),
+scoped-слотів і `@transition` (v1.1), перейменування й пошуку використань
+у редакторі.
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -167,6 +169,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |
 | `rhaix-server` | axum: маршрути, layout, правило фрагмента, статика |
 | `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check` |
+| `rhaix-lsp` | мовний сервер: діагностика, перехід до компонента, доповнення |
 
 `rhaix-runtime` поки лишається частиною `rhaix-template`: реєстр компонентів
 виявився надто зв'язаним із парсером, щоб ділити їх зараз.

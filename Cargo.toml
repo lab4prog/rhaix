@@ -7,10 +7,11 @@ members = [
     "crates/rhaix-template",
     "crates/rhaix-server",
     "crates/rhaix-cli",
+    "crates/rhaix-lsp",
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lab4prog/rhaix"
@@ -22,6 +23,7 @@ rhaix-parser = { path = "crates/rhaix-parser" }
 rhaix-script = { path = "crates/rhaix-script" }
 rhaix-template = { path = "crates/rhaix-template" }
 rhaix-server = { path = "crates/rhaix-server" }
+rhaix-lsp = { path = "crates/rhaix-lsp" }
 
 anyhow = "1"
 axum = "0.8"

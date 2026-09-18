@@ -1,8 +1,8 @@
 {
   "name": "rhaix",
   "displayName": "rhaix (.rhx)",
-  "description": "Підсвітка синтаксису для файлів .rhx фреймворку rhaix",
-  "version": "0.0.1",
+  "description": "Підсвітка синтаксису й мовний сервер для файлів .rhx фреймворку rhaix",
+  "version": "1.0.0",
   "publisher": "rhaix",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -13,7 +13,8 @@
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Linters"
   ],
   "contributes": {
     "languages": [
@@ -39,6 +40,23 @@
           "meta.embedded.block.html": "html"
         }
       }
-    ]
+    ],
+    "configuration": {
+      "title": "rhaix",
+      "properties": {
+        "rhaix.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Шлях до rhaix-lsp. Порожньо — шукати в PATH."
+        }
+      }
+    }
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:rhx"
+  ],
+  "dependencies": {
+    "vscode-languageclient": "^9"
   }
 }

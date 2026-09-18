@@ -456,9 +456,8 @@ rhaix check <dir>    # compile everything without starting; --json for CI
 - **Scoped slots, `@key` morph swaps, `@transition`** — v1.1.
 - **MongoDB and SurrealDB drivers** — the `DbDriver` trait is ready for them,
   the drivers are not written. `sqlite` and `postgres` ship.
-- **A language server** (completion, go-to-component). Syntax highlighting
-  exists: `editors/vscode`. Errors come from `rhaix check` and the dev server,
-  already with `file:line:column`.
+- **Rename and find-references** in the editor. Diagnostics, go-to-component
+  and completion do exist — `editors/vscode` plus the `rhaix-lsp` server.
 
 Behind build features (enabled automatically by `rhaix build` when the project
 uses them): `postgres`, `mail` (real SMTP), `markdown`.
