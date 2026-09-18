@@ -41,7 +41,6 @@ let nav = [
   <main id="main"><slot /></main>
   <div id="toasts" class="toasts"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.7/dist/htmx.min.js"></script>
   <rhaix:scripts />
 </body>
 </html>

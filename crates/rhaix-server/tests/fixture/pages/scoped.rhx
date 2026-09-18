@@ -1,0 +1,7 @@
+---
+page.title = "Scoped CSS";
+---
+<Scoped>
+  <span class="from-parent">зі слота</span>
+</Scoped>
+<p class="outside">поза компонентом</p>

@@ -21,7 +21,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M12 завершено + плагін для VS Code
+## Стан: v1.0.0
 
 Що вже працює:
 
@@ -70,6 +70,10 @@ page.title = "ToDo";
   посилань перевіряються, тож санітайзер не потрібен;
 - **підсвітка для VS Code**: [editors/vscode](editors/vscode), граматика
   перевіряється тим самим токенайзером, що й у редакторі;
+- **scoped CSS**: `<style scoped>` звужує селектори до розмітки свого файлу —
+  вміст слота лишається в скоупі батька;
+- **htmx їде з бінарника**: застосунок не залежить від CDN і працює без
+  інтернету;
 - **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (11.3 МБ), який
   нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
   із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
@@ -89,8 +93,8 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: scoped CSS і мовного сервера для редактора (M13),
-драйверів MongoDB/SurrealDB (решта M11).
+Чого ще немає: мовного сервера для редактора, драйверів MongoDB/SurrealDB
+(трейт до них готовий), scoped-слотів і `@transition` (v1.1).
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
@@ -148,6 +152,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M11-FINDINGS.md](M11-FINDINGS.md) | драйвер PostgreSQL: `?`→`$N`, `RETURNING`, коерція типів |
 | [M12-FINDINGS.md](M12-FINDINGS.md) | батарейки: Argon2, `validate`, `paginate`, завантаження, пошта |
 | [GUIDE.md](GUIDE.md) | юзергайд: створити застосунок, міграції, деплой, оновлення |
+| [CHANGELOG.md](CHANGELOG.md) | що увійшло у v1.0.0 |
 | [editors/vscode](editors/vscode) | підсвітка `.rhx` для VS Code |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |

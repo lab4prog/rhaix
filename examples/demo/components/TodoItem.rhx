@@ -10,9 +10,11 @@ let todo = props.todo;
           hx-target="#todo-app" hx-swap="outerHTML">×</button>
 </li>
 
-<style>
+<style scoped>
   /* Стиль компонента: піднімається в <head> один раз, скільки б разів
-     компонент не траплявся у списку. */
+     компонент не траплявся у списку.
+     `scoped` звужує селектори до розмітки саме цього файлу — до них
+     дописується `[data-rhx-…]`, і на чужі `.del` стиль не поширюється. */
   .todo-item .del { border: 0; background: none; cursor: pointer; opacity: .4 }
   .todo-item:hover .del { opacity: 1 }
 </style>

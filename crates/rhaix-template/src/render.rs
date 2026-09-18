@@ -125,6 +125,8 @@ pub fn render_with<'a>(
     slots: Slots<'a>,
     globals: &'a Globals,
     hoist: bool,
+    // Скоуп файлу верхнього рівня (сторінки), якщо в ньому є `<style scoped>`.
+    css_scope: Option<String>,
 ) -> Result<Rendered> {
     let mut frame = SlotFrame::new();
     if !slots.slot.is_empty() {
@@ -145,6 +147,7 @@ pub fn render_with<'a>(
         hoist,
         styles: Vec::new(),
         scripts: Vec::new(),
+        scope: css_scope,
     };
     renderer.nodes(nodes, scope)?;
     Ok(Rendered {
@@ -191,6 +194,11 @@ struct Renderer<'a> {
     hoist: bool,
     styles: Vec<Asset>,
     scripts: Vec<Asset>,
+    /// Атрибут скоупу файлу, що рендериться зараз (`data-rhx-…`).
+    ///
+    /// Слоти від цього не страждають: вони захоплюються **до** перемикання на
+    /// компонент, тож лишаються в скоупі батька — як і має бути.
+    scope: Option<String>,
 }
 
 impl<'a> Renderer<'a> {
@@ -355,7 +363,13 @@ impl<'a> Renderer<'a> {
         // компонента, вставленого в цикл, приїхав би в документ десять разів,
         // а скрипт стільки ж разів виконався б.
         if self.hoist && is_inline_asset(element) {
-            let body = self.capture(&element.children, scope)?;
+            let mut body = self.capture(&element.children, scope)?;
+            // `<style scoped>`: селектори звужуються до елементів цього файлу.
+            if element.name == "style" && element.attrs.iter().any(|a| a.name == "scoped") {
+                if let Some(attribute) = &self.scope {
+                    body = crate::css::scope_css(&body, &format!("[{attribute}]"));
+                }
+            }
             let asset = Asset {
                 hash: hash(&body),
                 body,
@@ -446,6 +460,12 @@ impl<'a> Renderer<'a> {
         }
         if element.csrf_header {
             self.csrf_headers_attribute();
+        }
+        // Мітка скоупу — на кожен елемент цього файлу, щоб селектори з
+        // `<style scoped>` мали за що зачепитись.
+        if let Some(attribute) = &self.scope {
+            self.out.push(' ');
+            self.out.push_str(attribute);
         }
 
         self.out.push('>');
@@ -800,6 +820,7 @@ impl<'a> Renderer<'a> {
 
         // 5. рендер розмітки компонента — у його власному джерелі
         let previous_source = std::mem::replace(&mut self.source, template.source());
+        let previous_scope = std::mem::replace(&mut self.scope, template.scope_attribute());
         self.frames.push(frame);
         self.depth += 1;
 
@@ -814,6 +835,7 @@ impl<'a> Renderer<'a> {
         self.depth -= 1;
         self.frames.pop();
         self.source = previous_source;
+        self.scope = previous_scope;
         result
     }
 

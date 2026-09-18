@@ -806,3 +806,37 @@ async fn translations_follow_the_request_locale() {
     let (_, _, body) = call(htmx("/i18n?lang=xx")).await;
     assert!(body.contains(r#"<p id="greeting">Привіт</p>"#), "{body}");
 }
+
+#[tokio::test]
+async fn scoped_styles_only_reach_their_own_component() {
+    let (status, _, body) = call(get("/scoped")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Атрибут скоупу з'являється й у стилі, і на розмітці компонента.
+    let marker = "data-rhx-";
+    let at = body.find(marker).expect("мітка скоупу");
+    let id: String = body[at + marker.len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit())
+        .collect();
+    assert_eq!(id.len(), 8, "очікувався 8-значний хеш, маємо `{id}`");
+    let attr = format!("data-rhx-{id}");
+
+    // Власна розмітка компонента — помічена.
+    assert!(body.contains(&format!(r#"<div class="box" {attr}>"#)), "{body}");
+    assert!(body.contains(&format!(r#"<p class="label" {attr}>"#)), "{body}");
+
+    // Вміст слота приїхав від батька — і мітки компонента НЕ має,
+    // інакше стиль компонента протікав би на чужу розмітку.
+    assert!(body.contains(r#"<span class="from-parent">"#), "{body}");
+    // Сторонній елемент сторінки теж чистий.
+    assert!(body.contains(r#"<p class="outside">"#), "{body}");
+
+    // CSS переписано: скоуп на останньому складеному селекторі.
+    assert!(body.contains(&format!(".box[{attr}] {{ border: 1px solid red }}")), "{body}");
+    assert!(body.contains(&format!(".box .label[{attr}] {{ color: blue }}")), "{body}");
+    assert!(body.contains(&format!("a[{attr}]:hover")), "{body}");
+    assert!(body.contains(&format!("@media (max-width: 40em) {{ .box[{attr}]")), "{body}");
+    // keyframes лишились недоторканими — інакше анімація зламалась би.
+    assert!(body.contains("@keyframes spin { from { opacity: 0 } }"), "{body}");
+}

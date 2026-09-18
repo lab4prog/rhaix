@@ -7,6 +7,19 @@
 /// Шлях, за яким віддається клієнт.
 pub const CLIENT_ROUTE: &str = "/_rhaix/rhaix.js";
 
+/// Шлях, за яким віддається htmx.
+pub const HTMX_ROUTE: &str = "/_rhaix/htmx.js";
+
+/// htmx, вшитий у бінарник.
+///
+/// Інакше обіцянка «деплой — це копіювання одного файлу» була б неправдою:
+/// сторінка не працювала б без інтернету й чужого CDN. 51 КБ у бінарнику —
+/// чесна ціна за застосунок, який справді самодостатній.
+///
+/// htmx 2.0.7, ліцензія Zero-Clause BSD (дозволяє використання й поширення
+/// без умов). Джерело: https://htmx.org
+pub const HTMX_JS: &str = include_str!("../vendor/htmx.min.js");
+
 /// Вміст `rhaix.js`.
 pub const CLIENT_JS: &str = r##"(() => {
   const seen = new Set();

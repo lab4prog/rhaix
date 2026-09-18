@@ -891,10 +891,15 @@ Recipes for all four are in `examples/cookbook`.
 </script>
 ```
 
-- `<style>` in v1 is **global**: hoisted into `<rhaix:head/>`, deduplicated by
-  content hash. Scoping (`data-rhx-<hash8>` plus selector rewriting) needs a full
-  CSS parser and is deferred to **[v1.1]**; the `<style scoped>` attribute is
-  reserved for it. For now isolation is a matter of class-naming convention.
+- `<style>` is **global**: hoisted into `<rhaix:head/>`, deduplicated by content
+  hash.
+- `<style scoped>` **narrows selectors to its own file's markup**. The core
+  derives a stable id from the file path, stamps `data-rhx-<hash8>` on every
+  element of that file and appends `[data-rhx-…]` to the **last** compound
+  selector (`.card .title` → `.card .title[data-rhx-…]`). Slot content stays in
+  the parent's scope; `@media`/`@supports` are entered, `@keyframes` and
+  `@font-face` are left alone; `:root` will not match inside a scoped style —
+  keep theme variables in a plain `public/*.css`.
 - `<script>` is hoisted into `<rhaix:scripts/>` and runs **once per page
   lifetime**. In a fragment it travels with the markup, wrapped in a registry
   check from `rhaix.js`, so a repeated swap does not run it again.
@@ -942,8 +947,7 @@ error: unknown variable `todoz`
 - Attributes starting with `@` — directives only.
 - `data-rhx-*` attributes — internal.
 - Component names `Fragment`, `Slot` — internal.
-- **[v1.1]**: scoped CSS (`<style scoped>`), scoped slots, `@key` for morph
-  swaps, `@transition`, i18n tags.
+- **[v1.1]**: scoped slots, `@key` for morph swaps, `@transition`.
 - **Not planned**: islands (`<script client>`), partial hydration, client-side
   components — deliberately outside the framework.
 

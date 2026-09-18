@@ -31,6 +31,9 @@ pub fn parse(
         pos: markup.start,
         end: markup.end,
         dropped: 0,
+        // Дешева перевірка по тексту: хибне спрацювання лише вимикає
+        // оптимізацію, а не ламає рендер.
+        collapse: !source.text().contains("<style scoped"),
     };
     let items = parser.parse_items(None)?;
     if parser.pos < parser.end {
@@ -49,6 +52,11 @@ struct Parser<'a> {
     /// Скільки коментарів викинуто. Якщо всередині елемента лічильник
     /// змінився, його вивід уже не збігається з джерелом байт у байт.
     dropped: usize,
+    /// Чи можна згортати статичні піддерева в текст.
+    ///
+    /// У файлі зі `<style scoped>` — не можна: рендерер має дійти до кожного
+    /// елемента, щоб поставити мітку скоупу, а в тексті ставити нема на що.
+    collapse: bool,
 }
 
 /// Вузол разом із директивами потоку, які ще не застосовані.
@@ -365,19 +373,18 @@ impl<'a> Parser<'a> {
         // Якщо в піддереві немає нічого динамічного, його вивід дослівно
         // збігається зі шматком джерела — тоді весь елемент стає одним
         // текстовим вузлом, і рендер не обходить його взагалі.
-        if !is_component
-            && self.dropped == dropped_before
+        //
+        // Умова навмисно зібрана в один предикат: за час розробки ця
+        // оптимізація п'ять разів «з'їдала» те, до чого рендерер мусив дійти
+        // (слоти, `<style>`/`<script>`, поле CSRF, `hx-headers`, мітку скоупу).
+        // Тримати причини в одному місці дешевше, ніж шукати шосту.
+        let nothing_dynamic = self.dropped == dropped_before
             && parsed.flow.is_empty()
             && parsed.bind.is_empty()
             && parsed.attrs.iter().all(attribute_is_static)
-            // елемент, що позначає слот, має лишитись елементом
-            && !parsed.attrs.iter().any(|attr| attr.name == "slot")
-            // `<style>` і `<script>` теж: рендерер піднімає їх у layout, а з
-            // тексту підняти вже нічого не можна (та сама пастка, що зі слотами)
-            && !matches!(name.as_str(), "style" | "script")
-            // елемент, якому дописується токен, теж має лишитись елементом
-            && !csrf_header
-            && children.iter().all(|child| matches!(child, Node::Text(_)))
+            && children.iter().all(|child| matches!(child, Node::Text(_)));
+
+        if self.collapse && !is_component && nothing_dynamic && !must_stay_element(&name, &parsed.attrs, csrf_header)
         {
             return Ok(self.plain(Node::Text(span), span));
         }
@@ -937,6 +944,17 @@ fn needs_csrf(source: &Source, name: &str, attrs: &[Attribute]) -> bool {
         ),
         _ => false,
     })
+}
+
+/// Чому елемент **не можна** згортати в текст, навіть якщо в ньому немає
+/// нічого динамічного: до нього ще має дійти рендерер.
+fn must_stay_element(name: &str, attrs: &[Attribute], csrf_header: bool) -> bool {
+    // Слот: елемент позначає місце вставки, з тексту його не дістати.
+    attrs.iter().any(|attr| attr.name == "slot")
+        // `<style>`/`<script>` рендерер піднімає в layout.
+        || matches!(name, "style" | "script")
+        // Елементу дописується `hx-headers` із CSRF-токеном.
+        || csrf_header
 }
 
 /// Чи дописувати елементу `hx-headers` із токеном.

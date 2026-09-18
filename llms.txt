@@ -399,7 +399,10 @@ startup, so editing them needs a `rhaix dev` restart (it says so in the console)
 ```
 
 `<style>` is hoisted into `<rhaix:head/>`, `<script>` into `<rhaix:scripts/>`,
-both deduplicated by content hash. A script runs **once per page lifetime**,
+both deduplicated by content hash. `<style scoped>` narrows selectors to the
+file's own markup: every element of that file gets `data-rhx-<hash8>` and
+`[data-rhx-…]` is appended to the last compound selector. Slot content stays in
+the parent's scope; `@keyframes` is left alone; `:root` will not match. A script runs **once per page lifetime**,
 even if its component arrives through several HTMX swaps. `<style>` is global
 in v1 — scoping is v1.1. There are no islands and no `<script client>`.
 
@@ -447,6 +450,15 @@ rhaix check <dir>    # compile everything without starting; --json for CI
 
 ## Not in v1, on purpose
 
-Islands / client components / partial hydration; scoped CSS (v1.1); password
-a language server for the editor (syntax highlighting exists: editors/vscode);
-`markdown()`; Postgres, MongoDB, SurrealDB drivers (M11, same `DbDriver` trait).
+- **Islands, client components, partial hydration.** Interactivity is HTMX
+  attributes, `public/*.js` and hoisted component `<script>`. This is a design
+  decision, not a gap.
+- **Scoped slots, `@key` morph swaps, `@transition`** — v1.1.
+- **MongoDB and SurrealDB drivers** — the `DbDriver` trait is ready for them,
+  the drivers are not written. `sqlite` and `postgres` ship.
+- **A language server** (completion, go-to-component). Syntax highlighting
+  exists: `editors/vscode`. Errors come from `rhaix check` and the dev server,
+  already with `file:line:column`.
+
+Behind build features (enabled automatically by `rhaix build` when the project
+uses them): `postgres`, `mail` (real SMTP), `markdown`.

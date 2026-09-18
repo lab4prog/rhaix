@@ -13,7 +13,7 @@ mod multipart;
 mod scripts;
 
 pub use check::{check, Issue};
-pub use client::{CLIENT_JS, CLIENT_ROUTE};
+pub use client::{CLIENT_JS, CLIENT_ROUTE, HTMX_JS, HTMX_ROUTE};
 
 use std::fs;
 use std::net::SocketAddr;
@@ -583,6 +583,25 @@ pub fn build_watched(
         }),
     );
 
+    // htmx їде з бінарника, а не з CDN: інакше застосунок не працював би без
+    // інтернету, і «один файл» було б перебільшенням. Кеш довгий — вміст
+    // прив'язаний до версії фреймворку.
+    let router = router.route(
+        HTMX_ROUTE,
+        axum::routing::get(|| async {
+            (
+                [
+                    (
+                        header::CONTENT_TYPE,
+                        "application/javascript; charset=utf-8",
+                    ),
+                    (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                ],
+                HTMX_JS,
+            )
+        }),
+    );
+
     if config.embedded {
         // Вшита статика: ServeDir тут ні до чого — файлів на диску немає.
         let files = config.files.clone();
@@ -1122,9 +1141,12 @@ fn collect_scripts(config: &Config) -> String {
     let mut scripts = list_assets(config.files.as_ref(), &config.public_dir(), "js");
     scripts.sort_by_key(|src| !src.contains("htmx"));
 
-    // `rhaix.js` іде перший: підняті скрипти компонентів питають у нього
-    // реєстр, тому він має бути вже завантажений.
-    let mut out: Vec<String> = vec![format!("<script src=\"{CLIENT_ROUTE}\"></script>")];
+    // htmx — першим, `rhaix.js` — другим: підняті скрипти компонентів питають
+    // у нього реєстр, тому обидва мають бути вже завантажені.
+    let mut out: Vec<String> = vec![
+        format!("<script src=\"{HTMX_ROUTE}\"></script>"),
+        format!("<script src=\"{CLIENT_ROUTE}\"></script>"),
+    ];
     out.extend(
         scripts
             .into_iter()
@@ -1338,8 +1360,8 @@ enum PageError {
 
 impl IntoResponse for PageError {
     fn into_response(self) -> Response {
-        // Прототип dev-overlay: людина має бачити свій файл і свій рядок, а не
-        // стек Rust. У M6 це піде ще й у браузер через SSE.
+        // Людина має бачити свій файл і свій рядок, а не стек Rust: сторінка
+        // помилки показує діагностику в координатах `.rhx`.
         let (status, body) = match self {
             PageError::Io { file, message } => (
                 StatusCode::INTERNAL_SERVER_ERROR,

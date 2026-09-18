@@ -1,0 +1,12 @@
+<div class="box">
+  <p class="label">усередині компонента</p>
+  <slot />
+</div>
+
+<style scoped>
+  .box { border: 1px solid red }
+  .box .label { color: blue }
+  a:hover { color: green }
+  @media (max-width: 40em) { .box { border: 0 } }
+  @keyframes spin { from { opacity: 0 } }
+</style>

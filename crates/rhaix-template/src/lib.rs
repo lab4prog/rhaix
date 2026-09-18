@@ -11,6 +11,7 @@
 //! координати `.rhx`, тому користувач ніколи не бачить сирого Rhai.
 
 pub mod ast;
+mod css;
 pub mod error;
 pub mod escape;
 mod expr;
@@ -43,6 +44,11 @@ pub struct Template {
     /// Скомпільований frontmatter. Компілюється разом із розміткою, тому
     /// синтаксична помилка в логіці видно одразу, а не на першому запиті.
     script: Option<Expr>,
+    /// Ідентифікатор скоупу, якщо у файлі є `<style scoped>`.
+    ///
+    /// Рахується від шляху файлу, а не від вмісту: він має лишатись тим самим
+    /// між перезапусками й однаковим для всіх входжень компонента.
+    scope_id: Option<String>,
 }
 
 impl Template {
@@ -74,12 +80,21 @@ impl Template {
             ),
             _ => None,
         };
+        let scope_id = has_scoped_style(&nodes)
+            .then(|| format!("{:08x}", short_hash(&source.path().display().to_string())));
+
         Ok(Self {
             source,
             nodes,
             frontmatter: split.frontmatter,
             script,
+            scope_id,
         })
+    }
+
+    /// Атрибут скоупу для цього файлу: `data-rhx-ab12cd34`.
+    pub fn scope_attribute(&self) -> Option<String> {
+        self.scope_id.as_ref().map(|id| format!("data-rhx-{id}"))
     }
 
     /// Виконати frontmatter.
@@ -145,6 +160,7 @@ impl Template {
             slots,
             globals,
             hoist,
+            self.scope_attribute(),
         )
         .map_err(|diagnostic| diagnostic.in_file(self.source.clone()))
     }
@@ -153,6 +169,43 @@ impl Template {
     pub fn describe(&self, diagnostic: &Diagnostic) -> String {
         diagnostic.render(&self.source)
     }
+}
+
+/// Чи є у дереві `<style scoped>`.
+fn has_scoped_style(nodes: &[Node]) -> bool {
+    use ast::{Conditional, Each, Node as N};
+
+    fn walk(nodes: &[Node]) -> bool {
+        nodes.iter().any(|node| match node {
+            N::Element(element) => {
+                (element.name == "style"
+                    && element.attrs.iter().any(|attr| attr.name == "scoped"))
+                    || walk(&element.children)
+            }
+            N::Conditional(c) => {
+                let c: &Conditional = c;
+                c.branches.iter().any(|b| walk(std::slice::from_ref(&b.body)))
+            }
+            N::Each(each) => {
+                let each: &Each = each;
+                walk(std::slice::from_ref(&each.body))
+            }
+            // Слоти й компоненти сюди не входять: чужий `<style scoped>` —
+            // це скоуп чужого файлу, а не цього.
+            _ => false,
+        })
+    }
+    walk(nodes)
+}
+
+/// Короткий стабільний хеш (FNV-1a, 32 біти) — для ідентифікатора скоупу.
+fn short_hash(text: &str) -> u32 {
+    let mut value: u32 = 0x811c_9dc5;
+    for byte in text.as_bytes() {
+        value ^= u32::from(*byte);
+        value = value.wrapping_mul(0x0100_0193);
+    }
+    value
 }
 
 #[cfg(test)]
