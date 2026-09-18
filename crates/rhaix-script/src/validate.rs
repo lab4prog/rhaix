@@ -92,7 +92,30 @@ fn check_field(values: &Map, field: &str, spec: &str) -> Option<String> {
                 .first()
                 .map(|other| value == field_value(values, other))
                 .unwrap_or(true),
+            "different" => rule
+                .args
+                .first()
+                .map(|other| value != field_value(values, other))
+                .unwrap_or(true),
             "in" => rule.args.contains(&trimmed),
+            "not_in" => !rule.args.contains(&trimmed),
+            // Дата в тому ж вигляді, у якому її віддає база й приймає `date()`.
+            "date" => crate::datetime::parse(trimmed).is_some(),
+            "bool" => matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "true" | "false" | "1" | "0" | "on" | "off" | "yes" | "no" | "так" | "ні"
+            ),
+            // `alpha`/`alnum` — за Unicode, а не ASCII: «Оля» має проходити.
+            "alpha" => trimmed.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '-' || c == '\''),
+            "alnum" => trimmed.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'),
+            "len" => rule
+                .args
+                .first()
+                .and_then(|n| n.parse::<usize>().ok())
+                .map(|n| trimmed.chars().count() == n)
+                .unwrap_or(false),
+            "starts" => rule.args.first().map(|p| trimmed.starts_with(p)).unwrap_or(true),
+            "ends" => rule.args.first().map(|p| trimmed.ends_with(p)).unwrap_or(true),
             // Невідоме правило не має мовчки пропускати поле: це помилка автора.
             other => return Some(format!("невідоме правило `{other}`")),
         };
@@ -147,7 +170,15 @@ fn message(rule: &Rule, numeric: bool) -> String {
         "between" if numeric => format!("Від {} до {}", arg(0), arg(1)),
         "between" => format!("Від {} до {} символів", arg(0), arg(1)),
         "same" => "Значення не збігаються".to_owned(),
-        "in" => "Неприпустиме значення".to_owned(),
+        "different" => "Значення має відрізнятися".to_owned(),
+        "in" | "not_in" => "Неприпустиме значення".to_owned(),
+        "date" => "Схоже, це не дата".to_owned(),
+        "bool" => "Має бути так або ні".to_owned(),
+        "alpha" => "Лише літери".to_owned(),
+        "alnum" => "Лише літери й цифри".to_owned(),
+        "len" => format!("Рівно {} символів", arg(0)),
+        "starts" => format!("Має починатися з `{}`", arg(0)),
+        "ends" => format!("Має закінчуватися на `{}`", arg(0)),
         other => format!("невідоме правило `{other}`"),
     }
 }
@@ -280,6 +311,33 @@ mod tests {
         assert!(!is_email("@b.co"));
         assert!(!is_email("a b@c.co"));
         assert!(!is_email("a@.co"));
+    }
+
+    #[test]
+    fn extra_rules_cover_common_cases() {
+        // date — той самий формат, що віддає база.
+        assert!(errors(&[("d", "2026-09-17")], &[("d", "date")]).is_empty());
+        assert!(errors(&[("d", "позавчора")], &[("d", "date")]).contains_key("d"));
+
+        // alpha за Unicode: кирилиця проходить, цифри — ні.
+        assert!(errors(&[("n", "Оля Литвин")], &[("n", "alpha")]).is_empty());
+        assert!(errors(&[("n", "Оля2")], &[("n", "alpha")]).contains_key("n"));
+
+        // len — рівно стільки символів (рахуються символи, не байти).
+        assert!(errors(&[("c", "UAH")], &[("c", "len:3")]).is_empty());
+        assert!(errors(&[("c", "грн")], &[("c", "len:3")]).is_empty());
+        assert!(errors(&[("c", "UA")], &[("c", "len:3")]).contains_key("c"));
+
+        // different — протилежність same.
+        assert!(errors(&[("a", "x"), ("b", "y")], &[("b", "different:a")]).is_empty());
+        assert!(errors(&[("a", "x"), ("b", "x")], &[("b", "different:a")]).contains_key("b"));
+
+        // not_in, starts, ends, bool.
+        assert!(errors(&[("r", "root")], &[("r", "not_in:root,admin")]).contains_key("r"));
+        assert!(errors(&[("u", "https://a.co")], &[("u", "starts:https://")]).is_empty());
+        assert!(errors(&[("f", "a.png")], &[("f", "ends:.png")]).is_empty());
+        assert!(errors(&[("b", "так")], &[("b", "bool")]).is_empty());
+        assert!(errors(&[("b", "можливо")], &[("b", "bool")]).contains_key("b"));
     }
 
     #[test]

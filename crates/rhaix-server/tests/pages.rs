@@ -781,3 +781,28 @@ async fn multipart_upload_is_parsed_and_exposed() {
     assert!(out.contains("нотатка.txt|"), "{out}");
     assert!(out.contains("|text/plain|false|вміст файлу"), "{out}");
 }
+
+#[tokio::test]
+async fn translations_follow_the_request_locale() {
+    // Типово — мова за замовчуванням із [app] locale (у фікстурі uk).
+    let (status, _, body) = call(htmx("/i18n")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains(r#"<p id="locale">uk</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="greeting">Привіт</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="items">У кошику 3 товарів</p>"#), "{body}");
+
+    // `set_locale` перемикає мову в межах запиту.
+    let (_, _, body) = call(htmx("/i18n?lang=en")).await;
+    assert!(body.contains(r#"<p id="locale">en</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="greeting">Hello</p>"#), "{body}");
+    assert!(body.contains(r#"<p id="items">3 items in cart</p>"#), "{body}");
+    // Ключа немає в en — падаємо на мову за замовчуванням, а не на порожнечу.
+    assert!(body.contains(r#"<p id="fallback">Лише українською</p>"#), "{body}");
+
+    // Відсутній ключ показує сам себе — дірку в перекладі видно одразу.
+    assert!(body.contains(r#"<p id="missing">nope.key</p>"#), "{body}");
+
+    // Невідома мова не скидає переклад у ключі.
+    let (_, _, body) = call(htmx("/i18n?lang=xx")).await;
+    assert!(body.contains(r#"<p id="greeting">Привіт</p>"#), "{body}");
+}

@@ -1,0 +1,11 @@
+---
+page.title = "Переклади";
+// Мова з адреси — типово це робить middleware.rhx.
+let wanted = req.query("lang");
+if wanted != () { set_locale(wanted); }
+---
+<p id="locale">{{ locale() }}</p>
+<p id="greeting">{{ t("greeting") }}</p>
+<p id="items">{{ t("items", #{ count: 3 }) }}</p>
+<p id="fallback">{{ t("only_uk") }}</p>
+<p id="missing">{{ t("nope.key") }}</p>

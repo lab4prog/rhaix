@@ -254,6 +254,7 @@ csrf = true               # default
 session_days = 30
 tz_offset = "+03:00"
 http_timeout = 10
+locale = "uk"             # default locale for t(); files in locales/*.toml
 
 # [mail] enables real SMTP (build with the `mail` feature); without it mail.send logs
 # [mail]
@@ -362,7 +363,20 @@ if f != () {
 
 // mail (dev: logs the message; real SMTP behind the `mail` build feature + [mail] config)
 mail.send(#{ to: "x@y.co", subject: "Hi", text: "...", html: "<p>...</p>" });
+
+// i18n: locales/<lang>.toml, read through the same Files trait
+t("greeting")                 // current locale -> default locale -> the key itself
+t("items", #{ count: 3 })     // "{count}" placeholders
+set_locale("en"); locale()    // usually in middleware.rhx; unknown locale is ignored
+
+// markdown (behind the `markdown` build feature): raw HTML is escaped, not
+// passed through, and link/image URLs are scheme-checked — safe by construction
+{{ markdown(post.body) }}
 ```
+
+Validation rules in full: `required email url int number bool date min:N max:N
+between:a,b len:N same:field different:field in:a,b not_in:a,b starts:x ends:x
+alpha alnum`.
 
 ## Shared functions
 
@@ -434,5 +448,5 @@ rhaix check <dir>    # compile everything without starting; --json for CI
 ## Not in v1, on purpose
 
 Islands / client components / partial hydration; scoped CSS (v1.1); password
-the rest of the batteries (M12): pagination window helpers, richer validators, i18n;
+a language server for the editor (syntax highlighting exists: editors/vscode);
 `markdown()`; Postgres, MongoDB, SurrealDB drivers (M11, same `DbDriver` trait).

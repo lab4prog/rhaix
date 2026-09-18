@@ -35,7 +35,7 @@ use rhaix_script::{
     Deadline, Http, Hx, Limits, Log, Request as ScriptRequest, RequestData,
     Response as ScriptResponse, ResponseData, Secret, Session, SessionOptions, CSRF_FIELD,
     CSRF_HEADER,
-    Mail, MailConfig, State as ScriptState, UploadData,
+    Catalog, I18n, LocaleScope, Mail, MailConfig, State as ScriptState, UploadData,
 };
 use rhaix_template::{DiskFiles, Files, Globals, Loader, Slots, TemplateCache};
 use tokio::sync::broadcast;
@@ -96,6 +96,8 @@ pub struct AppConfig {
     pub http_timeout: Duration,
     /// Секція `[mail]`: SMTP або dev-лог.
     pub mail: MailConfig,
+    /// Мова за замовчуванням (`[app] locale`).
+    pub locale: String,
 }
 
 impl Default for AppConfig {
@@ -107,6 +109,7 @@ impl Default for AppConfig {
             tz_offset: 0,
             http_timeout: Duration::from_secs(10),
             mail: MailConfig::default(),
+            locale: "uk".to_owned(),
         }
     }
 }
@@ -158,6 +161,8 @@ struct AppSection {
     tz_offset: Option<String>,
     /// Таймаут `http`, у секундах.
     http_timeout: Option<u64>,
+    /// Мова за замовчуванням для `t(...)`.
+    locale: Option<String>,
 }
 
 /// `[mail]` у `rhaix.toml`.
@@ -206,6 +211,9 @@ fn app_config(
         }
         if let Some(seconds) = section.http_timeout {
             app.http_timeout = Duration::from_secs(seconds.clamp(1, 300));
+        }
+        if let Some(locale) = &section.locale {
+            app.locale = locale.clone();
         }
     }
     if let Some(m) = mail {
@@ -429,6 +437,8 @@ struct AppState {
     http: Http,
     /// Пошта: SMTP або dev-лог, один на застосунок.
     mail: Mail,
+    /// Переклади з `locales/*.toml`, спільні для всіх запитів.
+    catalog: Arc<Catalog>,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
@@ -527,6 +537,7 @@ pub fn build_watched(
         reload: broadcast::channel(16).0,
         http: Http::new(config.app.http_timeout),
         mail: Mail::new(config.app.mail.clone()),
+        catalog: Arc::new(load_catalog(&config)),
     };
 
     let mut router = Router::new();
@@ -886,6 +897,11 @@ fn render_page(
         app.secret.bytes(),
     );
     let csrf = Csrf::new(session.clone(), app.csrf);
+    // Мова — стан запиту: `set_locale` у middleware має впливати на сторінку.
+    let i18n = I18n::new(state.catalog.clone(), app.locale.clone());
+    // `t(...)` — вільна функція, тому переклади прив'язуються до потоку запиту
+    // (рендер іде в `spawn_blocking`: один запит — один потік).
+    let _locale = LocaleScope::new(i18n.clone());
 
     if is_mutating(&data.method) {
         // Поле форми або заголовок: другий варіант потрібен для `hx-headers`
@@ -901,7 +917,7 @@ fn render_page(
         }
     }
 
-    let (body, mut response) = render_inner(state, file, kind, data, &session, &csrf)?;
+    let (body, mut response) = render_inner(state, file, kind, data, &session, &csrf, &i18n)?;
     // Cookie ставиться, лише якщо сесію справді змінювали — інакше кожна
     // сторінка тягла б за собою `Set-Cookie` і псувала кешування.
     if let Some(cookie) = session.cookie(app.secret.bytes(), &app.session) {
@@ -922,6 +938,7 @@ fn render_inner(
     data: RequestData,
     session: &Session,
     csrf: &Csrf,
+    i18n: &I18n,
 ) -> Result<(String, ResponseData), PageError> {
     let is_htmx = data.is_htmx;
     let path = data.path.clone();
@@ -949,6 +966,7 @@ fn render_inner(
         &state.database,
         &state.http,
         &state.mail,
+        i18n,
         session,
         csrf,
         data,
@@ -1253,6 +1271,24 @@ fn chosen_layout(globals: &Globals) -> Layout {
     Layout::Named(name)
 }
 
+/// Прочитати `locales/*.toml` через ті самі `Files`, що й шаблони.
+///
+/// Ім'я файлу і є кодом мови: `locales/uk.toml` → `uk`. Порожня тека —
+/// порожній каталог, і `t("ключ")` просто повертає ключ.
+fn load_catalog(config: &Config) -> Catalog {
+    let mut catalog = Catalog::new();
+    for path in config.files.list(&config.root.join("locales"), "toml") {
+        let Some(locale) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let Some(text) = config.files.read_text(&path) else {
+            continue;
+        };
+        catalog.insert(locale, rhaix_script::parse_catalog_file(&text));
+    }
+    catalog
+}
+
 /// Об'єкти, які бачить кожен файл рендеру — і сторінка, і layout, і компоненти.
 ///
 /// Компонент не успадковує scope батька (SYNTAX 5.3), тому глобальні об'єкти
@@ -1264,6 +1300,7 @@ fn globals_for(
     database: &Database,
     http: &Http,
     mail: &Mail,
+    i18n: &I18n,
     session: &Session,
     csrf: &Csrf,
     data: RequestData,
@@ -1279,6 +1316,7 @@ fn globals_for(
         .set("db", Dynamic::from(database.clone()))
         .set("http", Dynamic::from(http.clone()))
         .set("mail", Dynamic::from(mail.clone()))
+        .set("i18n", Dynamic::from(i18n.clone()))
         .set("session", Dynamic::from(session.clone()))
         .set("csrf", Dynamic::from(csrf.clone()))
         .set("log", Dynamic::from(Log { source }))
@@ -1473,6 +1511,16 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_loads_every_locale_file() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture");
+        let config = Config::load_for_check(root).expect("конфіг фікстури");
+        let catalog = load_catalog(&config);
+        let mut keys: Vec<&str> = catalog.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["en", "uk"], "каталог: {catalog:?}");
+    }
 
     #[test]
     fn maps_files_to_routes() {

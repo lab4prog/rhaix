@@ -62,34 +62,12 @@ pub fn is_event_attribute(name: &str) -> bool {
     !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '-')
 }
 
-/// Схеми, які дозволено лишати в посиланні.
-const ALLOWED_SCHEMES: [&str; 5] = ["http", "https", "mailto", "tel", "ftp"];
-
 /// Перевірити посилання. Заборонена схема замінюється на `#`.
 ///
-/// Відносні шляхи, якорі та query проходять як є — у них схеми немає.
-pub fn sanitize_url(value: &str) -> &str {
-    let trimmed = value.trim_start_matches(|ch: char| ch.is_whitespace() || ch.is_control());
-
-    let scheme_end = match trimmed.find([':', '/', '?', '#']) {
-        Some(index) if trimmed.as_bytes()[index] == b':' => index,
-        _ => return value, // схеми немає — відносний шлях
-    };
-
-    let scheme = trimmed[..scheme_end].to_ascii_lowercase();
-    if ALLOWED_SCHEMES.contains(&scheme.as_str()) {
-        return value;
-    }
-    // data: лишаємо тільки для картинок — усе інше вміє виконувати скрипт.
-    if scheme == "data"
-        && trimmed[scheme_end + 1..]
-            .to_ascii_lowercase()
-            .starts_with("image/")
-    {
-        return value;
-    }
-    "#"
-}
+/// Саме правило живе в `rhaix-script` (`urls.rs`): ним користується ще й
+/// `markdown()`, а дві копії такої перевірки — найкоротший шлях до дірки в
+/// одній із них.
+pub use rhaix_script::sanitize_url;
 
 #[cfg(test)]
 mod tests {

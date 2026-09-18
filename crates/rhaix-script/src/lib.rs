@@ -10,11 +10,14 @@ mod paginate;
 mod data;
 mod datetime;
 mod http;
+mod i18n;
 mod json;
 mod mail;
+mod markdown;
 mod session;
 mod stdlib;
 mod text;
+mod urls;
 mod validate;
 mod web;
 
@@ -23,13 +26,16 @@ pub use crypto::{random_token, uuid_v4};
 pub use data::register_db;
 pub use datetime::{now_secs, parse_tz_offset, register_datetime, set_tz_offset};
 pub use http::{register_http, Http};
+pub use i18n::{parse_catalog_file, register_i18n, Catalog, I18n, LocaleScope};
 pub use mail::{register_mail, Mail, MailConfig};
+pub use markdown::{markdown, register_markdown};
 pub use json::{parse as json_parse, to_dynamic as json_to_dynamic};
 pub use session::{
     register_session, Csrf, Secret, Session, SessionOptions, CSRF_FIELD, CSRF_HEADER,
 };
 pub use stdlib::{register_core, Html, SlotSet};
 pub use text::register_text;
+pub use urls::sanitize_url;
 pub use web::{
     parse_cookies, parse_urlencoded, register_web, triggers_header, Hx, Log, Request, RequestData,
     Response, ResponseData, State, UploadData,
@@ -68,7 +74,17 @@ pub fn engine(limits: Limits) -> Engine {
     engine.set_max_call_levels(limits.max_call_levels);
     engine.set_max_string_size(limits.max_string_size);
     engine.set_max_expr_depths(limits.max_expr_depth, limits.max_expr_depth);
-    engine.set_optimization_level(OptimizationLevel::Full);
+    // `Simple`, а не `Full`, і це **не** економія на оптимізації.
+    //
+    // За `Full` Rhai обчислює виклики зі сталими аргументами вже під час
+    // компіляції й підставляє результат у AST. Шаблон компілюється один раз і
+    // кешується — отже `{{ uuid() }}` віддавав би всім запитам той самий рядок,
+    // `{{ datetime(now()) }}` замерзав би на моменті старту, а `t("ключ")` —
+    // на мові першого запиту. Знайдено на i18n; зафіксовано тестом
+    // `stateful_functions_are_not_constant_folded`.
+    //
+    // `Simple` згортає сталі вирази, але не викликає функцій.
+    engine.set_optimization_level(OptimizationLevel::Simple);
 
     // Ліміт часу: скрипт користувача не має тримати потік нескінченно.
     // Перевіряємо не щокроку, а раз на кілька тисяч операцій — цього достатньо,
@@ -91,6 +107,8 @@ pub fn engine(limits: Limits) -> Engine {
     validate::register_validate(&mut engine);
     paginate::register_paginate(&mut engine);
     mail::register_mail(&mut engine);
+    markdown::register_markdown(&mut engine);
+    i18n::register_i18n(&mut engine);
     engine
 }
 
@@ -234,6 +252,21 @@ pub fn truthy(value: &Dynamic) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stateful_functions_are_not_constant_folded() {
+        // Пастка оптимізатора: за Full Rhai обчислює виклики зі сталими
+        // аргументами вже при компіляції. Шаблон компілюється один раз і
+        // кешується, тож `uuid()` віддавав би один і той самий рядок усім
+        // запитам, а `t(...)` — переклад першої мови, що трапилась.
+        let engine = super::engine(super::Limits::default());
+        let ast = super::compile_expression(&engine, "uuid()").expect("компіляція");
+
+        let mut scope = rhai::Scope::new();
+        let first: String = engine.eval_ast_with_scope(&mut scope, &ast).expect("1");
+        let second: String = engine.eval_ast_with_scope(&mut scope, &ast).expect("2");
+        assert_ne!(first, second, "uuid() згорнувся в константу при компіляції");
+    }
+
     use super::*;
     use rhai::{Array, Map};
 

@@ -21,7 +21,7 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: M12 (батарейки: auth, валідація, пагінація, файли, пошта)
+## Стан: M12 завершено + плагін для VS Code
 
 Що вже працює:
 
@@ -64,6 +64,12 @@ page.title = "ToDo";
 - **завантаження файлів**: `req.file(...)` + `upload.save(...)` зі звіркою шляху;
 - **пошта**: `mail.send(#{...})` — dev-режим друкує лист у лог, справжній SMTP
   за feature `mail`;
+- **переклади**: `t("ключ")` і `set_locale(...)`, файли `locales/*.toml`;
+  відсутній ключ показує сам себе, а не порожнечу;
+- **`markdown()`** за feature `markdown` — сирий HTML екранується, схеми
+  посилань перевіряються, тож санітайзер не потрібен;
+- **підсвітка для VS Code**: [editors/vscode](editors/vscode), граматика
+  перевіряється тим самим токенайзером, що й у редакторі;
 - **прод-збірка**: `rhaix build` вшиває всі файли в один бінарник (11.3 МБ), який
   нічого не читає з диска, крім бази; `rhaix serve` піднімає той самий застосунок
   із диска, але в режимі продакшну — заморожений кеш, стиснення, кеш статики;
@@ -83,7 +89,7 @@ page.title = "ToDo";
 Демо працює на справжній SQLite: `examples/demo/rhaix.toml` +
 `examples/demo/migrations/001_todos.sql`.
 
-Чого ще немає: i18n, багатших валідаторів і `markdown()` (решта M12),
+Чого ще немає: scoped CSS і мовного сервера для редактора (M13),
 драйверів MongoDB/SurrealDB (решта M11).
 
 ```bash
@@ -142,6 +148,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M11-FINDINGS.md](M11-FINDINGS.md) | драйвер PostgreSQL: `?`→`$N`, `RETURNING`, коерція типів |
 | [M12-FINDINGS.md](M12-FINDINGS.md) | батарейки: Argon2, `validate`, `paginate`, завантаження, пошта |
 | [GUIDE.md](GUIDE.md) | юзергайд: створити застосунок, міграції, деплой, оновлення |
+| [editors/vscode](editors/vscode) | підсвітка `.rhx` для VS Code |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 

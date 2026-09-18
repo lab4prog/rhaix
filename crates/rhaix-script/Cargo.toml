@@ -11,6 +11,9 @@ rust-version.workspace = true
 # працює в dev-режимі — друкує лист у лог замість надсилання, тож рецепт
 # працює без поштового сервера. lettre тягне TLS, тому опційний.
 mail = ["dep:lettre"]
+# `markdown()` — CommonMark без сирого HTML (див. markdown.rs). Опційний, бо
+# потрібен не кожному застосунку.
+markdown = ["dep:pulldown-cmark"]
 
 [dependencies]
 rhaix-db.workspace = true
@@ -23,6 +26,7 @@ getrandom = "0.3"
 ureq = "2"
 argon2 = "0.5"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls"], optional = true }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"], optional = true }
 
 [[bin]]
 name = "rhaix-bench"

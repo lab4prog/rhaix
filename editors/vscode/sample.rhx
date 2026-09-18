@@ -1,0 +1,24 @@
+---
+// Зразок для перевірки підсвітки. Не частина застосунку.
+let todos = db.find("todos", #{ done: false }, #{ sort: "id desc" });
+let errors = validate(req.all_form(), #{ title: "required|min:2" });
+page.title = t("todo.title");
+---
+<h1>{{ page.title }}</h1>
+{{! цей коментар не потрапляє у HTML }}
+
+<ul>
+  <TodoItem @for={todo in todos} @key={todo.id} todo={todo} />
+  <li @if={todos.is_empty()} class="empty">{{ t("todo.empty") }}</li>
+  <li @else>Всього: {{ todos.len() }}</li>
+</ul>
+
+<a href="/todo/{{ todos[0].id }}" @class={#{"active": true}}>клац</a>
+<input {...attrs} required>
+
+<Ui.Card>
+  <template slot="header"><h2>Заголовок</h2></template>
+  Вміст
+</Ui.Card>
+
+<rhaix:raw>тут {{ не вираз }}</rhaix:raw>
