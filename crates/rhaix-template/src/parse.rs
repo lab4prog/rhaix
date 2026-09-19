@@ -384,7 +384,10 @@ impl<'a> Parser<'a> {
             && parsed.attrs.iter().all(attribute_is_static)
             && children.iter().all(|child| matches!(child, Node::Text(_)));
 
-        if self.collapse && !is_component && nothing_dynamic && !must_stay_element(&name, &parsed.attrs, csrf_header)
+        if self.collapse
+            && !is_component
+            && nothing_dynamic
+            && !must_stay_element(&name, &parsed.attrs, csrf_header)
         {
             return Ok(self.plain(Node::Text(span), span));
         }

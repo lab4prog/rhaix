@@ -121,7 +121,8 @@ impl DbDriver for SqliteDriver {
         // і з'єднання помре разом із останнім посиланням.
         let Some(connection) = pinned.take() else {
             return Err(DbError::Query(
-                "з'єднання транзакції лишилось зайнятим: не зберігайте `t` поза межами db.tx".into(),
+                "з'єднання транзакції лишилось зайнятим: не зберігайте `t` поза межами db.tx"
+                    .into(),
             ));
         };
 
@@ -231,7 +232,10 @@ fn run_exec(connection: &Connection, sql: &str, params: &[Dynamic]) -> Result<Af
     })
 }
 
-fn migrate_all(connection: &Connection, migrations: &[(String, String)]) -> Result<Vec<String>, DbError> {
+fn migrate_all(
+    connection: &Connection,
+    migrations: &[(String, String)],
+) -> Result<Vec<String>, DbError> {
     let mut applied = Vec::new();
     for (name, body) in migrations {
         let already: i64 = connection

@@ -22,9 +22,9 @@ use std::sync::Arc;
 
 use rhai::{Dynamic, Map};
 
-pub use query::{Sql, PRIMARY_KEY};
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresDriver;
+pub use query::{Sql, PRIMARY_KEY};
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteDriver;
 

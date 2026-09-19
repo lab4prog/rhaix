@@ -291,7 +291,10 @@ mod tests {
 
     #[test]
     fn simple_selectors_get_the_attribute() {
-        assert_eq!(scoped(".card{color:red}"), ".card[data-rhx-ab12cd34]{color:red}");
+        assert_eq!(
+            scoped(".card{color:red}"),
+            ".card[data-rhx-ab12cd34]{color:red}"
+        );
         assert_eq!(scoped("div{}"), "div[data-rhx-ab12cd34]{}");
     }
 

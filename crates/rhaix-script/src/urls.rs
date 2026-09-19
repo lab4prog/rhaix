@@ -51,6 +51,9 @@ mod tests {
         assert_eq!(sanitize_url("https://example.com"), "https://example.com");
         assert_eq!(sanitize_url("mailto:a@b.co"), "mailto:a@b.co");
         assert_eq!(sanitize_url("#anchor"), "#anchor");
-        assert_eq!(sanitize_url("data:image/png;base64,AAA"), "data:image/png;base64,AAA");
+        assert_eq!(
+            sanitize_url("data:image/png;base64,AAA"),
+            "data:image/png;base64,AAA"
+        );
     }
 }

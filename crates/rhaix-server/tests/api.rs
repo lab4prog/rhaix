@@ -301,7 +301,12 @@ async fn the_recipe_validates_before_it_writes() {
     ))
     .await;
 
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.body
+    );
     let errors = &reply.json()["errors"];
     assert!(errors["customer"].is_string(), "{errors}");
     assert!(errors["email"].is_string(), "{errors}");
@@ -342,7 +347,12 @@ async fn a_missing_record_is_a_json_404() {
 
 #[tokio::test]
 async fn a_patch_changes_only_the_fields_that_were_sent() {
-    let reply = cook(authed("PATCH", "/api/orders/1", r#"{"status":"cancelled"}"#)).await;
+    let reply = cook(authed(
+        "PATCH",
+        "/api/orders/1",
+        r#"{"status":"cancelled"}"#,
+    ))
+    .await;
 
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     let updated = reply.json();
@@ -355,8 +365,17 @@ async fn a_patch_changes_only_the_fields_that_were_sent() {
 async fn a_patch_with_an_unknown_status_is_refused() {
     let reply = cook(authed("PATCH", "/api/orders/1", r#"{"status":"вигадка"}"#)).await;
 
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", reply.body);
-    assert!(reply.json()["errors"]["status"].is_string(), "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        reply.body
+    );
+    assert!(
+        reply.json()["errors"]["status"].is_string(),
+        "{}",
+        reply.body
+    );
 }
 
 #[tokio::test]

@@ -61,7 +61,9 @@ mod tests {
 
     #[test]
     fn a_password_round_trips() {
-        let hash = hash_password("правильний-кінь").into_string().expect("є хеш");
+        let hash = hash_password("правильний-кінь")
+            .into_string()
+            .expect("є хеш");
         // Формат PHC із назвою алгоритму — щоб було видно, що це саме Argon2.
         assert!(hash.starts_with("$argon2id$"), "{hash}");
         assert!(verify_password("правильний-кінь", &hash));

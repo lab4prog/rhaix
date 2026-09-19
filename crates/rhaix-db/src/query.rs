@@ -448,7 +448,9 @@ mod tests {
     fn an_unknown_option_is_an_error_not_silence() {
         // `offset` замість `skip` колись просто зникав, і пагінація мовчки
         // показувала не ту сторінку.
-        let options: Map = [("offset".into(), Dynamic::from(20_i64))].into_iter().collect();
+        let options: Map = [("offset".into(), Dynamic::from(20_i64))]
+            .into_iter()
+            .collect();
         let err = find("orders", &Map::new(), &options).expect_err("має бути помилка");
         let text = err.to_string();
         assert!(text.contains("offset"), "{text}");

@@ -31,7 +31,10 @@ pub fn build(root: &Path, framework: &Path, out: Option<PathBuf>) -> anyhow::Res
     let driver = read_driver(root);
     let has_mail = has_section(root, "[mail]");
     let features = server_features(driver.as_deref(), has_mail);
-    std::fs::write(workdir.join("Cargo.toml"), manifest(&name, framework, &features))?;
+    std::fs::write(
+        workdir.join("Cargo.toml"),
+        manifest(&name, framework, &features),
+    )?;
     std::fs::write(workdir.join("src/main.rs"), main_rs(root, &files))?;
     if let Some(driver) = &driver {
         println!("Драйвер бази: {driver}");

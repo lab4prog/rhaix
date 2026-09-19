@@ -73,9 +73,8 @@ struct Letter {
 }
 
 fn parse_letter(message: &Map) -> Result<Letter, Box<EvalAltResult>> {
-    let field = |name: &str| -> String {
-        message.get(name).map(super::display).unwrap_or_default()
-    };
+    let field =
+        |name: &str| -> String { message.get(name).map(super::display).unwrap_or_default() };
     let to = field("to");
     let subject = field("subject");
     if to.trim().is_empty() {
@@ -84,7 +83,10 @@ fn parse_letter(message: &Map) -> Result<Letter, Box<EvalAltResult>> {
     if subject.trim().is_empty() {
         return Err("mail.send: не вказано `subject`".into());
     }
-    let html = message.get("html").map(super::display).filter(|s| !s.is_empty());
+    let html = message
+        .get("html")
+        .map(super::display)
+        .filter(|s| !s.is_empty());
     Ok(Letter {
         to,
         subject,
@@ -103,7 +105,11 @@ impl Mail {
                 "mail (dev): до `{}`, тема `{}`{}\n{}",
                 letter.to,
                 letter.subject,
-                if letter.html.is_some() { " [+html]" } else { "" },
+                if letter.html.is_some() {
+                    " [+html]"
+                } else {
+                    ""
+                },
                 letter.text
             );
             return Ok(true);
@@ -122,13 +128,17 @@ impl Mail {
             .config
             .from
             .parse()
-            .map_err(|e| -> Box<EvalAltResult> { format!("mail: невірний `from`: {e}").into() })?;
-        let to = letter
-            .to
-            .parse()
-            .map_err(|e| -> Box<EvalAltResult> { format!("mail: невірний `to`: {e}").into() })?;
+            .map_err(|e| -> Box<EvalAltResult> {
+                format!("mail: невірний `from`: {e}").into()
+            })?;
+        let to = letter.to.parse().map_err(|e| -> Box<EvalAltResult> {
+            format!("mail: невірний `to`: {e}").into()
+        })?;
 
-        let builder = Message::builder().from(from).to(to).subject(&letter.subject);
+        let builder = Message::builder()
+            .from(from)
+            .to(to)
+            .subject(&letter.subject);
         let email = match &letter.html {
             Some(html) => builder.multipart(
                 MultiPart::alternative()
@@ -143,7 +153,9 @@ impl Mail {
                 .header(ContentType::TEXT_PLAIN)
                 .body(letter.text.clone()),
         }
-        .map_err(|e| -> Box<EvalAltResult> { format!("mail: не зібрати лист: {e}").into() })?;
+        .map_err(|e| -> Box<EvalAltResult> {
+            format!("mail: не зібрати лист: {e}").into()
+        })?;
 
         let mut transport = SmtpTransport::starttls_relay(&self.config.host)
             .map_err(|e| -> Box<EvalAltResult> { format!("mail: SMTP: {e}").into() })?
@@ -159,15 +171,19 @@ impl Mail {
             .build()
             .send(&email)
             .map(|_| true)
-            .map_err(|e| -> Box<EvalAltResult> { format!("mail: не надіслано: {e}").into() })
+            .map_err(|e| -> Box<EvalAltResult> {
+                format!("mail: не надіслано: {e}").into()
+            })
     }
 
     #[cfg(not(feature = "mail"))]
     fn deliver(&self, _letter: &Letter) -> Result<bool, Box<EvalAltResult>> {
         // Секція [mail] задана, але бінарник зібрано без feature `mail`.
-        Err("mail: надсилання не увімкнено в цій збірці; додайте feature `mail` \
+        Err(
+            "mail: надсилання не увімкнено в цій збірці; додайте feature `mail` \
              (у проді це робить `rhaix build` за секцією [mail])"
-            .into())
+                .into(),
+        )
     }
 }
 
@@ -194,7 +210,11 @@ mod tests {
         // Без [mail] — dev-режим: лист приймається (логується), send → true.
         let mail = Mail::new(MailConfig::default());
         let ok = mail
-            .send(letter(&[("to", "a@b.co"), ("subject", "Тема"), ("text", "текст")]))
+            .send(letter(&[
+                ("to", "a@b.co"),
+                ("subject", "Тема"),
+                ("text", "текст"),
+            ]))
             .expect("лист має бути прийнятий");
         assert!(ok);
     }

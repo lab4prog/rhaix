@@ -47,10 +47,7 @@ fn parse_rules(spec: &str) -> Vec<Rule<'_>> {
 
 /// Значення поля як рядок (те, що приходить із форми).
 fn field_value(values: &Map, field: &str) -> String {
-    values
-        .get(field)
-        .map(super::display)
-        .unwrap_or_default()
+    values.get(field).map(super::display).unwrap_or_default()
 }
 
 /// Чи має поле числове правило — тоді `min`/`max`/`between` порівнюють значення,
@@ -106,16 +103,28 @@ fn check_field(values: &Map, field: &str, spec: &str) -> Option<String> {
                 "true" | "false" | "1" | "0" | "on" | "off" | "yes" | "no" | "так" | "ні"
             ),
             // `alpha`/`alnum` — за Unicode, а не ASCII: «Оля» має проходити.
-            "alpha" => trimmed.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '-' || c == '\''),
-            "alnum" => trimmed.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'),
+            "alpha" => trimmed
+                .chars()
+                .all(|c| c.is_alphabetic() || c == ' ' || c == '-' || c == '\''),
+            "alnum" => trimmed
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-'),
             "len" => rule
                 .args
                 .first()
                 .and_then(|n| n.parse::<usize>().ok())
                 .map(|n| trimmed.chars().count() == n)
                 .unwrap_or(false),
-            "starts" => rule.args.first().map(|p| trimmed.starts_with(p)).unwrap_or(true),
-            "ends" => rule.args.first().map(|p| trimmed.ends_with(p)).unwrap_or(true),
+            "starts" => rule
+                .args
+                .first()
+                .map(|p| trimmed.starts_with(p))
+                .unwrap_or(true),
+            "ends" => rule
+                .args
+                .first()
+                .map(|p| trimmed.ends_with(p))
+                .unwrap_or(true),
             // Невідоме правило не має мовчки пропускати поле: це помилка автора.
             other => return Some(format!("невідоме правило `{other}`")),
         };

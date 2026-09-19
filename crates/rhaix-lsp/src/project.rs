@@ -30,7 +30,11 @@ pub fn compile(root: &Path, file: &Path, text: &str) -> Result<Arc<Template>, Di
     let engine = Arc::new(build_engine(Limits::default()));
     // Свіжий кеш на кожну перевірку: у редакторі файли змінюються постійно, і
     // застарілий компонент показував би помилку, якої вже немає.
-    let loader = Loader::new(root.to_path_buf(), engine.clone(), TemplateCache::watching());
+    let loader = Loader::new(
+        root.to_path_buf(),
+        engine.clone(),
+        TemplateCache::watching(),
+    );
     let source = Arc::new(Source::new(file, text));
     Template::compile_with(source, &engine, &loader).map(Arc::new)
 }
@@ -119,8 +123,7 @@ mod tests {
     #[test]
     fn root_is_found_by_walking_up() {
         // Фікстура сервера має і rhaix.toml, і pages/.
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../rhaix-server/tests/fixture");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rhaix-server/tests/fixture");
         let page = fixture.join("pages/index.rhx");
         let root = find_root(&page).expect("корінь має знайтись");
         assert!(root.join("rhaix.toml").is_file(), "{root:?}");
@@ -128,8 +131,7 @@ mod tests {
 
     #[test]
     fn component_names_include_nested_directories() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../rhaix-server/tests/fixture");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rhaix-server/tests/fixture");
         let names = component_names(&fixture);
         assert!(names.contains(&"Greeting".to_owned()), "{names:?}");
         assert!(names.contains(&"Ui.Card".to_owned()), "{names:?}");
@@ -137,8 +139,7 @@ mod tests {
 
     #[test]
     fn a_broken_buffer_reports_a_diagnostic() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../rhaix-server/tests/fixture");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../rhaix-server/tests/fixture");
         let file = fixture.join("pages/scratch.rhx");
 
         // Невідомий компонент — помилка компіляції, ще до збереження файлу.

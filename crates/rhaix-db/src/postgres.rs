@@ -40,9 +40,8 @@ impl PostgresDriver {
     }
 
     fn connect(&self) -> Result<Client, DbError> {
-        Client::connect(&self.url, NoTls).map_err(|err| {
-            DbError::Config(format!("не вдалося під'єднатися до postgres: {err}"))
-        })
+        Client::connect(&self.url, NoTls)
+            .map_err(|err| DbError::Config(format!("не вдалося під'єднатися до postgres: {err}")))
     }
 
     fn checkout(&self) -> Result<Client, DbError> {
@@ -160,7 +159,10 @@ impl DbDriver for PostgresDriver {
             let mut applied = Vec::new();
             for (name, sql) in migrations {
                 let already = client
-                    .query_one("select count(*) as n from _rhaix_migrations where name = $1", &[name])
+                    .query_one(
+                        "select count(*) as n from _rhaix_migrations where name = $1",
+                        &[name],
+                    )
                     .map(|row| row.get::<_, i64>("n"))
                     .map_err(|err| DbError::Query(err.to_string()))?;
                 if already > 0 {
@@ -240,8 +242,10 @@ impl DbDriver for PinnedPostgres {
 
 fn run_query(client: &mut Client, sql: &str, params: &[Dynamic]) -> Result<Vec<Map>, DbError> {
     let bound: Vec<Bind> = params.iter().map(bind).collect();
-    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
-        bound.iter().map(|b| b as &(dyn postgres::types::ToSql + Sync)).collect();
+    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = bound
+        .iter()
+        .map(|b| b as &(dyn postgres::types::ToSql + Sync))
+        .collect();
     let rows = client
         .query(sql, &refs)
         .map_err(|err| query_error(sql, err))?;
@@ -250,8 +254,10 @@ fn run_query(client: &mut Client, sql: &str, params: &[Dynamic]) -> Result<Vec<M
 
 fn run_exec(client: &mut Client, sql: &str, params: &[Dynamic]) -> Result<Affected, DbError> {
     let bound: Vec<Bind> = params.iter().map(bind).collect();
-    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
-        bound.iter().map(|b| b as &(dyn postgres::types::ToSql + Sync)).collect();
+    let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = bound
+        .iter()
+        .map(|b| b as &(dyn postgres::types::ToSql + Sync))
+        .collect();
     let rows = client
         .execute(sql, &refs)
         .map_err(|err| query_error(sql, err))?;
@@ -280,21 +286,35 @@ fn value_of(row: &Row, index: usize, ty: &Type) -> Dynamic {
     use postgres::types::Type as T;
 
     match *ty {
-        T::BOOL => opt::<bool>(row, index).map(Dynamic::from).unwrap_or(Dynamic::UNIT),
-        T::INT2 => opt::<i16>(row, index).map(|n| Dynamic::from(n as i64)).unwrap_or(Dynamic::UNIT),
-        T::INT4 => opt::<i32>(row, index).map(|n| Dynamic::from(n as i64)).unwrap_or(Dynamic::UNIT),
-        T::INT8 => opt::<i64>(row, index).map(Dynamic::from).unwrap_or(Dynamic::UNIT),
-        T::OID => opt::<u32>(row, index).map(|n| Dynamic::from(n as i64)).unwrap_or(Dynamic::UNIT),
-        T::FLOAT4 => opt::<f32>(row, index).map(|n| Dynamic::from(n as f64)).unwrap_or(Dynamic::UNIT),
-        T::FLOAT8 => opt::<f64>(row, index).map(Dynamic::from).unwrap_or(Dynamic::UNIT),
+        T::BOOL => opt::<bool>(row, index)
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT),
+        T::INT2 => opt::<i16>(row, index)
+            .map(|n| Dynamic::from(n as i64))
+            .unwrap_or(Dynamic::UNIT),
+        T::INT4 => opt::<i32>(row, index)
+            .map(|n| Dynamic::from(n as i64))
+            .unwrap_or(Dynamic::UNIT),
+        T::INT8 => opt::<i64>(row, index)
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT),
+        T::OID => opt::<u32>(row, index)
+            .map(|n| Dynamic::from(n as i64))
+            .unwrap_or(Dynamic::UNIT),
+        T::FLOAT4 => opt::<f32>(row, index)
+            .map(|n| Dynamic::from(n as f64))
+            .unwrap_or(Dynamic::UNIT),
+        T::FLOAT8 => opt::<f64>(row, index)
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT),
         T::NUMERIC => opt::<Decimal>(row, index)
             // rhaix не має десяткового типу — приводимо до f64, як і SQLite REAL.
             .and_then(|d| d.to_f64())
             .map(Dynamic::from)
             .unwrap_or(Dynamic::UNIT),
-        T::TEXT | T::VARCHAR | T::BPCHAR | T::NAME | T::UNKNOWN => {
-            opt::<String>(row, index).map(Dynamic::from).unwrap_or(Dynamic::UNIT)
-        }
+        T::TEXT | T::VARCHAR | T::BPCHAR | T::NAME | T::UNKNOWN => opt::<String>(row, index)
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT),
         T::UUID => opt::<uuid::Uuid>(row, index)
             .map(|u| Dynamic::from(u.to_string()))
             .unwrap_or(Dynamic::UNIT),
@@ -318,7 +338,9 @@ fn value_of(row: &Row, index: usize, ty: &Type) -> Dynamic {
             .unwrap_or(Dynamic::UNIT),
         // Невідомий тип: пробуємо як рядок, а не мовчазний NULL — так людина
         // побачить значення й зрозуміє, що бракує підтримки типу.
-        _ => opt::<String>(row, index).map(Dynamic::from).unwrap_or(Dynamic::UNIT),
+        _ => opt::<String>(row, index)
+            .map(Dynamic::from)
+            .unwrap_or(Dynamic::UNIT),
     }
 }
 
@@ -437,10 +459,11 @@ fn text_to_sql(
         Type::FLOAT8 => value.trim().parse::<f64>()?.to_sql(ty, out),
         Type::NUMERIC => {
             let number = value.trim().parse::<f64>()?;
-            Decimal::from_f64(number).unwrap_or_default().to_sql(ty, out)
+            Decimal::from_f64(number)
+                .unwrap_or_default()
+                .to_sql(ty, out)
         }
-        Type::BOOL => matches!(value.trim(), "true" | "t" | "1" | "yes" | "on")
-            .to_sql(ty, out),
+        Type::BOOL => matches!(value.trim(), "true" | "t" | "1" | "yes" | "on").to_sql(ty, out),
         // text/varchar та решта — як є.
         _ => value.to_sql(ty, out),
     }
@@ -598,7 +621,8 @@ mod live_tests {
         let db = PostgresDriver::open(&url).expect("тестова база має бути доступна");
         // Чиста схема на кожен запуск.
         db.raw_exec("drop table if exists orders", &[]).unwrap();
-        db.raw_exec("drop table if exists _rhaix_migrations", &[]).unwrap();
+        db.raw_exec("drop table if exists _rhaix_migrations", &[])
+            .unwrap();
         Some((db, guard))
     }
 
@@ -624,21 +648,33 @@ mod live_tests {
 
         // insert повертає новий id через RETURNING.
         let id = db
-            .insert("orders", &map(&[("customer", "Оля".into()), ("amount", 1234.5.into())]))
+            .insert(
+                "orders",
+                &map(&[("customer", "Оля".into()), ("amount", 1234.5.into())]),
+            )
             .expect("insert")
             .last_id;
         assert!(id > 0, "insert має повернути id");
 
-        db.insert("orders", &map(&[("customer", "Петро".into()), ("done", true.into())]))
-            .expect("insert 2");
+        db.insert(
+            "orders",
+            &map(&[("customer", "Петро".into()), ("done", true.into())]),
+        )
+        .expect("insert 2");
 
         // get за первинним ключем.
-        let one = db.get("orders", Dynamic::from(id)).expect("get").expect("є запис");
+        let one = db
+            .get("orders", Dynamic::from(id))
+            .expect("get")
+            .expect("є запис");
         assert_eq!(one["customer"].clone().cast::<String>(), "Оля");
         // numeric приходить як f64, як і REAL у SQLite.
         assert_eq!(one["amount"].clone().cast::<f64>(), 1234.5);
         // timestamptz — рядок ISO, який розуміє date().
-        assert!(one["created"].clone().cast::<String>().contains('T'), "{one:?}");
+        assert!(
+            one["created"].clone().cast::<String>().contains('T'),
+            "{one:?}"
+        );
 
         // find зі словником операторів + сортування.
         let rows = db
@@ -657,11 +693,16 @@ mod live_tests {
         // update + delete.
         db.update("orders", Dynamic::from(id), &map(&[("done", true.into())]))
             .expect("update");
-        let done = db.count("orders", &map(&[("done", true.into())])).expect("count done");
+        let done = db
+            .count("orders", &map(&[("done", true.into())]))
+            .expect("count done");
         assert_eq!(done, 2);
 
         db.delete("orders", Dynamic::from(id)).expect("delete");
-        assert_eq!(db.count("orders", &Map::new()).expect("count after delete"), 1);
+        assert_eq!(
+            db.count("orders", &Map::new()).expect("count after delete"),
+            1
+        );
     }
 
     #[test]
@@ -679,18 +720,22 @@ mod live_tests {
         assert_eq!(db.count("orders", &Map::new()).expect("count"), 0);
 
         // А успішна транзакція фіксується.
-        let _ = db.transaction(&mut |tx| {
-            tx.insert("orders", &map(&[("customer", "другий".into())]))?;
-            Ok(Dynamic::UNIT)
-        })
-        .expect("транзакція");
+        let _ = db
+            .transaction(&mut |tx| {
+                tx.insert("orders", &map(&[("customer", "другий".into())]))?;
+                Ok(Dynamic::UNIT)
+            })
+            .expect("транзакція");
         assert_eq!(db.count("orders", &Map::new()).expect("count"), 1);
     }
 
     #[test]
     fn migrations_apply_once() {
         let Some((db, _guard)) = driver() else { return };
-        let m = [("001".to_owned(), "create table orders (id serial primary key)".to_owned())];
+        let m = [(
+            "001".to_owned(),
+            "create table orders (id serial primary key)".to_owned(),
+        )];
         assert_eq!(db.migrate(&m).expect("перший раз").len(), 1);
         // Другий прогін нічого не застосовує.
         assert_eq!(db.migrate(&m).expect("другий раз").len(), 0);
@@ -716,9 +761,14 @@ mod live_tests {
         assert_eq!(found["customer"].clone().cast::<String>(), "Ключ");
 
         // update і delete теж приймають рядковий id.
-        db.update("orders", Dynamic::from(id.to_string()), &map(&[("customer", "Змінено".into())]))
-            .expect("update");
-        db.delete("orders", Dynamic::from(id.to_string())).expect("delete");
+        db.update(
+            "orders",
+            Dynamic::from(id.to_string()),
+            &map(&[("customer", "Змінено".into())]),
+        )
+        .expect("update");
+        db.delete("orders", Dynamic::from(id.to_string()))
+            .expect("delete");
         assert_eq!(db.count("orders", &Map::new()).expect("count"), 0);
     }
 
@@ -726,18 +776,25 @@ mod live_tests {
     fn native_query_uses_question_placeholders() {
         let Some((db, _guard)) = driver() else { return };
         seed(&db);
-        db.insert("orders", &map(&[("customer", "Ігор".into())])).unwrap();
+        db.insert("orders", &map(&[("customer", "Ігор".into())]))
+            .unwrap();
 
         // Той самий `?`, що й для SQLite — драйвер перекладає на $1.
         let rows = db
-            .raw_query("select customer from orders where customer = ?", &[Dynamic::from("Ігор".to_owned())])
+            .raw_query(
+                "select customer from orders where customer = ?",
+                &[Dynamic::from("Ігор".to_owned())],
+            )
             .expect("query");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["customer"].clone().cast::<String>(), "Ігор");
     }
 
     fn map(pairs: &[(&str, Dynamic)]) -> Map {
-        pairs.iter().map(|(k, v)| ((*k).into(), v.clone())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).into(), v.clone()))
+            .collect()
     }
 
     // Тримаємо Array у використанні, щоб імпорт не був "невикористаним" у

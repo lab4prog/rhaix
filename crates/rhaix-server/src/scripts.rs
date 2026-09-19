@@ -47,7 +47,12 @@ impl ScriptResolver {
         }
     }
 
-    fn compile(&self, engine: &Engine, name: &str, pos: Position) -> Result<Shared<Module>, Box<EvalAltResult>> {
+    fn compile(
+        &self,
+        engine: &Engine,
+        name: &str,
+        pos: Position,
+    ) -> Result<Shared<Module>, Box<EvalAltResult>> {
         // `ErrorModuleNotFound` друкує лише ім'я модуля й ковтає пояснення,
         // тому текст іде як звичайна помилка виконання — людині потрібен саме
         // шлях до файлу, якого не знайшли.
@@ -101,7 +106,8 @@ impl ModuleResolver for ScriptResolver {
         let Some(cache) = &self.cache else {
             return self.compile(engine, name, pos);
         };
-        if let Some(found) = cache.lock().expect("кеш модулів не отруєний").get(name) {
+        if let Some(found) = cache.lock().expect("кеш модулів не отруєний").get(name)
+        {
             return Ok(found.clone());
         }
         let module = self.compile(engine, name, pos)?;

@@ -73,7 +73,11 @@ impl I18n {
         self.catalog
             .get(&current)
             .and_then(|m| m.get(key))
-            .or_else(|| self.catalog.get(self.fallback.as_str()).and_then(|m| m.get(key)))
+            .or_else(|| {
+                self.catalog
+                    .get(self.fallback.as_str())
+                    .and_then(|m| m.get(key))
+            })
             .cloned()
             .unwrap_or_else(|| key.to_owned())
     }
@@ -284,7 +288,9 @@ mod tests {
     #[test]
     fn parameters_are_interpolated() {
         let t = i18n();
-        let params: Map = [("count".into(), Dynamic::from(3_i64))].into_iter().collect();
+        let params: Map = [("count".into(), Dynamic::from(3_i64))]
+            .into_iter()
+            .collect();
         assert_eq!(t.translate_with("items", &params), "У кошику 3 товарів");
 
         // Бракує параметра — плейсхолдер лишається видимим.

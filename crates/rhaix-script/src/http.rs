@@ -107,7 +107,10 @@ fn read_response(response: ureq::Response) -> Map {
     let mut headers = Map::new();
     for name in response.headers_names() {
         if let Some(value) = response.header(&name) {
-            headers.insert(name.to_ascii_lowercase().into(), Dynamic::from(value.to_owned()));
+            headers.insert(
+                name.to_ascii_lowercase().into(),
+                Dynamic::from(value.to_owned()),
+            );
         }
     }
 
@@ -125,10 +128,7 @@ fn read_response(response: ureq::Response) -> Map {
         Ok(_) => {
             // `json` заповнюється, лише якщо тіло справді розбирається:
             // HTML-сторінка помилки не має вдавати об'єкт.
-            result.insert(
-                "json".into(),
-                json::parse(&body).unwrap_or(Dynamic::UNIT),
-            );
+            result.insert("json".into(), json::parse(&body).unwrap_or(Dynamic::UNIT));
             result.insert("body".into(), Dynamic::from(body));
             result.insert("error".into(), Dynamic::UNIT);
         }

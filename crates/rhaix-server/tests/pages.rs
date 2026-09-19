@@ -144,7 +144,11 @@ async fn dynamic_segment_reaches_the_script() {
 #[tokio::test]
 async fn form_post_runs_the_logic_and_sends_triggers() {
     let ticket = ticket().await;
-    let request = form_post("/form", "title=%D0%9F%D1%80%D0%B8%D0%B2%D1%96%D1%82", &ticket);
+    let request = form_post(
+        "/form",
+        "title=%D0%9F%D1%80%D0%B8%D0%B2%D1%96%D1%82",
+        &ticket,
+    );
     let (status, headers, body) = call(request).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -529,15 +533,22 @@ async fn a_page_without_forms_sets_no_cookie() {
 async fn forms_carry_a_hidden_field_and_buttons_carry_a_header() {
     let (_, _, html) = call(htmx("/account")).await;
 
-    assert!(html.contains(r#"<input type="hidden" name="_csrf" value=""#), "{html}");
+    assert!(
+        html.contains(r#"<input type="hidden" name="_csrf" value=""#),
+        "{html}"
+    );
     // Кнопка з `hx-delete` не має форми, тому токен їде заголовком.
-    assert!(html.contains("hx-headers='{&quot;x-csrf-token&quot;"), "{html}");
+    assert!(
+        html.contains("hx-headers='{&quot;x-csrf-token&quot;"),
+        "{html}"
+    );
 }
 
 #[tokio::test]
 async fn session_survives_between_requests() {
     let ticket = ticket().await;
-    let (status, headers, body) = call(form_post("/account", "name=%D0%9E%D0%BB%D1%8F", &ticket)).await;
+    let (status, headers, body) =
+        call(form_post("/account", "name=%D0%9E%D0%BB%D1%8F", &ticket)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("привіт, Оля"), "{body}");
 
@@ -583,7 +594,10 @@ async fn stdlib_is_available_in_pages() {
     let (status, _, body) = call(htmx("/tools")).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains(r#"<p id="date">17.09.2026 14:05</p>"#), "{body}");
+    assert!(
+        body.contains(r#"<p id="date">17.09.2026 14:05</p>"#),
+        "{body}"
+    );
     assert!(body.contains(r#"<p id="slug">pryvit-svite</p>"#), "{body}");
     assert!(body.contains("1\u{a0}234,50 грн"), "{body}");
     assert!(body.contains(r#"<p id="cut">один два…</p>"#), "{body}");
@@ -671,7 +685,11 @@ async fn passwords_are_hashed_and_verified() {
     // база `:memory:` в межах одного `app()` спільна.
     let app = app();
 
-    async fn post(app: &axum::Router, ticket: &(String, String), password: &str) -> (StatusCode, String) {
+    async fn post(
+        app: &axum::Router,
+        ticket: &(String, String),
+        password: &str,
+    ) -> (StatusCode, String) {
         let (cookie, token) = ticket;
         let request = Request::builder()
             .method("POST")
@@ -679,30 +697,41 @@ async fn passwords_are_hashed_and_verified() {
             .header("HX-Request", "true")
             .header("content-type", "application/x-www-form-urlencoded")
             .header("cookie", cookie)
-            .body(Body::from(format!("username=oksana&password={password}&_csrf={token}")))
+            .body(Body::from(format!(
+                "username=oksana&password={password}&_csrf={token}"
+            )))
             .expect("запит");
         let response = app.clone().oneshot(request).await.expect("оброблено");
         let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
     // Квиток CSRF беремо зі сторінки auth (сесія одна на застосунок).
     let (_, headers, html) = {
-        let response = app
-            .clone()
-            .oneshot(htmx("/auth"))
-            .await
-            .expect("оброблено");
+        let response = app.clone().oneshot(htmx("/auth")).await.expect("оброблено");
         let status = response.status();
         assert_eq!(status, StatusCode::OK);
         let headers: Vec<(String, String)> = response
             .headers()
             .iter()
-            .map(|(n, v)| (n.as_str().to_owned(), v.to_str().unwrap_or_default().to_owned()))
+            .map(|(n, v)| {
+                (
+                    n.as_str().to_owned(),
+                    v.to_str().unwrap_or_default().to_owned(),
+                )
+            })
             .collect();
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
-        (status, headers, String::from_utf8_lossy(&bytes).into_owned())
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            headers,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
     };
     let cookie = header(&headers, "set-cookie")
         .expect("cookie сесії")
@@ -741,11 +770,20 @@ async fn multipart_upload_is_parsed_and_exposed() {
     let app = app();
 
     let (_, headers, html) = {
-        let r = app.clone().oneshot(htmx("/upload")).await.expect("оброблено");
+        let r = app
+            .clone()
+            .oneshot(htmx("/upload"))
+            .await
+            .expect("оброблено");
         let hs: Vec<(String, String)> = r
             .headers()
             .iter()
-            .map(|(n, v)| (n.as_str().to_owned(), v.to_str().unwrap_or_default().to_owned()))
+            .map(|(n, v)| {
+                (
+                    n.as_str().to_owned(),
+                    v.to_str().unwrap_or_default().to_owned(),
+                )
+            })
             .collect();
         let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
         ((), hs, String::from_utf8_lossy(&bytes).into_owned())
@@ -771,7 +809,10 @@ async fn multipart_upload_is_parsed_and_exposed() {
         .uri("/upload")
         .header("HX-Request", "true")
         .header("cookie", cookie)
-        .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(Body::from(body))
         .expect("запит");
     let (status, _, out) = call(request).await;
@@ -789,15 +830,24 @@ async fn translations_follow_the_request_locale() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains(r#"<p id="locale">uk</p>"#), "{body}");
     assert!(body.contains(r#"<p id="greeting">Привіт</p>"#), "{body}");
-    assert!(body.contains(r#"<p id="items">У кошику 3 товарів</p>"#), "{body}");
+    assert!(
+        body.contains(r#"<p id="items">У кошику 3 товарів</p>"#),
+        "{body}"
+    );
 
     // `set_locale` перемикає мову в межах запиту.
     let (_, _, body) = call(htmx("/i18n?lang=en")).await;
     assert!(body.contains(r#"<p id="locale">en</p>"#), "{body}");
     assert!(body.contains(r#"<p id="greeting">Hello</p>"#), "{body}");
-    assert!(body.contains(r#"<p id="items">3 items in cart</p>"#), "{body}");
+    assert!(
+        body.contains(r#"<p id="items">3 items in cart</p>"#),
+        "{body}"
+    );
     // Ключа немає в en — падаємо на мову за замовчуванням, а не на порожнечу.
-    assert!(body.contains(r#"<p id="fallback">Лише українською</p>"#), "{body}");
+    assert!(
+        body.contains(r#"<p id="fallback">Лише українською</p>"#),
+        "{body}"
+    );
 
     // Відсутній ключ показує сам себе — дірку в перекладі видно одразу.
     assert!(body.contains(r#"<p id="missing">nope.key</p>"#), "{body}");
@@ -823,8 +873,14 @@ async fn scoped_styles_only_reach_their_own_component() {
     let attr = format!("data-rhx-{id}");
 
     // Власна розмітка компонента — помічена.
-    assert!(body.contains(&format!(r#"<div class="box" {attr}>"#)), "{body}");
-    assert!(body.contains(&format!(r#"<p class="label" {attr}>"#)), "{body}");
+    assert!(
+        body.contains(&format!(r#"<div class="box" {attr}>"#)),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(r#"<p class="label" {attr}>"#)),
+        "{body}"
+    );
 
     // Вміст слота приїхав від батька — і мітки компонента НЕ має,
     // інакше стиль компонента протікав би на чужу розмітку.
@@ -833,10 +889,22 @@ async fn scoped_styles_only_reach_their_own_component() {
     assert!(body.contains(r#"<p class="outside">"#), "{body}");
 
     // CSS переписано: скоуп на останньому складеному селекторі.
-    assert!(body.contains(&format!(".box[{attr}] {{ border: 1px solid red }}")), "{body}");
-    assert!(body.contains(&format!(".box .label[{attr}] {{ color: blue }}")), "{body}");
+    assert!(
+        body.contains(&format!(".box[{attr}] {{ border: 1px solid red }}")),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(".box .label[{attr}] {{ color: blue }}")),
+        "{body}"
+    );
     assert!(body.contains(&format!("a[{attr}]:hover")), "{body}");
-    assert!(body.contains(&format!("@media (max-width: 40em) {{ .box[{attr}]")), "{body}");
+    assert!(
+        body.contains(&format!("@media (max-width: 40em) {{ .box[{attr}]")),
+        "{body}"
+    );
     // keyframes лишились недоторканими — інакше анімація зламалась би.
-    assert!(body.contains("@keyframes spin { from { opacity: 0 } }"), "{body}");
+    assert!(
+        body.contains("@keyframes spin { from { opacity: 0 } }"),
+        "{body}"
+    );
 }

@@ -31,11 +31,10 @@ use axum::Router;
 use rhai::{Dynamic, Engine, Map, Scope};
 use rhaix_db::Database;
 use rhaix_script::{
-    display, engine as build_engine, parse_cookies, parse_tz_offset, parse_urlencoded, Csrf,
-    Deadline, Http, Hx, Limits, Log, Request as ScriptRequest, RequestData,
-    Response as ScriptResponse, ResponseData, Secret, Session, SessionOptions, CSRF_FIELD,
-    CSRF_HEADER,
-    Catalog, I18n, LocaleScope, Mail, MailConfig, State as ScriptState, UploadData,
+    display, engine as build_engine, parse_cookies, parse_tz_offset, parse_urlencoded, Catalog,
+    Csrf, Deadline, Http, Hx, I18n, Limits, LocaleScope, Log, Mail, MailConfig,
+    Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData, Secret,
+    Session, SessionOptions, State as ScriptState, UploadData, CSRF_FIELD, CSRF_HEADER,
 };
 use rhaix_template::{DiskFiles, Files, Globals, Loader, Slots, TemplateCache};
 use tokio::sync::broadcast;
@@ -300,7 +299,13 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
-        let app = app_config(file.app.as_ref(), file.mail.as_ref(), Path::new(""), false, false);
+        let app = app_config(
+            file.app.as_ref(),
+            file.mail.as_ref(),
+            Path::new(""),
+            false,
+            false,
+        );
         Ok(Self {
             root: PathBuf::new(),
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
@@ -357,7 +362,13 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
-        let app = app_config(file.app.as_ref(), file.mail.as_ref(), &root, dev, dev && persist_secret);
+        let app = app_config(
+            file.app.as_ref(),
+            file.mail.as_ref(),
+            &root,
+            dev,
+            dev && persist_secret,
+        );
         Ok(Self {
             root,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
@@ -846,23 +857,30 @@ async fn collect_request(
         })?;
     let body_text = String::from_utf8_lossy(&bytes).into_owned();
 
-    let content_type = headers.get("content-type").map(String::as_str).unwrap_or("");
+    let content_type = headers
+        .get("content-type")
+        .map(String::as_str)
+        .unwrap_or("");
     let is_urlencoded = content_type.starts_with("application/x-www-form-urlencoded");
 
     // Форма з файлами: текстові поля йдуть у `form`, файли — у `files`.
     let mut form = std::collections::BTreeMap::new();
-    let mut files: std::collections::BTreeMap<String, Vec<UploadData>> = std::collections::BTreeMap::new();
+    let mut files: std::collections::BTreeMap<String, Vec<UploadData>> =
+        std::collections::BTreeMap::new();
     if is_urlencoded {
         form = parse_urlencoded(&body_text);
     } else if content_type.starts_with("multipart/form-data") {
         if let Some(boundary) = multipart::boundary(content_type) {
             for part in multipart::parse(&bytes, &boundary) {
                 if part.is_file() {
-                    files.entry(part.name.clone()).or_default().push(UploadData {
-                        filename: part.filename.unwrap_or_default(),
-                        content_type: part.content_type.unwrap_or_default(),
-                        data: std::sync::Arc::new(part.data),
-                    });
+                    files
+                        .entry(part.name.clone())
+                        .or_default()
+                        .push(UploadData {
+                            filename: part.filename.unwrap_or_default(),
+                            content_type: part.content_type.unwrap_or_default(),
+                            data: std::sync::Arc::new(part.data),
+                        });
                 } else {
                     form.insert(part.name, String::from_utf8_lossy(&part.data).into_owned());
                 }
@@ -1455,10 +1473,17 @@ fn globals_for(
 }
 
 enum PageError {
-    Io { file: PathBuf, message: String },
-    Template { diagnostic: String },
+    Io {
+        file: PathBuf,
+        message: String,
+    },
+    Template {
+        diagnostic: String,
+    },
     /// Запит, що змінює дані, без дійсного CSRF-токена.
-    Forbidden { path: String },
+    Forbidden {
+        path: String,
+    },
 }
 
 impl PageError {
@@ -1476,9 +1501,7 @@ impl PageError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("не вдалося прочитати {}: {message}", file.display()),
             ),
-            PageError::Template { diagnostic } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, diagnostic)
-            }
+            PageError::Template { diagnostic } => (StatusCode::INTERNAL_SERVER_ERROR, diagnostic),
             // До `api/` CSRF не застосовується, тож сюди можна потрапити лише
             // через `partials`/`pages`; лишаємо гілку заради повноти.
             PageError::Forbidden { path } => {

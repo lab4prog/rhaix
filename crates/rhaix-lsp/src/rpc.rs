@@ -72,7 +72,10 @@ pub fn offset_to_position(text: &str, offset: usize) -> (u32, u32) {
     }
 
     // Символи рядка до потрібного зсуву — у кодових одиницях UTF-16.
-    let character = text[line_start..offset].chars().map(char::len_utf16).sum::<usize>() as u32;
+    let character = text[line_start..offset]
+        .chars()
+        .map(char::len_utf16)
+        .sum::<usize>() as u32;
     (line, character)
 }
 

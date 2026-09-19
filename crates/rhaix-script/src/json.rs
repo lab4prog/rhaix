@@ -53,7 +53,9 @@ pub fn encode(value: &Dynamic) -> String {
 
 /// Розібрати текст; `None` — якщо це не JSON.
 pub fn parse(text: &str) -> Option<Dynamic> {
-    serde_json::from_str::<Value>(text).ok().map(|v| to_dynamic(&v))
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .map(|v| to_dynamic(&v))
 }
 
 #[cfg(test)]
@@ -80,6 +82,9 @@ mod tests {
     #[test]
     fn round_trip_keeps_the_shape() {
         let value = parse(r#"{"a":[1,2],"b":{"c":"д"}}"#).expect("це JSON");
-        assert_eq!(from_dynamic(&value).to_string(), r#"{"a":[1,2],"b":{"c":"д"}}"#);
+        assert_eq!(
+            from_dynamic(&value).to_string(),
+            r#"{"a":[1,2],"b":{"c":"д"}}"#
+        );
     }
 }

@@ -178,13 +178,14 @@ fn has_scoped_style(nodes: &[Node]) -> bool {
     fn walk(nodes: &[Node]) -> bool {
         nodes.iter().any(|node| match node {
             N::Element(element) => {
-                (element.name == "style"
-                    && element.attrs.iter().any(|attr| attr.name == "scoped"))
+                (element.name == "style" && element.attrs.iter().any(|attr| attr.name == "scoped"))
                     || walk(&element.children)
             }
             N::Conditional(c) => {
                 let c: &Conditional = c;
-                c.branches.iter().any(|b| walk(std::slice::from_ref(&b.body)))
+                c.branches
+                    .iter()
+                    .any(|b| walk(std::slice::from_ref(&b.body)))
             }
             N::Each(each) => {
                 let each: &Each = each;

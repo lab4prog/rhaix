@@ -205,7 +205,9 @@ impl Server {
         };
         let (Some(line), Some(character)) = (
             params.pointer("/position/line").and_then(Value::as_u64),
-            params.pointer("/position/character").and_then(Value::as_u64),
+            params
+                .pointer("/position/character")
+                .and_then(Value::as_u64),
         ) else {
             return Vec::new();
         };

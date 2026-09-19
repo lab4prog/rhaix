@@ -27,7 +27,11 @@ impl Session {
             .expect("сервер має запуститись");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
-        Self { child, stdin, stdout }
+        Self {
+            child,
+            stdin,
+            stdout,
+        }
     }
 
     fn send(&mut self, message: Value) {
@@ -124,7 +128,10 @@ fn a_broken_file_gets_a_diagnostic_at_the_right_place() {
     assert_eq!(first["severity"], 1);
     assert_eq!(first["source"], "rhaix");
     assert!(
-        first["message"].as_str().unwrap().contains("NoSuchComponent"),
+        first["message"]
+            .as_str()
+            .unwrap()
+            .contains("NoSuchComponent"),
         "{first}"
     );
     // Помилка саме в другому рядку (0-based), а не на початку файлу.
@@ -155,7 +162,9 @@ fn diagnostics_survive_cyrillic_positions() {
     let note = session.open(&file, text);
 
     let first = &note["params"]["diagnostics"][0];
-    let character = first["range"]["start"]["character"].as_u64().expect("колонка");
+    let character = first["range"]["start"]["character"]
+        .as_u64()
+        .expect("колонка");
     // Діагностика вказує на **ім'я** компонента, тобто одразу після `<`.
     // `<p>Привіт</p><` — 14 символів UTF-16, але 20 байтів. Саме тут мовні
     // сервери промахуються на кирилиці, тому межу перевіряємо явно.

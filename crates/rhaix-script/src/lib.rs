@@ -6,7 +6,6 @@
 
 mod auth;
 mod crypto;
-mod paginate;
 mod data;
 mod datetime;
 mod http;
@@ -14,6 +13,7 @@ mod i18n;
 mod json;
 mod mail;
 mod markdown;
+mod paginate;
 mod session;
 mod stdlib;
 mod text;
@@ -27,12 +27,12 @@ pub use data::register_db;
 pub use datetime::{now_secs, parse_tz_offset, register_datetime, set_tz_offset};
 pub use http::{register_http, Http};
 pub use i18n::{parse_catalog_file, register_i18n, Catalog, I18n, LocaleScope};
-pub use mail::{register_mail, Mail, MailConfig};
-pub use markdown::{markdown, register_markdown};
 pub use json::{
     encode as json_encode, from_dynamic as json_from_dynamic, parse as json_parse,
     to_dynamic as json_to_dynamic,
 };
+pub use mail::{register_mail, Mail, MailConfig};
+pub use markdown::{markdown, register_markdown};
 pub use session::{
     register_session, Csrf, Secret, Session, SessionOptions, CSRF_FIELD, CSRF_HEADER,
 };

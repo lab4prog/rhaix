@@ -120,12 +120,13 @@ impl Upload {
             || path.starts_with('\\')
             || candidate.components().any(|c| c.as_os_str() == "..")
         {
-            return Err(format!("небезпечний шлях `{path}`: без абсолютних шляхів і `..`"));
+            return Err(format!(
+                "небезпечний шлях `{path}`: без абсолютних шляхів і `..`"
+            ));
         }
         Ok(self.root.join(candidate))
     }
 }
-
 
 /// Зареєструвати тип `Upload` і його методи.
 fn register_upload(engine: &mut Engine) {
@@ -151,16 +152,22 @@ fn register_upload(engine: &mut Engine) {
         })
         // `save(path)` пише файл і повертає шлях, куди зберегло; помилку кидає як
         // помилку скрипта (з позицією у файлі), а не мовчить.
-        .register_fn("save", |u: &mut Upload, path: &str| -> Result<String, Box<rhai::EvalAltResult>> {
-            let target = u.resolve(path).map_err(|e| -> Box<rhai::EvalAltResult> { e.into() })?;
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)
+        .register_fn(
+            "save",
+            |u: &mut Upload, path: &str| -> Result<String, Box<rhai::EvalAltResult>> {
+                let target = u
+                    .resolve(path)
+                    .map_err(|e| -> Box<rhai::EvalAltResult> { e.into() })?;
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| -> Box<rhai::EvalAltResult> {
+                        format!("save(): {e}").into()
+                    })?;
+                }
+                std::fs::write(&target, u.data.data.as_ref())
                     .map_err(|e| -> Box<rhai::EvalAltResult> { format!("save(): {e}").into() })?;
-            }
-            std::fs::write(&target, u.data.data.as_ref())
-                .map_err(|e| -> Box<rhai::EvalAltResult> { format!("save(): {e}").into() })?;
-            Ok(path.to_owned())
-        });
+                Ok(path.to_owned())
+            },
+        );
 }
 
 // ---------------------------------------------------------------- відповідь

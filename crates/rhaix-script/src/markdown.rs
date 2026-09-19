@@ -74,9 +74,11 @@ pub fn markdown(text: &str) -> Html {
 /// «невідома функція `markdown`», яка нічого не пояснює.
 #[cfg(not(feature = "markdown"))]
 pub fn markdown(_text: &str) -> Result<Html, Box<rhai::EvalAltResult>> {
-    Err("markdown() не увімкнено в цій збірці; додайте feature `markdown` \
+    Err(
+        "markdown() не увімкнено в цій збірці; додайте feature `markdown` \
          (у проді це робить `rhaix build`, коли бачить markdown у проєкті)"
-        .into())
+            .into(),
+    )
 }
 
 pub fn register_markdown(engine: &mut Engine) {
