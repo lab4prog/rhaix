@@ -160,22 +160,6 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [llms.txt](llms.txt) | довідник на один файл, написаний для LLM |
 | [examples/cookbook](examples/cookbook) | рецепти «задача → готовий `.rhx`», перевіряються тестом |
 | [bench](bench) | порівняння з Astro на спільній базі: методика, цифри й застереження |
-| [PLAN.md](PLAN.md) | архітектура, API, дорожня карта M0-M14 |
-| [RISKS.md](RISKS.md) | підводні камені, ворота рішень, оцінка життєздатності |
-| [M0-FINDINGS.md](M0-FINDINGS.md) | результати спайку: виміри й сім знайдених тертя |
-| [M1-FINDINGS.md](M1-FINDINGS.md) | шаблонізатор: три зміни в спеці й оптимізації рендеру |
-| [M2-FINDINGS.md](M2-FINDINGS.md) | frontmatter: пастка `trim()`, кирилиця в заголовках, ворота M2 |
-| [M3-FINDINGS.md](M3-FINDINGS.md) | компоненти: діагностика з чужого файлу, слоти проти згортання |
-| [M4-FINDINGS.md](M4-FINDINGS.md) | маршрути й HTMX: чому прибрано `route()`, порт стартера |
-| [M5-FINDINGS.md](M5-FINDINGS.md) | дані: булеві в SQLite, шлях до бази, захист від ін'єкції |
-| [M6-FINDINGS.md](M6-FINDINGS.md) | DX: кеш із залежностями, 68 мс до оновлення, межа `check` |
-| [M7-FINDINGS.md](M7-FINDINGS.md) | асети: підйом і дедуплікація, пастка оптимізації втретє |
-| [M8-FINDINGS.md](M8-FINDINGS.md) | прод: трейт `Files`, один бінарник, два режими сервера |
-| [M5.2-FINDINGS.md](M5.2-FINDINGS.md) | сесії, CSRF без ручної роботи, `http`, дати й гроші |
-| [M9-FINDINGS.md](M9-FINDINGS.md) | доки як тест: шість розбіжностей між спекою й кодом |
-| [M11-FINDINGS.md](M11-FINDINGS.md) | драйвер PostgreSQL: `?`→`$N`, `RETURNING`, коерція типів |
-| [M12-FINDINGS.md](M12-FINDINGS.md) | батарейки: Argon2, `validate`, `paginate`, завантаження, пошта |
-| [M14-FINDINGS.md](M14-FINDINGS.md) | JSON-API: чому в `api/` немає сесії замість прапорця «CSRF вимкнено» |
 | [GUIDE.md](GUIDE.md) | юзергайд: створити застосунок, міграції, деплой, оновлення |
 | [CHANGELOG.md](CHANGELOG.md) | зміни за версіями |
 | [RELEASING.md](RELEASING.md) | як випустити нову версію |

@@ -141,11 +141,6 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [examples/demo](examples/demo) | the demo application running on the current code |
 | [bench](bench) | a like-for-like comparison with Astro on a shared database (Ukrainian) |
 | [SYNTAX.md](SYNTAX.md) | the Ukrainian specification (the original) |
-| [PLAN.md](PLAN.md) | architecture, API, roadmap M0–M14 (Ukrainian) |
-| [RISKS.md](RISKS.md) | pitfalls, decision gates, a viability assessment (Ukrainian) |
-
-Milestone findings (`M0-FINDINGS.md` … `M14-FINDINGS.md`) are in Ukrainian: each
-one records what was measured and what went wrong.
 
 ## Crates
 
