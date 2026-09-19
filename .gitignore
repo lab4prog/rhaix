@@ -9,3 +9,9 @@ examples/cookbook/data/
 # ключ підпису сесій, який rhaix dev створює сам
 .rhaix-secret
 **/.rhaix-secret
+
+# cookie-файли curl із ручних перевірок (`curl -c jar.txt`): у них підписані
+# сесії, у репозиторії їм не місце
+/jc.txt
+/jm.txt
+*.cookies

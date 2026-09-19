@@ -11,19 +11,29 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lab4prog/rhaix"
-rust-version = "1.85"
+homepage = "https://github.com/lab4prog/rhaix"
+readme = "README.en.md"
+keywords = ["web", "framework", "htmx", "rhai", "ssr"]
+categories = ["web-programming::http-server", "template-engine"]
+# Перевірено `cargo +1.88 check --workspace --all-targets` із закоміченим
+# Cargo.lock; CI тримає цю цифру чесною (job `msrv`). Раніше тут стояло 1.85,
+# яке ніхто не перевіряв, — транзитивні icu_* вимагають 1.88.
+rust-version = "1.88"
 
+# `version` поруч із `path` потрібен для публікації: у crates.io шляхів немає,
+# і `cargo publish` без версії відмовляється пакувати крейт. Тримати в унісон
+# із `workspace.package.version` — крейти випускаються лише разом.
 [workspace.dependencies]
-rhaix-db = { path = "crates/rhaix-db" }
-rhaix-parser = { path = "crates/rhaix-parser" }
-rhaix-script = { path = "crates/rhaix-script" }
-rhaix-template = { path = "crates/rhaix-template" }
-rhaix-server = { path = "crates/rhaix-server" }
-rhaix-lsp = { path = "crates/rhaix-lsp" }
+rhaix-db = { path = "crates/rhaix-db", version = "=1.2.1" }
+rhaix-parser = { path = "crates/rhaix-parser", version = "=1.2.1" }
+rhaix-script = { path = "crates/rhaix-script", version = "=1.2.1" }
+rhaix-template = { path = "crates/rhaix-template", version = "=1.2.1" }
+rhaix-server = { path = "crates/rhaix-server", version = "=1.2.1" }
+rhaix-lsp = { path = "crates/rhaix-lsp", version = "=1.2.1" }
 
 anyhow = "1"
 axum = "0.8"

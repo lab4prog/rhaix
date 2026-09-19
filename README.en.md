@@ -22,7 +22,29 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Status: M9 (documentation and recipes)
+## Install
+
+A prebuilt `rhaix` (and the `rhaix-lsp` language server) for Linux, macOS and
+Windows is attached to every [GitHub release](https://github.com/lab4prog/rhaix/releases).
+Or build it from source:
+
+```bash
+cargo install rhaix-cli      # the `rhaix` command
+cargo install rhaix-lsp      # optional: language server for the VS Code extension
+```
+
+```bash
+rhaix new myapp && rhaix dev myapp
+```
+
+Running an app needs nothing but the `rhaix` binary. `rhaix build` (one
+self-contained executable per app) additionally needs a Rust toolchain, 1.88 or
+newer; the step-by-step guide is [GUIDE.md](GUIDE.md) (Ukrainian).
+
+## Status: v1.2 — stable
+
+The `.rhx` language, routing, data layer, sessions and batteries are frozen
+until 2.0. See [CHANGELOG.md](CHANGELOG.md).
 
 What already works:
 
@@ -119,10 +141,10 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [examples/demo](examples/demo) | the demo application running on the current code |
 | [bench](bench) | a like-for-like comparison with Astro on a shared database (Ukrainian) |
 | [SYNTAX.md](SYNTAX.md) | the Ukrainian specification (the original) |
-| [PLAN.md](PLAN.md) | architecture, API, roadmap M0–M13 (Ukrainian) |
+| [PLAN.md](PLAN.md) | architecture, API, roadmap M0–M14 (Ukrainian) |
 | [RISKS.md](RISKS.md) | pitfalls, decision gates, a viability assessment (Ukrainian) |
 
-Milestone findings (`M0-FINDINGS.md` … `M9-FINDINGS.md`) are in Ukrainian: each
+Milestone findings (`M0-FINDINGS.md` … `M14-FINDINGS.md`) are in Ukrainian: each
 one records what was measured and what went wrong.
 
 ## Crates
@@ -135,5 +157,6 @@ one records what was measured and what went wrong.
 | `rhaix-template` | `.rhx` lexer, AST, expression compilation, components, renderer, escaping |
 | `rhaix-server` | axum: routing, layout, the fragment rule, static files |
 | `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check` |
+| `rhaix-lsp` | language server: diagnostics, go-to-component, completion |
 
 Licence: MIT or Apache-2.0.

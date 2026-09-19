@@ -19,8 +19,11 @@
 
 ### Встановити
 
+`rhaix-lsp` лежить в архіві кожного [релізу](https://github.com/lab4prog/rhaix/releases)
+поруч із `rhaix` — достатньо покласти його в PATH. Або зібрати:
+
 ```bash
-cargo install --path crates/rhaix-lsp     # бінарник rhaix-lsp у PATH
+cargo install rhaix-lsp
 ```
 
 Якщо ставити його в PATH не хочеться, шлях задається налаштуванням

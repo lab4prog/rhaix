@@ -1,0 +1,144 @@
+# Реліз за тегом `vX.Y.Z`: бінарники під чотири платформи, розширення VS Code
+# і **чернетка** релізу на GitHub.
+#
+# Чернетка, а не одразу публічний реліз: людина дивиться на неї й натискає
+# «Publish» сама. Публікація в crates.io і Marketplace сюди свідомо не входить —
+# це незворотні кроки, їх описано в RELEASING.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Тег має збігатися з версією в Cargo.toml. `rhaix build` пінить у
+  # згенерованому застосунку версію ядра рівно за своєю власною, тож бінарник
+  # `v1.2.1`, зібраний із `version = "1.2.0"`, тягнув би не те ядро.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::тег v$tag не збігається з версією в Cargo.toml ($crate)"
+            exit 1
+          fi
+          echo "version=$crate" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04, а не latest: бінарник, зібраний на новішому glibc, не
+          # запуститься на старіших серверах, куди його якраз і деплоять.
+          - { os: ubuntu-22.04,   target: x86_64-unknown-linux-gnu, archive: tar.gz }
+          - { os: macos-latest,   target: aarch64-apple-darwin,     archive: tar.gz }
+          - { os: macos-latest,   target: x86_64-apple-darwin,      archive: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   archive: zip }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p rhaix-cli -p rhaix-lsp
+
+      - name: Пакування
+        shell: bash
+        run: |
+          name="rhaix-${{ needs.version.outputs.version }}-${{ matrix.target }}"
+          mkdir "$name"
+          ext=""
+          [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          cp "target/${{ matrix.target }}/release/rhaix$ext" "$name/"
+          cp "target/${{ matrix.target }}/release/rhaix-lsp$ext" "$name/"
+          cp README.md README.en.md GUIDE.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE "$name/"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+
+      # Найдешевша перевірка, що бінарник узагалі живий на своїй платформі.
+      - name: Димовий тест
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          ext=""
+          [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
+          bin="target/${{ matrix.target }}/release/rhaix$ext"
+          "$bin" new smoke
+          "$bin" check smoke
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rhaix-${{ matrix.target }}
+          path: rhaix-*.${{ matrix.archive }}
+
+  vscode:
+    needs: version
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: cp ../../LICENSE-MIT LICENSE
+      - run: npx --yes @vscode/vsce@3 package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rhaix-vscode
+          path: editors/vscode/*.vsix
+
+  release:
+    needs: [version, build, vscode]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Текст релізу — розділ цієї версії з CHANGELOG.md, а не згенерований
+      # список комітів: там уже написано, що змінилось і чому.
+      - name: Нотатки з CHANGELOG
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          awk -v v="$version" '
+            $0 ~ "^## " v " " { take = 1; next }
+            take && /^## /    { exit }
+            take              { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::у CHANGELOG.md немає розділу для $version"
+            exit 1
+          fi
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: rhaix ${{ needs.version.outputs.version }}
+          body_path: notes.md
+          files: dist/*

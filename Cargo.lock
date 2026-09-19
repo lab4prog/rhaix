@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "rhaix-cli"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "rhaix-db"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "postgres",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "rhaix-lsp"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "rhaix-parser",
  "rhaix-script",
@@ -1733,11 +1733,11 @@ dependencies = [
 
 [[package]]
 name = "rhaix-parser"
-version = "1.2.0"
+version = "1.2.1"
 
 [[package]]
 name = "rhaix-script"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "argon2",
  "getrandom 0.3.4",
@@ -1754,7 +1754,7 @@ dependencies = [
 
 [[package]]
 name = "rhaix-server"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "rhaix-template"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "rhai",
  "rhaix-parser",

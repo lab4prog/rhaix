@@ -21,7 +21,26 @@ page.title = "ToDo";
 </ul>
 ```
 
-## Стан: v1.0.0
+## Встановлення
+
+Готові бінарники `rhaix` і мовного сервера `rhaix-lsp` під Linux, macOS і
+Windows додаються до кожного [релізу на GitHub](https://github.com/lab4prog/rhaix/releases).
+Або з вихідного коду:
+
+```bash
+cargo install rhaix-cli      # команда `rhaix`
+cargo install rhaix-lsp      # за бажанням: мовний сервер для розширення VS Code
+```
+
+```bash
+rhaix new myapp && rhaix dev myapp
+```
+
+Для запуску застосунку потрібен лише бінарник `rhaix`. Для `rhaix build`
+(один самодостатній файл на застосунок) — ще й Rust 1.88 або новіший.
+Покроково — у [GUIDE.md](GUIDE.md).
+
+## Стан: v1.2 — стабільна
 
 Що вже працює:
 
@@ -141,7 +160,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [llms.txt](llms.txt) | довідник на один файл, написаний для LLM |
 | [examples/cookbook](examples/cookbook) | рецепти «задача → готовий `.rhx`», перевіряються тестом |
 | [bench](bench) | порівняння з Astro на спільній базі: методика, цифри й застереження |
-| [PLAN.md](PLAN.md) | архітектура, API, дорожня карта M0-M13 |
+| [PLAN.md](PLAN.md) | архітектура, API, дорожня карта M0-M14 |
 | [RISKS.md](RISKS.md) | підводні камені, ворота рішень, оцінка життєздатності |
 | [M0-FINDINGS.md](M0-FINDINGS.md) | результати спайку: виміри й сім знайдених тертя |
 | [M1-FINDINGS.md](M1-FINDINGS.md) | шаблонізатор: три зміни в спеці й оптимізації рендеру |
@@ -156,9 +175,11 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | [M9-FINDINGS.md](M9-FINDINGS.md) | доки як тест: шість розбіжностей між спекою й кодом |
 | [M11-FINDINGS.md](M11-FINDINGS.md) | драйвер PostgreSQL: `?`→`$N`, `RETURNING`, коерція типів |
 | [M12-FINDINGS.md](M12-FINDINGS.md) | батарейки: Argon2, `validate`, `paginate`, завантаження, пошта |
+| [M14-FINDINGS.md](M14-FINDINGS.md) | JSON-API: чому в `api/` немає сесії замість прапорця «CSRF вимкнено» |
 | [GUIDE.md](GUIDE.md) | юзергайд: створити застосунок, міграції, деплой, оновлення |
-| [CHANGELOG.md](CHANGELOG.md) | що увійшло у v1.0.0 |
-| [editors/vscode](editors/vscode) | підсвітка `.rhx` для VS Code |
+| [CHANGELOG.md](CHANGELOG.md) | зміни за версіями |
+| [RELEASING.md](RELEASING.md) | як випустити нову версію |
+| [editors/vscode](editors/vscode) | розширення VS Code: підсвітка й мовний сервер |
 | [examples/demo](examples/demo) | демо, що працює на поточному коді |
 | [examples/ergonomics](examples/ergonomics) | найскладніші сторінки, написані руками під спеку |
 

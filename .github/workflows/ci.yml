@@ -1,0 +1,98 @@
+# Перевірка кожного push і pull request.
+#
+# Навмисно три ОС: фреймворк розробляється на Windows, а деплоїться переважно
+# на Linux. Помилки з шляхами (`\?\`, `\` проти `/`) цей проєкт уже ловив, і
+# саме на стику цих двох світів.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo test --workspace --locked
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # `rust-version` у Cargo.toml — обіцянка користувачам. Без цієї перевірки
+  # вона вже раз виявилась хибною (стояло 1.85 при фактичних 1.88).
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  # Другий драйвер бази. Без справжнього Postgres його тести мовчки
+  # пропускаються, тож тут піднімаємо сервер і задаємо RHAIX_PG_TEST_URL:
+  # якщо адреса неправильна, тести впадуть, а не пропустяться.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rhaix
+          POSTGRES_PASSWORD: rhaix
+          POSTGRES_DB: rhaix_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rhaix"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RHAIX_PG_TEST_URL: postgres://rhaix:rhaix@localhost:5432/rhaix_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p rhaix-db --features postgres --locked -- live_tests
+
+  # Граматика підсвітки перевіряється справжнім рушієм TextMate, тим самим,
+  # що у VS Code, а розширення має пакуватися разом із залежностями.
+  vscode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      # Спершу пакування, і лише потім інструменти перевірки: `vsce` кладе в
+      # `.vsix` усе з node_modules, тож vscode-textmate, встановлений раніше,
+      # поїхав би до користувачів мертвим вантажем.
+      - run: cp ../../LICENSE-MIT LICENSE
+      - run: npx --yes @vscode/vsce@3 package
+      - run: npm install --no-save --no-audit --no-fund vscode-textmate vscode-oniguruma
+      - run: node check-grammar.cjs

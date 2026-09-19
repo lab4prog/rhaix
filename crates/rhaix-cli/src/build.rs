@@ -14,7 +14,32 @@ use std::process::Command;
 /// Що саме вшивати.
 const EMBEDDED_EXTENSIONS: [&str; 3] = ["rhx", "sql", "rhai"];
 
-pub fn build(root: &Path, framework: &Path, out: Option<PathBuf>) -> anyhow::Result<()> {
+/// Звідки згенерований крейт бере сам фреймворк.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Framework {
+    /// Локальний репозиторій rhaix: розробка самого фреймворку або явний
+    /// `--framework <тека>`.
+    Path(PathBuf),
+    /// crates.io, **рівно** та версія, що й у цього `rhaix`. Точна, а не
+    /// «сумісна»: застосунок, зібраний CLI 1.2.1, має отримати ядро 1.2.1, а не
+    /// те, що вийде завтра, — інакше `rhaix check` і збірка розійдуться.
+    Registry(String),
+}
+
+impl Framework {
+    /// Рядок залежності для одного крейта фреймворку.
+    fn dependency(&self, krate: &str, extra: &str) -> String {
+        match self {
+            Framework::Path(root) => {
+                let root = root.to_string_lossy().replace('\\', "/");
+                format!("{{ path = \"{root}/crates/{krate}\"{extra} }}")
+            }
+            Framework::Registry(version) => format!("{{ version = \"={version}\"{extra} }}"),
+        }
+    }
+}
+
+pub fn build(root: &Path, framework: &Framework, out: Option<PathBuf>) -> anyhow::Result<()> {
     if !root.join("rhaix.toml").is_file() && !root.join("pages").is_dir() {
         anyhow::bail!("у теці `{}` не схоже на проєкт rhaix", root.display());
     }
@@ -41,6 +66,10 @@ pub fn build(root: &Path, framework: &Path, out: Option<PathBuf>) -> anyhow::Res
     }
     if has_mail {
         println!("Пошта: SMTP (feature mail)");
+    }
+    match framework {
+        Framework::Path(path) => println!("Фреймворк: {}", path.display()),
+        Framework::Registry(version) => println!("Фреймворк: crates.io, rhaix {version}"),
     }
 
     println!("Вшито файлів: {}", files.len());
@@ -206,8 +235,9 @@ fn server_features(driver: Option<&str>, mail: bool) -> String {
     format!(", default-features = false, features = [{list}]")
 }
 
-fn manifest(name: &str, framework: &Path, server_features: &str) -> String {
-    let framework = framework.to_string_lossy().replace('\\', "/");
+fn manifest(name: &str, framework: &Framework, server_features: &str) -> String {
+    let server = framework.dependency("rhaix-server", server_features);
+    let template = framework.dependency("rhaix-template", "");
     format!(
         r##"# Згенеровано `rhaix build`. Правити цей файл сенсу немає:
 # наступна збірка перезапише його.
@@ -221,8 +251,8 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-rhaix-server = {{ path = "{framework}/crates/rhaix-server"{server_features} }}
-rhaix-template = {{ path = "{framework}/crates/rhaix-template" }}
+rhaix-server = {server}
+rhaix-template = {template}
 anyhow = "1"
 tokio = {{ version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }}
 tracing-subscriber = {{ version = "0.3", features = ["env-filter"] }}
@@ -315,7 +345,7 @@ mod tests {
 
     #[test]
     fn manifest_declares_its_own_workspace() {
-        let text = manifest("demo", Path::new("C:/rhaix"), "");
+        let text = manifest("demo", &Framework::Path("C:/rhaix".into()), "");
         assert!(text.contains("[workspace]"), "{text}");
         assert!(text.contains("C:/rhaix/crates/rhaix-server"), "{text}");
         assert!(text.contains("tracing-subscriber"), "{text}");
@@ -324,6 +354,35 @@ mod tests {
         assert!(!text.contains("postgres"), "{text}");
         assert!(
             text.contains("rhaix-server = { path = \"C:/rhaix/crates/rhaix-server\" }"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_released_cli_builds_against_crates_io() {
+        // Бінарник із релізу не має репозиторію поруч: згенерований крейт має
+        // брати фреймворк із crates.io, і саме тієї версії, що й CLI.
+        let text = manifest("demo", &Framework::Registry("1.2.1".into()), "");
+        // `[[bin]] path = "src/main.rs"` лишається — шукаємо саме шлях до крейтів.
+        assert!(!text.contains("/crates/"), "шлях до чужої машини: {text}");
+        assert!(
+            text.contains("rhaix-server = { version = \"=1.2.1\" }"),
+            "{text}"
+        );
+        assert!(
+            text.contains("rhaix-template = { version = \"=1.2.1\" }"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn registry_mode_keeps_the_features() {
+        let features = server_features(Some("postgres"), true);
+        let text = manifest("demo", &Framework::Registry("1.2.1".into()), &features);
+        assert!(
+            text.contains(
+                "rhaix-server = { version = \"=1.2.1\", default-features = false, features = [\"postgres\", \"mail\"] }"
+            ),
             "{text}"
         );
     }

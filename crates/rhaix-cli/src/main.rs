@@ -57,7 +57,7 @@ enum Command {
         #[arg(default_value = ".")]
         root: PathBuf,
 
-        /// Де лежить сам фреймворк (поки він не в crates.io)
+        /// Локальна тека фреймворку замість crates.io (для розробки самого rhaix)
         #[arg(long)]
         framework: Option<PathBuf>,
 
@@ -109,10 +109,10 @@ async fn main() -> anyhow::Result<()> {
             out,
         } => {
             let root = normalise(root);
-            // Шлях до фреймворку відомий на момент компіляції самого `rhaix`:
-            // поки крейти не опубліковані, згенерований проєкт посилається
-            // на цей репозиторій.
-            let framework = framework.unwrap_or_else(default_framework);
+            let framework = match framework {
+                Some(path) => build::Framework::Path(normalise(path)),
+                None => detect_framework(),
+            };
             build::build(&root, &framework, out)
         }
 
@@ -152,11 +152,29 @@ fn normalise(path: PathBuf) -> PathBuf {
     }
 }
 
-/// Тека фреймворку за замовчуванням — той репозиторій, з якого зібрано `rhaix`.
-fn default_framework() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Звідки брати фреймворк, якщо `--framework` не вказано.
+///
+/// Раніше це завжди був шлях до репозиторію, з якого зібрано `rhaix`. Він
+/// вшивається на етапі компіляції, тож у бінарника з релізу чи з
+/// `cargo install` він указує на теку чужої машини (CI, реєстр cargo), і
+/// `rhaix build` падав би в кожного, крім автора.
+///
+/// Тепер: якщо той репозиторій справді є на диску — це розробка самого rhaix,
+/// беремо його; інакше — crates.io рівно тієї версії, що й цей CLI.
+fn detect_framework() -> build::Framework {
+    let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|crates| crates.parent())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .map(PathBuf::from);
+    match checkout {
+        Some(root) if is_framework_checkout(&root) => build::Framework::Path(root),
+        _ => build::Framework::Registry(env!("CARGO_PKG_VERSION").to_owned()),
+    }
+}
+
+/// Чи це справді корінь репозиторію rhaix, а не випадкова тека з тим самим
+/// відносним розташуванням (як-от `~/.cargo/registry/src/...`).
+fn is_framework_checkout(root: &std::path::Path) -> bool {
+    root.join("crates/rhaix-server/Cargo.toml").is_file()
+        && root.join("crates/rhaix-template/Cargo.toml").is_file()
 }
