@@ -36,3 +36,6 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 rhaix-template.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { workspace = true, features = ["util"] }
+# Відповіді `api/` розбираються справжнім парсером: рядок, «схожий на JSON»,
+# у тестах пройти не має.
+serde_json = "1"

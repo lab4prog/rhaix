@@ -1,0 +1,46 @@
+---
+// ЗАДАЧА: колекція ресурсу — `GET /api/orders` віддає сторінку списку,
+// `POST /api/orders` створює запис.
+//
+// Тут немає ні `page.layout`, ні `res.header("content-type", ...)`, ні
+// `json_encode`: у `api/` це все вже так. Повернена мапа стає JSON сама.
+
+if req.method == "POST" {
+    // Тіло приходить JSON-ом, а не формою, — тому `req.json()`, а не `req.all_form()`.
+    let sent = req.json();
+    if sent == () {
+        res.status(400);
+        return #{ error: "очікується тіло JSON" };
+    }
+
+    // Валідатор той самий, що й у формах: правила писати двічі не доводиться.
+    let errors = validate(sent, #{
+        customer: "required|min:2",
+        email:    "required|email",
+        amount:   "required|number|min:0.01",
+    });
+    if !errors.is_empty() {
+        res.status(422);
+        return #{ errors: errors };
+    }
+
+    let id = db.insert("orders", #{
+        customer: sent.customer.trim(),
+        email:    sent.email.trim(),
+        amount:   sent.amount,
+        status:   "new",
+    });
+    // 201 і сам створений запис: клієнту не треба ходити другим запитом.
+    res.status(201);
+    return db.get("orders", id);
+}
+
+// GET: сторінка списку. `paginate()` рахує межі, як і на HTML-сторінці.
+let p = paginate(db.count("orders"), 20, req.query_int("page") ?? 1);
+let orders = db.find("orders", #{}, #{ sort: "id asc", limit: p.per_page, skip: p.skip });
+
+return #{
+    data: orders,
+    page: #{ number: p.page, pages: p.pages, total: p.total, per_page: p.per_page },
+};
+---

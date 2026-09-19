@@ -1,0 +1,54 @@
+---
+// ЗАДАЧА: один запис — читання, часткова зміна, видалення.
+// Маршрут `[id]` працює так само, як у `pages/`: сегмент адреси йде в `req.param`.
+
+let order = db.get("orders", req.param("id"));
+if order == () {
+    res.status(404);
+    return #{ error: "замовлення не знайдено" };
+}
+
+if req.method == "DELETE" {
+    db.delete("orders", order.id);
+    // 204 — тіла немає зовсім; повертати `#{ ok: true }` тут нічого не додає.
+    res.status(204);
+    return "";
+}
+
+if req.method == "PATCH" || req.method == "PUT" {
+    let sent = req.json();
+    if sent == () {
+        res.status(400);
+        return #{ error: "очікується тіло JSON" };
+    }
+
+    // Часткова зміна: перевіряємо лише те, що справді надіслали.
+    let rules = #{};
+    if sent.customer != () { rules.customer = "min:2"; }
+    if sent.email    != () { rules.email    = "email"; }
+    if sent.amount   != () { rules.amount   = "number|min:0.01"; }
+    if sent.status   != () { rules.status   = "in:new,paid,cancelled"; }
+
+    let errors = validate(sent, rules);
+    if !errors.is_empty() {
+        res.status(422);
+        return #{ errors: errors };
+    }
+
+    // Беремо тільки дозволені поля: інакше клієнт міг би дописати `id` чи
+    // будь-яку іншу колонку, якої в правилах немає.
+    let changes = #{};
+    for field in ["customer", "email", "amount", "status"] {
+        if sent[field] != () { changes[field] = sent[field]; }
+    }
+    if changes.is_empty() {
+        res.status(400);
+        return #{ error: "немає що змінювати" };
+    }
+
+    db.update("orders", order.id, changes);
+    return db.get("orders", order.id);
+}
+
+return order;
+---

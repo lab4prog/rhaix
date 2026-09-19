@@ -46,6 +46,11 @@ pub fn from_dynamic(value: &Dynamic) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
+/// Значення Rhai → рядок JSON. Те саме, що робить `json_encode()` у скрипті.
+pub fn encode(value: &Dynamic) -> String {
+    from_dynamic(value).to_string()
+}
+
 /// Розібрати текст; `None` — якщо це не JSON.
 pub fn parse(text: &str) -> Option<Dynamic> {
     serde_json::from_str::<Value>(text).ok().map(|v| to_dynamic(&v))

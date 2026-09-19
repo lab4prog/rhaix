@@ -4,6 +4,7 @@
 
 # база демо
 examples/demo/data/
+examples/cookbook/data/
 
 # ключ підпису сесій, який rhaix dev створює сам
 .rhaix-secret

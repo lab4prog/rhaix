@@ -380,7 +380,7 @@ const GLOBALS: [(&str, &str); 13] = [
     ("slots", "slots.has(name)"),
 ];
 
-const BUILTINS: [(&str, &str); 18] = [
+const BUILTINS: [(&str, &str); 19] = [
     ("t", "переклад: t(\"ключ\")"),
     ("validate", "перевірка форми"),
     ("paginate", "арифметика сторінок"),
@@ -397,6 +397,7 @@ const BUILTINS: [(&str, &str); 18] = [
     ("verify_password", "перевірка пароля"),
     ("json", "значення для <script>"),
     ("json_encode", "JSON-рядок"),
+    ("json_decode", "розібрати JSON-рядок"),
     ("raw", "вивід без екранування"),
     ("markdown", "CommonMark без сирого HTML"),
 ];

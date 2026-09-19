@@ -301,6 +301,13 @@ pub fn register_web(engine: &mut Engine) {
         })
         .register_fn("has_file", |req: &mut Request, name: &str| {
             req.0.files.get(name).is_some_and(|list| !list.is_empty())
+        })
+        // Тіло як JSON: те, з чим приходить зовнішній клієнт замість форми.
+        // Некоректний JSON — `()`, а не помилка: перевірити `== ()` простіше,
+        // ніж ловити виняток, а відрізнити зламане тіло від порожнього однаково
+        // потрібно рівно одним `if`.
+        .register_fn("json", |req: &mut Request| {
+            crate::json::parse(&req.0.body).unwrap_or(Dynamic::UNIT)
         });
 
     register_upload(engine);

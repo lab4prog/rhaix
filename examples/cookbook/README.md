@@ -14,6 +14,8 @@ cargo run -p rhaix-cli -- dev examples/cookbook
 | Живий пошук під час набору | [`pages/search.rhx`](pages/search.rhx) + [`partials/OrderRows.rhx`](partials/OrderRows.rhx) |
 | Пагінація з робочими посиланнями | [`pages/pagination.rhx`](pages/pagination.rhx) |
 | Спільні функції для всіх сторінок | [`scripts/orders.rhai`](scripts/orders.rhai) |
+| JSON-API поверх тих самих даних | [`api/orders.rhx`](api/orders.rhx) + [`api/orders/[id].rhx`](api/orders/[id].rhx) |
+| Доступ до API за токеном | [`middleware.rhx`](middleware.rhx) |
 
 Три речі, які повторюються в усіх рецептах:
 
@@ -25,5 +27,28 @@ cargo run -p rhaix-cli -- dev examples/cookbook
 3. **Фрагмент нічого не знає про сторінку.** `partials/OrderRows.rhx` віддає
    самі `<tr>`; куди їх вставити — вирішує `hx-target` на сторінці.
 
+## API
+
+Ті самі замовлення, але для машин. Токен із міграції — `demo-token-42`:
+
+```bash
+curl -H "Authorization: Bearer demo-token-42" http://localhost:3100/api/orders
+```
+
+```bash
+curl -X POST http://localhost:3100/api/orders   -H "Authorization: Bearer demo-token-42"   -H "Content-Type: application/json"   -d '{"customer":"Нова Клієнтка","email":"n@example.com","amount":250.5}'
+```
+
+Чим `api/` відрізняється від `pages/`:
+
+- `return #{ ... }` стає JSON **сам** — ні `json_encode`, ні `page.layout = false`,
+  ні `res.header("content-type", ...)` писати не треба;
+- CSRF не перевіряється, бо **сесії там немає взагалі**. Автентифікація можлива
+  лише за токеном із заголовка, тож чужий сайт не може послати запит від імені
+  залогіненого користувача — його cookie просто не читають;
+- помилки, 404 і діагностика теж приїжджають JSON-ом: клієнт ніколи не отримає
+  HTML там, де чекав дані.
+
 Рецепти перевіряються тестом `crates/rhaix-server/tests/examples.rs`: зламаний
-рецепт валить збірку.
+рецепт валить збірку. Сам API — `crates/rhaix-server/tests/api.rs`, і там він
+проганяється живими запитами, а не лише компілюється.

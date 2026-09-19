@@ -87,6 +87,7 @@ fn collect_files(config: &Config) -> Vec<PathBuf> {
     for dir in [
         config.pages_dir(),
         config.partials_dir(),
+        config.api_dir(),
         config.root.join("components"),
         config.root.join("layouts"),
     ] {

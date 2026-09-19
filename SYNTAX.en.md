@@ -72,6 +72,7 @@ frontmatter = "---" , NEWLINE , rhai-code , NEWLINE , "---" , NEWLINE ;
 | `layouts/*.rhx` | full-page wrapper | no |
 | `scripts/*.rhai` | shared Rhai functions, visible everywhere without importing | no |
 | `middleware.rhx` | code that runs before every request (6.6) | no |
+| `api/**/*.rhx` | JSON endpoint (6.7) | yes, at `/api/<path>` |
 
 ---
 
@@ -584,6 +585,75 @@ if req.path.starts_with("/admin") && session.user == () {
   the page is not executed.
 - CSRF is verified **before** the middleware, so a forged request never reaches
   a single line of application logic.
+
+### 6.7 `api/` — JSON instead of HTML
+
+`api/` is a third top-level directory next to `pages/` and `partials/`.
+`api/orders.rhx` becomes `/api/orders`, `api/orders/[id].rhx` becomes
+`/api/orders/{id}`. Segment rules are identical to `pages/`.
+
+```
+api/orders.rhx
+---
+if req.method == "POST" {
+    let sent = req.json();
+    let errors = validate(sent, #{ customer: "required|min:2" });
+    if !errors.is_empty() { res.status(422); return #{ errors: errors }; }
+    res.status(201);
+    return db.get("orders", db.insert("orders", sent));
+}
+
+return #{ data: db.find("orders") };
+---
+```
+
+| | `pages/` | `api/` |
+|---|---|---|
+| Content type | `text/html` | `application/json` |
+| Layout | applied | never |
+| Returned map or array | text as-is | serialised to JSON |
+| Errors, 404, diagnostics | HTML page | `{"error": "..."}` |
+| Session | yes | **no** |
+| CSRF | verified | not verified |
+
+**A returned map becomes JSON by itself.** Otherwise `return #{ ok: 1 }` would
+emit Rhai-shaped `#{"ok": 1}` — close enough to JSON to pass a human's eye, far
+enough to break a parser. A returned string is left alone: either `json_encode()`
+already built it, or it is deliberately not JSON. An empty string plus
+`res.status(204)` is an ordinary no-body reply.
+
+**There is no session, on purpose.** If a route that skips CSRF still read
+cookies, `POST /api/delete` from another site would run as the logged-in user.
+So `api/` reads no cookie and sets none; the only way to identify yourself is a
+header token, which another site cannot attach. If you want JSON **with** a
+session and CSRF, use a normal page: `page.layout = false` plus
+`res.header("content-type", ...)` gives exactly that.
+
+**The body arrives via `req.json()`**, not `req.all_form()`; it is `()` when the
+body is not JSON.
+
+Authentication belongs in `middleware.rhx` — one place for the whole API:
+
+```
+middleware.rhx
+---
+if req.path.starts_with("/api/") {
+    let sent = req.header("authorization") ?? "";
+    let token = if sent.starts_with("Bearer ") { sent.sub_string(7).trim() } else { "" };
+    let owner = if token == "" { () } else { db.find("api_tokens", #{ hash: sha256(token) }) };
+    if owner == () || owner.is_empty() {
+        res.status(401);
+        return #{ error: "a valid token is required" };
+    }
+}
+---
+```
+
+A worked recipe with validation, partial update and mass-assignment protection
+lives in `examples/cookbook/api/`.
+
+CORS is not provided. If the API is called cross-origin, set the headers with
+`res.header(...)`; for your own frontend or mobile client it is not needed.
 
 ---
 

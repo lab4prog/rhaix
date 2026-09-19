@@ -385,6 +385,11 @@ impl Config {
         self.root.join("partials")
     }
 
+    /// `api/` — маршрути, що віддають JSON зовнішнім клієнтам (SYNTAX 6.7).
+    pub fn api_dir(&self) -> PathBuf {
+        self.root.join("api")
+    }
+
     pub fn layout_path(&self) -> PathBuf {
         self.layout_named("main")
     }
@@ -408,6 +413,21 @@ pub enum RouteKind {
     Page,
     /// Фрагмент із `partials/`: layout не додається ніколи.
     Partial,
+    /// Маршрут із `api/`: JSON замість HTML, без layout, без сесії й без CSRF.
+    ///
+    /// Сесії тут немає **навмисно**. Якби маршрут без CSRF-перевірки все ж
+    /// читав cookie, то `POST /api/delete` зі стороннього сайту виконався б від
+    /// імені залогіненого користувача — класична CSRF-дірка. Тому автентифікація
+    /// в `api/` можлива лише за токеном із заголовка, і зловити чужу сесію
+    /// просто нема звідки.
+    Api,
+}
+
+impl RouteKind {
+    /// Чи віддає цей маршрут JSON замість HTML.
+    fn is_api(self) -> bool {
+        matches!(self, RouteKind::Api)
+    }
 }
 
 /// Сторінка, знайдена при скануванні `pages/`.
@@ -466,6 +486,7 @@ pub fn build_watched(
         config.files.as_ref(),
         &config.partials_dir(),
     )?);
+    routes.extend(scan_api(config.files.as_ref(), &config.api_dir())?);
 
     let database = match &config.database {
         Some(settings) => {
@@ -554,6 +575,22 @@ pub fn build_watched(
             ),
         );
     }
+
+    // Невідома адреса під `/api/` має відповідати машинно. Без цього запит
+    // провалювався б у загальний fallback і клієнт отримував би HTML-сторінку
+    // 404 — рівно та невідповідність, через яку розбір падає замість пояснення.
+    // Маршрут реєструється, лише якщо `api/` узагалі є: інакше він перехопив би
+    // цілком законний `public/api/…`.
+    let router = if routes.iter().any(|route| route.kind.is_api()) {
+        router.route(
+            "/api/{*rest}",
+            any(|| async {
+                (StatusCode::NOT_FOUND, json_body("маршрут не знайдено")).into_response()
+            }),
+        )
+    } else {
+        router
+    };
 
     // Канал живого перезавантаження. У проді маршрут просто не потрібен, але
     // тримати його окремо від сторінок усе одно правильно: це службовий шлях.
@@ -689,6 +726,24 @@ pub fn scan_partials(files: &dyn Files, dir: &Path) -> anyhow::Result<Vec<PageRo
     Ok(routes)
 }
 
+/// Просканувати `api/`: `orders.rhx` → `/api/orders`, `orders/[id].rhx` →
+/// `/api/orders/{id}`.
+///
+/// Регістр, на відміну від `partials/`, не змінюється: у `api/` файл названий
+/// так, як має виглядати URL, і тиха зміна ламала б `ordersById.rhx`.
+pub fn scan_api(files: &dyn Files, dir: &Path) -> anyhow::Result<Vec<PageRoute>> {
+    let mut routes = scan_pages(files, dir)?;
+    for route in &mut routes {
+        route.kind = RouteKind::Api;
+        // `index.rhx` дає `/`, тобто корінь самого API.
+        route.pattern = match route.pattern.as_str() {
+            "/" => "/api".to_owned(),
+            pattern => format!("/api{pattern}"),
+        };
+    }
+    Ok(routes)
+}
+
 fn route_pattern(relative: &Path) -> String {
     let mut segments: Vec<String> = Vec::new();
     for part in relative.iter() {
@@ -738,7 +793,7 @@ async fn serve_page(
 ) -> Response {
     let mut data = match collect_request(params, request).await {
         Ok(data) => data,
-        Err(err) => return err.into_response(),
+        Err(err) => return err.respond(kind),
     };
     // Куди `upload.save(...)` пише файли — відносно кореня проєкту, як і база.
     data.upload_root = state.config.root.clone();
@@ -746,18 +801,23 @@ async fn serve_page(
 
     // Скрипт користувача синхронний і може ходити в БД, тому виконується на
     // окремому потоці; рушій спільний (`sync`-збірка Rhai), шаблон — теж.
+    let file_for_error = file.clone();
     let outcome = tokio::task::spawn_blocking(move || render_page(&state, &file, kind, data)).await;
 
     let (body, response_state) = match outcome {
         Ok(Ok(result)) => result,
-        Ok(Err(err)) => return err.into_response(),
+        Ok(Err(err)) => return err.respond(kind),
         Err(err) => {
             tracing::error!("рендер не завершився: {err}");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "500").into_response();
+            return PageError::Io {
+                file: file_for_error,
+                message: format!("рендер не завершився: {err}"),
+            }
+            .respond(kind);
         }
     };
 
-    build_response(body, response_state, is_htmx)
+    build_response(body, response_state, is_htmx, kind)
 }
 
 /// Зібрати дані запиту у вигляді, зрозумілому скрипту.
@@ -829,7 +889,7 @@ async fn collect_request(
 }
 
 /// Скласти HTTP-відповідь із того, що попросив скрипт.
-fn build_response(body: String, state: ResponseData, is_htmx: bool) -> Response {
+fn build_response(body: String, state: ResponseData, is_htmx: bool, kind: RouteKind) -> Response {
     let mut status = StatusCode::from_u16(state.status).unwrap_or(StatusCode::OK);
     let mut response = Response::new(Body::from(body));
 
@@ -837,16 +897,25 @@ fn build_response(body: String, state: ResponseData, is_htmx: bool) -> Response 
         let headers = response.headers_mut();
         headers.insert(
             header::CONTENT_TYPE,
-            HeaderValue::from_static("text/html; charset=utf-8"),
+            if kind.is_api() {
+                HeaderValue::from_static("application/json; charset=utf-8")
+            } else {
+                HeaderValue::from_static("text/html; charset=utf-8")
+            },
         );
-        // Vary самого по собі мало: деякі CDN його ігнорують і можуть віддати
-        // фрагмент замість сторінки (RISKS 2.9), тому HTMX-відповіді не кешуємо.
-        headers.insert(header::VARY, HeaderValue::from_static("HX-Request"));
-        if is_htmx {
-            headers.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, no-store"),
-            );
+        // `Vary: HX-Request` має сенс лише там, де та сама адреса віддає то
+        // сторінку, то фрагмент. У `api/` відповідь одна, і зайвий `Vary`
+        // тільки дробив би кеш.
+        if !kind.is_api() {
+            // Vary самого по собі мало: деякі CDN його ігнорують і можуть віддати
+            // фрагмент замість сторінки (RISKS 2.9), тому HTMX-відповіді не кешуємо.
+            headers.insert(header::VARY, HeaderValue::from_static("HX-Request"));
+            if is_htmx {
+                headers.insert(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("private, no-store"),
+                );
+            }
         }
 
         for (name, value) in &state.headers {
@@ -911,10 +980,15 @@ fn render_page(
     let _deadline = Deadline::new(SCRIPT_BUDGET);
     let app = &state.config.app;
 
-    let session = Session::restore(
-        data.cookies.get(&app.session.cookie).map(String::as_str),
-        app.secret.bytes(),
-    );
+    // `api/` не бачить cookie взагалі: див. коментар при `RouteKind::Api`.
+    // Порожня сесія, а не «сесія, яку не перевіряють» — інакше досить забути
+    // одну перевірку, щоб дірка відкрилась сама.
+    let cookie = if kind.is_api() {
+        None
+    } else {
+        data.cookies.get(&app.session.cookie).map(String::as_str)
+    };
+    let session = Session::restore(cookie, app.secret.bytes());
     let csrf = Csrf::new(session.clone(), app.csrf);
     // Мова — стан запиту: `set_locale` у middleware має впливати на сторінку.
     let i18n = I18n::new(state.catalog.clone(), app.locale.clone());
@@ -922,7 +996,9 @@ fn render_page(
     // (рендер іде в `spawn_blocking`: один запит — один потік).
     let _locale = LocaleScope::new(i18n.clone());
 
-    if is_mutating(&data.method) {
+    // CSRF захищає cookie-сесію. У `api/` сесії немає, тому й захищати нечого:
+    // токен із заголовка браузер до чужого запиту не додасть.
+    if is_mutating(&data.method) && !kind.is_api() {
         // Поле форми або заголовок: другий варіант потрібен для `hx-headers`
         // і для запитів, у яких тіло — не форма.
         let supplied = data
@@ -939,8 +1015,12 @@ fn render_page(
     let (body, mut response) = render_inner(state, file, kind, data, &session, &csrf, &i18n)?;
     // Cookie ставиться, лише якщо сесію справді змінювали — інакше кожна
     // сторінка тягла б за собою `Set-Cookie` і псувала кешування.
-    if let Some(cookie) = session.cookie(app.secret.bytes(), &app.session) {
-        response.cookies.push(cookie);
+    // `api/` не видає cookie ніколи: сесії він не читає, тож і писати її означало
+    // б віддати клієнтові стан, яким наступний запит однаково не скористається.
+    if !kind.is_api() {
+        if let Some(cookie) = session.cookie(app.secret.bytes(), &app.session) {
+            response.cookies.push(cookie);
+        }
     }
     Ok((body, response))
 }
@@ -948,6 +1028,19 @@ fn render_page(
 /// Чи може цей метод щось змінити. `GET`, `HEAD` і `OPTIONS` — ні.
 fn is_mutating(method: &str) -> bool {
     !matches!(method, "GET" | "HEAD" | "OPTIONS")
+}
+
+/// Значення, повернуте скриптом, у тіло відповіді.
+///
+/// У `api/` мапа й масив серіалізуються в JSON самі. Без цього `return #{ ok: 1 }`
+/// віддавав би Rhai-подібний `#{"ok": 1}` — рядок, який достатньо схожий на JSON,
+/// щоб пройти очима, і достатньо не JSON, щоб клієнт упав. Рядок лишається як є:
+/// його вже або зібрав `json_encode()`, або це навмисно не JSON.
+fn body_from(value: &Dynamic, kind: RouteKind) -> String {
+    if kind.is_api() && (value.is::<Map>() || value.is::<rhai::Array>()) {
+        return rhaix_script::json_encode(value);
+    }
+    display(value)
 }
 
 fn render_inner(
@@ -1016,8 +1109,10 @@ fn render_inner(
             return Ok((String::new(), state_now));
         }
         if !returned.is_unit() {
-            // middleware віддав готове тіло — сторінка не виконується взагалі
-            return Ok((display(&returned), state_now));
+            // middleware віддав готове тіло — сторінка не виконується взагалі.
+            // Саме тут живе перевірка токена для `api/`, тож `return #{ error: ... }`
+            // має стати JSON так само, як у самому маршруті.
+            return Ok((body_from(&returned, kind), state_now));
         }
     }
 
@@ -1039,7 +1134,7 @@ fn render_inner(
     // елемент, `return raw(...)` віддає готовий HTML.
     let mut assets = Assets::default();
     let page_html = if !returned.is_unit() {
-        display(&returned)
+        body_from(&returned, kind)
     } else {
         let rendered = template
             .render(&state.engine, &mut scope, Slots::default(), &globals)
@@ -1052,6 +1147,14 @@ fn render_inner(
         assets = Assets::from(&rendered);
         rendered.html
     };
+
+    // `api/` віддає рівно те, що повернув скрипт: ні layout, ні піднятих
+    // стилів. Дописаний `<style>` зробив би відповідь невалідним JSON, і
+    // клієнт побачив би помилку розбору замість даних.
+    if kind.is_api() {
+        state_now = response.take();
+        return Ok((page_html, state_now));
+    }
 
     // Фрагмент із `partials/` не загортається в layout ніколи: він для того й
     // існує, щоб приїхати в уже відкриту сторінку.
@@ -1358,6 +1461,45 @@ enum PageError {
     Forbidden { path: String },
 }
 
+impl PageError {
+    /// Відповідь у форматі, якого чекає саме цей маршрут.
+    ///
+    /// Клієнт, що отримує JSON на успіх і HTML на помилку, — непридатний:
+    /// розбір падає рівно там, де потрібне пояснення. Тому `api/` віддає
+    /// помилку так само машинно.
+    fn respond(self, kind: RouteKind) -> Response {
+        if !kind.is_api() {
+            return self.into_response();
+        }
+        let (status, message) = match self {
+            PageError::Io { file, message } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("не вдалося прочитати {}: {message}", file.display()),
+            ),
+            PageError::Template { diagnostic } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, diagnostic)
+            }
+            // До `api/` CSRF не застосовується, тож сюди можна потрапити лише
+            // через `partials`/`pages`; лишаємо гілку заради повноти.
+            PageError::Forbidden { path } => {
+                (StatusCode::FORBIDDEN, format!("{path}: доступ заборонено"))
+            }
+        };
+        tracing::error!("{message}");
+        (status, json_body(&message)).into_response()
+    }
+}
+
+/// Тіло помилки для `api/`: `{"error": "..."}` із правильним типом вмісту.
+fn json_body(message: &str) -> impl IntoResponse {
+    let mut map = Map::new();
+    map.insert("error".into(), Dynamic::from(message.to_owned()));
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        rhaix_script::json_encode(&Dynamic::from_map(map)),
+    )
+}
+
 impl IntoResponse for PageError {
     fn into_response(self) -> Response {
         // Людина має бачити свій файл і свій рядок, а не стек Rust: сторінка
@@ -1495,6 +1637,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         let mark = match route.kind {
             RouteKind::Page => "сторінка",
             RouteKind::Partial => "фрагмент",
+            RouteKind::Api => "api     ",
         };
         println!(
             "  {mark}: {:<22} {}",

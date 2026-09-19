@@ -577,6 +577,81 @@ if req.path.starts_with("/admin") {
 рядок в одному файлі відкриває сторінку всім (перевірено в
 `examples/ergonomics/admin-report.rhx`).
 
+### 6.7 `api/` — JSON замість HTML
+
+Тека `api/` у корені проєкту — третя поряд із `pages/` і `partials/`. Файл
+`api/orders.rhx` стає маршрутом `/api/orders`, `api/orders/[id].rhx` —
+`/api/orders/{id}`. Правила сегментів ті самі, що в `pages/`.
+
+```
+api/orders.rhx
+---
+if req.method == "POST" {
+    let sent = req.json();
+    let errors = validate(sent, #{ customer: "required|min:2" });
+    if !errors.is_empty() { res.status(422); return #{ errors: errors }; }
+    res.status(201);
+    return db.get("orders", db.insert("orders", sent));
+}
+
+return #{ data: db.find("orders") };
+---
+```
+
+Чим такий маршрут відрізняється від сторінки:
+
+| | `pages/` | `api/` |
+|---|---|---|
+| Тип вмісту | `text/html` | `application/json` |
+| Layout | додається | ніколи |
+| Повернена мапа чи масив | текст як є | серіалізується в JSON |
+| Помилки, 404, діагностика | HTML-сторінка | `{"error": "..."}` |
+| Сесія | є | **немає** |
+| CSRF | перевіряється | не перевіряється |
+
+Три з цих рядків варто пояснити.
+
+**`return #{ ... }` стає JSON сам.** Без цього `return #{ ok: 1 }` віддавав би
+Rhai-подібний `#{"ok": 1}` — достатньо схожий на JSON, щоб пройти очима, і
+достатньо не JSON, щоб клієнт упав. Рядок лишається як є: його вже або зібрав
+`json_encode()`, або це навмисно не JSON. Порожній рядок і `res.status(204)` —
+звичайна відповідь без тіла.
+
+**Сесії немає навмисно.** Якби маршрут без CSRF-перевірки все ж читав cookie,
+то `POST /api/delete` зі стороннього сайту виконався б від імені залогіненого
+користувача. Тому `api/` не читає cookie і не видає `Set-Cookie`; назватись
+можна лише токеном із заголовка, який чужий сайт до запиту не додасть. Якщо вам
+потрібен JSON **із** сесією та CSRF — робіть звичайну сторінку в `pages/`:
+`page.layout = false` плюс `res.header("content-type", ...)` дають рівно це.
+
+**Тіло приходить через `req.json()`**, а не `req.all_form()`: `()`, якщо це не
+JSON. Перевірити `== ()` простіше, ніж ловити виняток, а відрізнити зламане тіло
+від порожнього однаково потрібно рівно одним `if`.
+
+Автентифікація живе в `middleware.rhx` — одне місце на весь API:
+
+```
+middleware.rhx
+---
+if req.path.starts_with("/api/") {
+    let sent = req.header("authorization") ?? "";
+    let token = if sent.starts_with("Bearer ") { sent.sub_string(7).trim() } else { "" };
+    let owner = if token == "" { () } else { db.find("api_tokens", #{ hash: sha256(token) }) };
+    if owner == () || owner.is_empty() {
+        res.status(401);
+        return #{ error: "потрібен дійсний токен" };
+    }
+}
+---
+```
+
+Готовий рецепт із валідацією, частковою зміною та захистом від дописування
+чужих колонок — `examples/cookbook/api/`.
+
+CORS фреймворк не додає. Якщо API кличуть з іншого домену, заголовки ставляться
+через `res.header(...)`; для власного фронтенду чи мобільного клієнта це не
+потрібно.
+
 ---
 
 ## 7. Область видимості та глобальні об'єкти

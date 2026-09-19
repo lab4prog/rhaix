@@ -1,0 +1,3 @@
+---
+return #{ value: no_such_function() };
+---

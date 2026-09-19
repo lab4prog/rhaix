@@ -1,0 +1,21 @@
+---
+// ЗАДАЧА: пустити в `/api/` лише за токеном, а сторінки лишити відкритими.
+//
+// Це єдине місце, де перевіряється доступ до API: маршрути в `api/` про
+// автентифікацію не знають нічого. Сесії там немає навмисно (SYNTAX 6.7), тож
+// єдиний спосіб назватись — заголовок `Authorization`.
+if req.path.starts_with("/api/") {
+    let sent = req.header("authorization") ?? "";
+    // `Bearer <токен>` — решта форматів нас не цікавить.
+    let token = if sent.starts_with("Bearer ") { sent.sub_string(7).trim() } else { "" };
+
+    // У базі лежить хеш, а не токен: витік таблиці не дає доступу одразу.
+    let owner = if token == "" { () } else { db.find("api_tokens", #{ hash: sha256(token) }) };
+
+    if owner == () || owner.is_empty() {
+        res.status(401);
+        // Мапа стає JSON сама — бо маршрут із `api/`.
+        return #{ error: "потрібен дійсний токен" };
+    }
+}
+---

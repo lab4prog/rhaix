@@ -34,6 +34,10 @@ What already works:
 - **file-based routing**: `pages/` for pages, `partials/` for fragment
   endpoints (`partials/Stats.rhx` → `/components/stats`), `[id].rhx` for dynamic
   segments;
+- **`api/` serves JSON**: `api/orders.rhx` → `/api/orders`; a returned map is
+  serialised automatically, no layout is applied, and errors and 404s are machine
+  readable too. There is no session there on purpose — hence no CSRF to check,
+  and no way for another site to act as the logged-in user;
 - **`middleware.rhx`** — one file guards every protected page;
 - **`@oob`** — one response updates both the main target and a block outside it;
 - **database**: a `[db]` section in `rhaix.toml`, migrations from

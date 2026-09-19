@@ -29,7 +29,10 @@ pub use http::{register_http, Http};
 pub use i18n::{parse_catalog_file, register_i18n, Catalog, I18n, LocaleScope};
 pub use mail::{register_mail, Mail, MailConfig};
 pub use markdown::{markdown, register_markdown};
-pub use json::{parse as json_parse, to_dynamic as json_to_dynamic};
+pub use json::{
+    encode as json_encode, from_dynamic as json_from_dynamic, parse as json_parse,
+    to_dynamic as json_to_dynamic,
+};
 pub use session::{
     register_session, Csrf, Secret, Session, SessionOptions, CSRF_FIELD, CSRF_HEADER,
 };

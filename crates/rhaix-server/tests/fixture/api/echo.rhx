@@ -1,0 +1,9 @@
+---
+// Тіло приходить JSON-ом, а не формою.
+let sent = req.json();
+if sent == () {
+    res.status(400);
+    return #{ error: "тіло не JSON" };
+}
+return #{ got: sent.name, upper: sent.name.to_upper() };
+---

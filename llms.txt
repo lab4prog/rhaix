@@ -48,6 +48,7 @@ page.title = "ToDo";
 |---|---|---|
 | `pages/**/*.rhx` | page / endpoint | yes, by file path |
 | `partials/**/*.rhx` | HTMX fragment | yes, `/components/<lowercase-name>` |
+| `api/**/*.rhx` | JSON endpoint | yes, at `/api/<path>` |
 | `components/**/*.rhx` | component | no |
 | `layouts/main.rhx` | full-document wrapper | no |
 | `scripts/*.rhai` | shared functions, visible everywhere | no |
@@ -437,6 +438,34 @@ let todos = db.find("todos", #{}, #{ sort: "id desc" });
 ```
 
 Returning a value from frontmatter makes it the response body, skipping markup.
+
+## JSON API
+
+`api/**/*.rhx` serves `/api/<path>` and differs from a page in six ways:
+`application/json`, never wrapped in a layout, a returned map or array is
+serialised to JSON automatically, errors and 404 come back as `{"error": "..."}`,
+**no session**, and CSRF is not checked.
+
+```rhai
+api/orders.rhx
+---
+if req.method == "POST" {
+    let sent = req.json();                    // () when the body is not JSON
+    let errors = validate(sent, #{ customer: "required|min:2" });
+    if !errors.is_empty() { res.status(422); return #{ errors: errors }; }
+    res.status(201);
+    return db.get("orders", db.insert("orders", sent));
+}
+return #{ data: db.find("orders") };
+---
+```
+
+The missing session is deliberate: a route that skips CSRF must not read
+cookies, or another site could act as the logged-in user. Authenticate with a
+header token in `middleware.rhx`. For JSON *with* a session, use a normal page
+with `page.layout = false` and `res.header("content-type", ...)`.
+
+CORS is not provided; set the headers yourself if you need cross-origin calls.
 
 ## Commands
 

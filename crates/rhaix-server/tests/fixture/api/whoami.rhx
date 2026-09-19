@@ -1,0 +1,5 @@
+---
+// Сесії в `api/` немає навіть із дійсним cookie: перевіряємо це прямо.
+session.set("touched", true);
+return #{ user: session.get("user"), token: csrf.token() };
+---

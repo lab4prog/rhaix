@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lab4prog/rhaix"
@@ -35,6 +35,14 @@ tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# --- НАЛАШТУВАННЯ ДЛЯ ДЕБЕГУ ТА РОЗРОБКИ (dev) ---
+[profile.dev]
+debug = 1 # Залишає базову дебаг-інформацію для вашого коду
+
+[profile.dev.package."*"]
+debug = false # Вимикає важкі debug-символи для ЗОВНІШНІХ залежностей
+
+# --- НАЛАШТУВАННЯ ДЛЯ ФІНАЛЬНОЇ ЗБІРКИ (release) ---
 [profile.release]
 lto = "thin"
 codegen-units = 1

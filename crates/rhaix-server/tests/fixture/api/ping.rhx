@@ -1,0 +1,4 @@
+---
+// Мапа сама стає JSON: писати `json_encode` тут не треба.
+return #{ ok: true, method: req.method };
+---
