@@ -31,3 +31,10 @@ tracing-subscriber.workspace = true
 [[bin]]
 name = "rhaix"
 path = "src/main.rs"
+
+[dev-dependencies]
+# Скелет, який видає `rhaix new`, перевіряється справжнім роутером
+# rhaix-server, а не рядковим збігом: він уже є звичайною залежністю вище,
+# тут лишається тільки те, чого бракує для тестів.
+axum.workspace = true
+tower = { workspace = true, features = ["util"] }

@@ -17,13 +17,7 @@ url    = "data/app.db"
 # url    = "postgres://user:pass@localhost:5432/app"
 "##;
 
-const LAYOUT: &str = r##"---
-let nav = [
-    #{ href: "/", label: "Головна" },
-    #{ href: "/todo", label: "Справи" },
-];
----
-<!DOCTYPE html>
+const LAYOUT: &str = r##"<!DOCTYPE html>
 <html lang="uk">
 <head>
   <meta charset="utf-8">
@@ -32,11 +26,10 @@ let nav = [
   <rhaix:head />
 </head>
 <body hx-boost="true">
-  <nav>
-    <a @for={item in nav} href={item.href}
-       hx-get={item.href} hx-target="#main" hx-push-url="true"
-       @class={#{"active": item.href == req.path}}>{{ item.label }}</a>
-  </nav>
+  {{! `id="nav"` — ціль, у яку кожна сторінка дошле оновлену підсвітку через
+      @oob (components/Nav.rhx): layout на htmx-навігації більше не
+      рендериться, отже й сам не оновить активний пункт (SYNTAX 6.3, 4.7). }}
+  <div id="nav"><Nav /></div>
 
   <main id="main"><slot /></main>
   <div id="toasts" class="toasts"></div>
@@ -46,10 +39,25 @@ let nav = [
 </html>
 "##;
 
+const NAV: &str = r##"---
+let items = [
+    #{ href: "/", label: "Головна" },
+    #{ href: "/todo", label: "Справи" },
+];
+---
+<nav>
+  <a @for={item in items} href={item.href}
+     hx-get={item.href} hx-target="#main" hx-push-url="true"
+     @class={#{"active": item.href == req.path}}>{{ item.label }}</a>
+</nav>
+"##;
+
 const INDEX: &str = r##"---
 page.title = "Головна";
 let count = db.count("todos");
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Вітаю!</h1>
 <p>
   Це rhaix. Логіка живе у frontmatter цього файлу, розмітка — нижче,
@@ -80,6 +88,8 @@ if req.method == "DELETE" {
 
 let todos = db.find("todos", #{}, #{ sort: "done asc, id asc" });
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <div id="app">
   <h1>Справи</h1>
 
@@ -156,11 +166,12 @@ pub fn create(path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("тека `{}` не порожня", path.display());
     }
 
-    let files: [(&str, &str); 9] = [
+    let files: [(&str, &str); 10] = [
         ("rhaix.toml", CONFIG),
         ("layouts/main.rhx", LAYOUT),
         ("pages/index.rhx", INDEX),
         ("pages/todo.rhx", TODO),
+        ("components/Nav.rhx", NAV),
         ("components/TodoItem.rhx", TODO_ITEM),
         ("migrations/001_todos.sql", MIGRATION),
         ("public/style.css", STYLE),
