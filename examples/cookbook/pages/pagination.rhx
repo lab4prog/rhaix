@@ -10,6 +10,8 @@ let p = paginate(total, PER_PAGE, req.query_int("page") ?? 1);
 
 let orders = db.find("orders", #{}, #{ sort: "id asc", limit: PER_PAGE, skip: p.skip });
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Пагінація</h1>
 
 <table>

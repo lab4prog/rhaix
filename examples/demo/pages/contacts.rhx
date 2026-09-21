@@ -1,5 +1,7 @@
 ---
 page.title = "Контакти";
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Контакти</h1>
 <p>lab4prog</p>

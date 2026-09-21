@@ -5,6 +5,8 @@ page.title = "Модальне вікно";
 
 let orders = db.find("orders", #{}, #{ sort: "id asc" });
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Модальне вікно</h1>
 <p>Картка живе в <code>partials/OrderCard.rhx</code> і приїжджає в
    <code>#dialog</code>. Закриття — та сама адреса з порожньою відповіддю.</p>

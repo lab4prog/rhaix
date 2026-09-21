@@ -8,6 +8,10 @@ let features = [
     "директиви @if / @else / @for / @class / @attr / @oob",
 ];
 ---
+{{! Layout на htmx-навігації не рендериться, тому підсвітку активного пункту
+    дошлемо самі — @oob поверх готового компонента (SYNTAX 4.7). }}
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>rhaix</h1>
 
 <p>

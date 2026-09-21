@@ -342,6 +342,21 @@ The core sets `hx-swap-oob` itself and, when the selector looks like `#id`, the
 `@oob={["#list", "beforeend"]}`. A map here is a mistake and produces a warning —
 the directive expects a selector, not a set of options.
 
+`@oob` does not work on a component (4.8) — wrap it in an element:
+
+```html
+<div @oob={"#nav"}><Nav /></div>
+```
+
+The typical case is persistent chrome outside `<main>` (a nav menu, a header
+counter) that the fragment rule (6.3) never re-renders on htmx navigation,
+because it lives in the layout and the layout doesn't run on that path at all.
+The component that draws it recomputes its state every time (it sees
+`req.path` the same way a page does), and `@if={req.is_htmx}` on the wrapper
+keeps it from duplicating on a full load, where the layout just drew the same
+block. The recipe is `components/Nav.rhx` in `examples/demo` and
+`examples/cookbook`.
+
 ### 4.8 Summary table
 
 | Directive | On what | Value |
@@ -351,10 +366,11 @@ the directive expects a selector, not a set of options.
 | `@key` | together with `@for` | expression |
 | `@class` `@style` `@attr` | HTML elements | map / array / string |
 | `@html` `@text` | HTML elements | expression |
-| `@oob` | HTML elements, components | selector expression (4.7) |
+| `@oob` | HTML elements | selector expression (4.7) |
 
-Directives on a component: `@if/@else*/@for/@key` are allowed. `@class`/`@attr`
-on a component is an error — a component decides its own markup, so pass props.
+Directives on a component: `@if/@else*/@for/@key` are allowed. `@class`/
+`@style`/`@attr`/`@html`/`@text`/`@oob` on a component are a compile error — a
+component decides its own markup, so pass props or wrap it in an element.
 
 ---
 
@@ -516,6 +532,23 @@ must not lead anywhere.
 
 This is automatic — there is nothing to switch on. Every response carries
 `Vary: HX-Request`.
+
+Consequence: **the layout does not run at all on htmx navigation.** Everything
+in it — a nav menu, a footer, a header counter — stays exactly as the first
+full render drew it, until something updates those spots itself.
+
+- **The framework handles `<title>` for you.** If the page set `page.title`,
+  the fragment response carries a `<title>` tag ahead of the markup — htmx
+  picks it up from anywhere in the response body, regardless of whether it's
+  inside the swap target, and updates the tab. The value is used **as-is**,
+  without whatever formatting the layout applies (`"{{ brand }} — {{ page.title }}"`
+  may be its own thing there): if you want that exact shape in the tab, build
+  the full string into `page.title` yourself. A page that never touched
+  `page.title` gets no tag at all — the title stays whatever the previous page
+  showed.
+- **The rest of the persistent chrome — menus, counters — is the project's
+  job**, via `@oob` (4.7). A working recipe is `components/Nav.rhx` in
+  `examples/demo` and `examples/cookbook`.
 
 ### 6.4 Routes
 

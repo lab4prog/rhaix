@@ -32,6 +32,8 @@ if req.method == "POST" {
     }
 }
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Нове замовлення</h1>
 
 <form hx-post="/form" hx-target="#main">

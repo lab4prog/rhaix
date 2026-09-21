@@ -10,6 +10,8 @@ if req.method == "POST" {
 let recent = db.find("todos", #{}, #{ sort: "id desc", limit: 3 });
 let total = db.count("todos");
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Адмінка</h1>
 <p>Вітаємо, <b>{{ session.user }}</b>. Сюди не пускає <code>middleware.rhx</code>,
    поки в сесії немає користувача.</p>

@@ -19,6 +19,8 @@ for o in orders { total += o.amount; }
 // Клац по тій самій колонці перевертає напрямок.
 let flip = if dir == "asc" { "desc" } else { "asc" };
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Замовлення</h1>
 
 <p>

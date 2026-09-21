@@ -134,6 +134,39 @@ async fn htmx_request_gets_only_the_fragment() {
 }
 
 #[tokio::test]
+async fn htmx_navigation_updates_the_browser_tab_title() {
+    // Layout, де живе `<title>`, на цьому шляху взагалі не рендериться —
+    // без окремого тега вкладка й далі показувала б заголовок першої
+    // відкритої сторінки. htmx сам підхопить `<title>` будь-де в тілі
+    // відповіді, тож досить дописати його самим.
+    let (_, _, body) = call(htmx("/")).await;
+
+    // Значення — рівно те, що поставив скрипт сторінки (`page.title = "Головна"`),
+    // без префікса бренду з layout: layout тут не рендериться, отже й
+    // конкатенацію "rhaix — …" ніхто не повторює.
+    assert!(body.starts_with("<title>Головна</title>"), "{body}");
+}
+
+#[tokio::test]
+async fn a_page_that_never_set_page_title_gets_no_title_tag() {
+    // `pages/fragment.rhx` не чіпає `page.title` — вкладка має лишити те, що
+    // показувала раніше, а не скинутись на щось вигадане фреймворком.
+    let (_, _, body) = call(htmx("/fragment")).await;
+
+    assert!(!body.contains("<title>"), "{body}");
+}
+
+#[tokio::test]
+async fn a_partial_does_not_get_a_title_tag_even_if_it_sets_page_title() {
+    // `partials/Row.rhx` ставить `page.title`, але партіал — це віджет
+    // усередині вже відкритої сторінки, а не нова сторінка: заголовок вкладки
+    // йому не належить.
+    let (_, _, body) = call(htmx("/components/row")).await;
+
+    assert!(!body.contains("<title>"), "{body}");
+}
+
+#[tokio::test]
 async fn dynamic_segment_reaches_the_script() {
     let (status, _, body) = call(htmx("/item/42")).await;
 
@@ -647,9 +680,11 @@ async fn only_an_explicit_return_replaces_the_page() {
         "останній вираз frontmatter не має ставати тілом: {body}"
     );
 
-    // А явний `return` працює як і раніше.
+    // А явний `return` працює як і раніше: тілом стає рівно те, що повернули.
+    // Заголовок вкладки попереду — `page.title` сторінка поставила ще до
+    // `return`, і йому байдуже, яким шляхом рендер завершився.
     let (_, _, body) = call(htmx("/tail?mode=return")).await;
-    assert_eq!(body, "готове тіло");
+    assert_eq!(body, "<title>Хвіст</title>готове тіло");
 }
 
 #[tokio::test]

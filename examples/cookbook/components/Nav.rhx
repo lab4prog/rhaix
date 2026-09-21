@@ -1,0 +1,20 @@
+---
+// Пункти меню й підсвітка активного — в одному місці, а не в layout і на
+// кожному рецепті окремо. `req.path` компонент бачить так само, як сторінка
+// (SYNTAX 5.3), тож підсвітка рахується заново щоразу, коли він рендериться.
+let recipes = [
+    #{ href: "/",          label: "Рецепти" },
+    #{ href: "/table",     label: "Таблиця з фільтром" },
+    #{ href: "/form",      label: "Форма з валідацією" },
+    #{ href: "/modal",     label: "Модалка" },
+    #{ href: "/search",    label: "Живий пошук" },
+    #{ href: "/pagination", label: "Пагінація" },
+    #{ href: "/upload", label: "Файл" },
+    #{ href: "/contact", label: "Пошта" },
+];
+---
+<nav>
+  <a @for={item in recipes} href={item.href}
+     hx-get={item.href} hx-target="#main" hx-push-url="true"
+     @class={#{"active": item.href == req.path}}>{{ item.label }}</a>
+</nav>

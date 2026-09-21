@@ -18,6 +18,8 @@ let recipes = [
        task: "Перевірити поля й надіслати лист (у dev — у консоль)." },
 ];
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Кухарська книга</h1>
 <p>Кожен рецепт — одна задача й один готовий файл <code>.rhx</code>.
    Усе працює на тій самій базі: <code>migrations/001_orders.sql</code>.</p>

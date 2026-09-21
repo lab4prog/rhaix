@@ -23,6 +23,8 @@ if req.method == "POST" {
     if error != "" { res.status(422); }
 }
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Завантаження файлу</h1>
 
 <form method="post" action="/upload" enctype="multipart/form-data">

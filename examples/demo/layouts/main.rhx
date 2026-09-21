@@ -1,13 +1,3 @@
----
-let nav = [
-    #{ href: "/", label: "Головна" },
-    #{ href: "/todo", label: "ToDo" },
-    #{ href: "/escaping", label: "Екранування" },
-    #{ href: "/contacts", label: "Контакти" },
-    #{ href: "/tools", label: "Утиліти" },
-    #{ href: "/admin", label: "Адмінка" },
-];
----
 <!DOCTYPE html>
 <html lang="uk">
 <head>
@@ -17,11 +7,10 @@ let nav = [
   <rhaix:head />
 </head>
 <body hx-boost="true">
-  <nav>
-    <a @for={item in nav} href={item.href}
-       hx-get={item.href} hx-target="#main" hx-push-url="true"
-       @class={#{"active": item.href == req.path}}>{{ item.label }}</a>
-  </nav>
+  {{! `id="nav"` тут — та сама ціль, у яку кожна сторінка дошле оновлену
+      підсвітку через @oob (components/Nav.rhx): layout на htmx-навігації
+      більше не рендериться, отже й сам не оновить активний пункт. }}
+  <div id="nav"><Nav /></div>
 
   <main id="main"><slot /></main>
 

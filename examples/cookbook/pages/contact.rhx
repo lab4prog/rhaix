@@ -28,6 +28,8 @@ if req.method == "POST" {
     }
 }
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Зворотний зв'язок</h1>
 
 <div @if={sent}>

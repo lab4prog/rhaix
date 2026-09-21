@@ -6,6 +6,8 @@ let markup = "<b>це справді жирний текст</b>";
 let evil = "javascript:alert(document.cookie)";
 let todos = state.get("todos") ?? [];
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Екранування за контекстом</h1>
 
 <p>Текст екранується завжди: {{ dangerous }}</p>

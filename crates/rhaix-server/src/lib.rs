@@ -1180,7 +1180,20 @@ fn render_inner(
         state_now = response.take();
         // Асети їдуть разом із фрагментом: стиль позначений хешем, скрипт
         // загорнутий у перевірку реєстру, тож повторно не виконається.
-        return Ok((assets.append_to(page_html), state_now));
+        let mut body = assets.append_to(page_html);
+        // `<title>` живе в layout, а layout на цьому шляху взагалі не
+        // рендериться — тому заголовок вкладки застигає на тому, що показала
+        // перша сторінка. htmx сам оновлює `document.title`, якщо десь у тексті
+        // відповіді є тег `<title>`, байдуже, усередині цілі свопу чи ні; лишається
+        // додати його самим. Лише для сторінки (не партіала) і лише коли її
+        // скрипт справді поставив `page.title` — інакше довелось би вгадувати
+        // дефолт, який кожен проєкт задає по-своєму в своєму layout.
+        if is_htmx && kind == RouteKind::Page {
+            if let Some(title) = page_title(&globals) {
+                body = format!("<title>{}</title>{body}", html_escape(&title));
+            }
+        }
+        return Ok((body, state_now));
     }
 
     // Сторінка може попросити інший layout або відмовитись від нього зовсім:
@@ -1384,6 +1397,22 @@ enum Layout {
     Default,
     Named(String),
     None,
+}
+
+/// Прочитати `page.title`, якщо скрипт сторінки його поставив.
+///
+/// `None`, а не порожній рядок за замовчуванням: сторінка, що не чіпала
+/// `page.title` узагалі, не повинна скидати вкладці заголовок на щось своє —
+/// довший заголовок, поставлений раніше (наприклад, layout-ом при першому
+/// повному завантаженні), має право лишитись.
+fn page_title(globals: &Globals) -> Option<String> {
+    let page = globals.get("page")?;
+    let map = page.read_lock::<Map>()?;
+    let value = map.get("title")?;
+    if value.is_unit() {
+        return None;
+    }
+    Some(display(value))
 }
 
 /// Прочитати `page.layout`, виставлений скриптом сторінки.

@@ -12,6 +12,8 @@ let published = timestamp("2026-09-17 14:05:00");
 let nbu = http.get("https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=EUR&json");
 let euro = if nbu.ok && nbu.json.len() > 0 { nbu.json[0] } else { () };
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Утиліти</h1>
 
 <table>

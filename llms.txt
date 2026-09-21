@@ -180,6 +180,23 @@ with no layout. Files in `partials/` are never wrapped.
 `page.layout = "admin"` picks `layouts/admin.rhx`; `page.layout = false` renders
 the page with no layout at all.
 
+**The layout does not run on htmx navigation at all** — nothing in it (a nav
+menu, a header counter) re-renders itself. Two consequences:
+
+- `<title>` updates automatically: if `page.title` is set, the fragment
+  response carries a `<title>` tag and htmx applies it, using the raw
+  `page.title` value (not whatever the layout composes around it).
+- Anything else persistent (an active nav link, a counter) needs `@oob`
+  yourself: wrap a component in an element (`@oob` does not work directly on a
+  component tag) and guard it with `@if={req.is_htmx}` so it does not
+  duplicate on a full load —
+
+```html
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+```
+
+  See `components/Nav.rhx` in `examples/demo` / `examples/cookbook`.
+
 ---
 
 ## Globals available in every file

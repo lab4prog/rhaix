@@ -3,6 +3,8 @@
 // `hx-trigger="input changed delay:300ms"` — уся боротьба з дребезгом.
 page.title = "Живий пошук";
 ---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
 <h1>Живий пошук</h1>
 
 <input name="q" placeholder="Прізвище клієнта"
