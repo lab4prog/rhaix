@@ -11,8 +11,15 @@ th { font-size: .85rem; text-transform: uppercase; color: var(--muted) }
 .badge-paid { background: #d7f5dd }
 .badge-cancelled { background: #f7dcdc }
 .error { color: #b00; font-size: .9rem }
+.field input.invalid, .field textarea.invalid { border-color: #b00 }
 .recipe { border: 1px solid var(--line); border-radius: .5rem; padding: 1rem 1.25rem; margin-bottom: 1rem }
 .recipe h2 { margin: 0 0 .25rem; font-size: 1.1rem }
 .recipe p { margin: 0; color: var(--muted) }
 dialog { border: 1px solid var(--line); border-radius: .5rem; padding: 1.5rem }
-.toasts { position: fixed; right: 1rem; bottom: 1rem }
+/* ::backdrop існує лише для <dialog>, відкритого через showModal() — саме так
+   rhaix.js тепер і відкриває кожен <dialog> сам (SYNTAX 7.7). */
+dialog::backdrop { background: rgba(0, 0, 0, .4) }
+.toasts { position: fixed; right: 1rem; bottom: 1rem; display: grid; gap: .5rem }
+.toast { padding: .6rem 1rem; border-radius: 6px; color: #fff; background: #334155 }
+.toast.success { background: #15803d }
+.toast.error { background: #b91c1c }

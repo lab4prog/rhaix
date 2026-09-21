@@ -1,0 +1,19 @@
+---
+// ЗАДАЧА: не писати <label>+<input>+повідомлення про помилку вручну для
+// кожного поля форми. Один компонент замість трьох рядків розмітки, що
+// повторюються для кожного поля.
+let name  = props.name;
+let label = props.label;
+let value = props.value ?? "";
+let error = props.error;
+// "text" за замовчуванням; для textarea — @multiline={true}.
+let kind = props.type ?? "text";
+let multiline = props.multiline ?? false;
+---
+<p class="field">
+  <label>{{ label }}<br>
+    <textarea @if={multiline} name={name} @class={#{"invalid": error != ()}}>{{ value }}</textarea>
+    <input @else name={name} value={value} type={kind} @class={#{"invalid": error != ()}}>
+  </label>
+  <span class="error" @if={error}>{{ error }}</span>
+</p>

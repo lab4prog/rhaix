@@ -1,7 +1,0 @@
----
-// Фрагмент-ендпоінт: /components/stats
-// Прямий аналог /components/todo з Node-RED-стартера, тільки без окремого flow.
----
-<div id="stats" class="stats" hx-get="/components/stats" hx-trigger="todoChanged from:body">
-  <Stats />
-</div>

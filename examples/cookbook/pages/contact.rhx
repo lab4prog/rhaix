@@ -37,17 +37,8 @@ if req.method == "POST" {
   <p><small>У dev-режимі лист надруковано в консоль сервера.</small></p>
 </div>
 <form @else method="post" action="/contact">
-  <p>
-    <label>Ім'я<br><input name="name"></label>
-    <span class="error" @if={errors.name}>{{ errors.name }}</span>
-  </p>
-  <p>
-    <label>Пошта<br><input name="email"></label>
-    <span class="error" @if={errors.email}>{{ errors.email }}</span>
-  </p>
-  <p>
-    <label>Повідомлення<br><textarea name="message"></textarea></label>
-    <span class="error" @if={errors.message}>{{ errors.message }}</span>
-  </p>
+  <Field name="name" label="Ім'я" error={errors.name} />
+  <Field name="email" label="Пошта" error={errors.email} />
+  <Field name="message" label="Повідомлення" error={errors.message} multiline={true} />
   <button>Надіслати</button>
 </form>

@@ -974,6 +974,106 @@ form works with no SMTP server. Real sending is behind the `mail` build feature
 
 Recipes for all four are in `examples/cookbook`.
 
+### 7.6 Translations and markdown
+
+**`t("key")`.** Files live in `locales/<lang>.toml` and are read through the
+same `Files` abstraction as templates, so translations work in an embedded
+binary too.
+
+```toml
+# locales/en.toml
+greeting = "Hi"
+items    = "{count} items in the cart"
+```
+
+```rhai
+t("greeting")                  // "Hi"
+t("items", #{ count: 3 })      // "3 items in the cart"
+set_locale("uk");              // usually in middleware.rhx
+locale()                       // current language
+```
+
+The default language is `[app] locale` (defaults to `uk`). Lookup order:
+current language → default language → **the key itself**. A missing
+translation shows up on the page as `todo.title`, not a blank spot. An
+unknown language in `set_locale` is ignored with a warning, so `?lang=xx`
+can't turn labels into raw keys.
+
+**`markdown(text)`** returns `Html`, i.e. its output is not escaped — and the
+text usually comes from a user. So there are two guardrails here, and they
+are **not configurable**:
+
+1. **raw HTML does not pass through** — `<img src=x onerror=…>` renders as
+   text, not markup; only tags markdown itself generated reach the HTML;
+2. **link schemes are checked** by the same rule as attributes:
+   `[click](javascript:alert(1))` becomes `#`.
+
+Because of this, no HTML sanitizer is needed — there is nowhere for anything
+dangerous to come from. `markdown()` is enabled by the `markdown` build
+feature (which `rhaix build` turns on when it's used).
+
+### 7.7 Client: errors still get through, toasts and modals are yours
+
+**Responses with a status other than 2xx swap too.** htmx by default only
+swaps `2xx` and silently drops the rest (`config.responseHandling`). In rhaix
+`res.status(...)` is part of an ordinary response, not a signal that
+something's wrong: `422` carries the same page with errors under the fields
+(7.5), `403` explains an expired form, `404`/`500` carry a full page with
+diagnostics. The core overrides this in one line of `rhaix.js`, so
+`validate()` succeeding on the server never stays invisible on screen —
+nothing to do in the project.
+
+**Validation under fields is a component, not a directive.** The framework
+deliberately adds no dedicated `<Field>` tag: `@if={errors.x}` plus a `<span>`
+is already a sufficient primitive, and the wrapper is an ordinary project
+component:
+
+```
+components/Field.rhx
+---
+let name  = props.name;
+let label = props.label;
+let value = props.value ?? "";
+let error = props.error;
+---
+<p class="field">
+  <label>{{ label }}<br>
+    <input name={name} value={value} @class={#{"invalid": error != ()}}>
+  </label>
+  <span class="error" @if={error}>{{ error }}</span>
+</p>
+```
+
+```
+<Field name="email" label="Email" value={form.email} error={errors.email} />
+```
+
+One component instead of three lines of markup per form field. A working
+example with a `<textarea>` variant is `examples/cookbook/components/Field.rhx`.
+
+**Toasts are drawn by `window.__rhaix.toast(message, type)`.** `hx.toast(...)`
+(7.5) stays as it is — the server only sends a `showToast` event via the
+`HX-Trigger` header. The rendering itself lives in a separate, overridable
+function:
+
+```js
+// public/app.js — loaded AFTER rhaix.js, so you can just reassign it:
+window.__rhaix.toast = (message, type) => myToastLib.show(message, type);
+```
+
+The override is read at the moment the event fires, not captured ahead of
+time, so it works no matter when exactly `app.js` does this.
+
+**`<dialog>` opens itself as a real modal.** Write `<dialog>` instead of
+`<div class="modal">` — the core calls `showModal()` for every `<dialog>`,
+wherever it shows up: on the first load, in a fragment, outside the main
+target via `@oob`. Native backdrop, `Esc`, focus trap — with no code in the
+project at all. It closes itself the moment the element is removed from the
+page (an empty response to the same `hx-target` is the usual way to close a
+dialog). A project that genuinely wants a plain, non-modal `<dialog>` just
+adds `data-plain`. A working example is
+`examples/cookbook/partials/OrderCard.rhx`.
+
 ---
 
 ## 8. `<style>` and `<script>` in a component

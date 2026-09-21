@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.2.3"
+version = "1.2.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lab4prog/rhaix"
@@ -28,12 +28,12 @@ rust-version = "1.88"
 # і `cargo publish` без версії відмовляється пакувати крейт. Тримати в унісон
 # із `workspace.package.version` — крейти випускаються лише разом.
 [workspace.dependencies]
-rhaix-db = { path = "crates/rhaix-db", version = "=1.2.3" }
-rhaix-parser = { path = "crates/rhaix-parser", version = "=1.2.3" }
-rhaix-script = { path = "crates/rhaix-script", version = "=1.2.3" }
-rhaix-template = { path = "crates/rhaix-template", version = "=1.2.3" }
-rhaix-server = { path = "crates/rhaix-server", version = "=1.2.3" }
-rhaix-lsp = { path = "crates/rhaix-lsp", version = "=1.2.3" }
+rhaix-db = { path = "crates/rhaix-db", version = "=1.2.4" }
+rhaix-parser = { path = "crates/rhaix-parser", version = "=1.2.4" }
+rhaix-script = { path = "crates/rhaix-script", version = "=1.2.4" }
+rhaix-template = { path = "crates/rhaix-template", version = "=1.2.4" }
+rhaix-server = { path = "crates/rhaix-server", version = "=1.2.4" }
+rhaix-lsp = { path = "crates/rhaix-lsp", version = "=1.2.4" }
 
 anyhow = "1"
 axum = "0.8"

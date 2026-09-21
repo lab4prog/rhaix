@@ -37,18 +37,9 @@ if req.method == "POST" {
 <h1>Нове замовлення</h1>
 
 <form hx-post="/form" hx-target="#main">
-  <p>
-    <label>Клієнт<br><input name="customer" value={form.customer}></label>
-    <span class="error" @if={errors.customer}>{{ errors.customer }}</span>
-  </p>
-  <p>
-    <label>Пошта<br><input name="email" value={form.email}></label>
-    <span class="error" @if={errors.email}>{{ errors.email }}</span>
-  </p>
-  <p>
-    <label>Сума<br><input name="amount" value={form.amount}></label>
-    <span class="error" @if={errors.amount}>{{ errors.amount }}</span>
-  </p>
+  <Field name="customer" label="Клієнт" value={form.customer} error={errors.customer} />
+  <Field name="email" label="Пошта" value={form.email} error={errors.email} />
+  <Field name="amount" label="Сума" value={form.amount} error={errors.amount} />
   <button>Створити</button>
 </form>
 

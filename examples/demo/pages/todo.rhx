@@ -11,7 +11,6 @@ if req.method == "POST" {
     } else {
         db.insert("todos", #{ title: title, done: false });
         hx.toast(`Додано: ${title}`, "success");
-        hx.trigger("todoChanged");
     }
 }
 
@@ -20,14 +19,12 @@ if req.method == "PATCH" {
     let todo = db.get("todos", id);
     if todo != () {
         db.update("todos", id, #{ done: !todo.done });
-        hx.trigger("todoChanged");
     }
 }
 
 if req.method == "DELETE" {
     db.delete("todos", req.query_int("id"));
     hx.toast("Видалено", "info");
-    hx.trigger("todoChanged");
 }
 
 let todos = db.find("todos", #{}, #{ sort: "done asc, id asc" });
@@ -49,16 +46,12 @@ let todos = db.find("todos", #{}, #{ sort: "done asc, id asc" });
 
     <TodoList todos={todos} />
 
-    {{! фрагмент підтягується сам: спершу на load, далі на кожну подію todoChanged }}
-    <div hx-get="/components/stats" hx-trigger="load"></div>
-  </Ui.Card>
-
-  {{! Після зміни списку той самий блок статистики оновлюється поза основною
-      ціллю — одна відповідь, два оновлені місця (SYNTAX 4.7). }}
-  <div @if={req.method != "GET"} @oob={"#stats"} class="stats"
-       hx-get="/components/stats" hx-trigger="todoChanged from:body">
+    {{! `#todo-app` цілком заміняється (`hx-swap="outerHTML"`) при кожній
+        мутації, тому статистика всередині нього лишається свіжою сама собою —
+        без окремого запиту й без @oob: рахувати нема що складніше, ніж
+        перерендерити компонент разом із рештою картки. }}
     <Stats />
-  </div>
+  </Ui.Card>
 
   <p class="hint">
     Дані — у SQLite (<code>data/demo.db</code>), схема — у

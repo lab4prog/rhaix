@@ -396,6 +396,39 @@ Validation rules in full: `required email url int number bool date min:N max:N
 between:a,b len:N same:field different:field in:a,b not_in:a,b starts:x ends:x
 alpha alnum`.
 
+## Client: errors swap, toasts and modals are yours
+
+htmx only swaps `2xx` responses by default and silently drops the rest. In
+rhaix `res.status(...)` is an ordinary response (422 with errors, 403 with an
+explanation, 404/500 with diagnostics), so the core overrides
+`htmx.config.responseHandling` to swap everything — nothing to do in the
+project.
+
+Validation-under-fields is a component, not a built-in tag:
+
+```rhai
+components/Field.rhx
+---
+let name = props.name; let label = props.label;
+let value = props.value ?? ""; let error = props.error;
+---
+<p class="field">
+  <label>{{ label }}<br><input name={name} value={value} @class={#{"invalid": error != ()}}></label>
+  <span class="error" @if={error}>{{ error }}</span>
+</p>
+```
+```
+<Field name="email" label="Email" value={form.email} error={errors.email} />
+```
+
+Toasts: rendering lives in `window.__rhaix.toast(message, type)`, read at
+event time — override it in `public/app.js` (loaded after `rhaix.js`) to draw
+your own. `hx.toast(...)` on the server is unchanged.
+
+`<dialog>` opens itself as a real modal (native backdrop, Esc, focus trap) —
+the core calls `showModal()` for every `<dialog>`, wherever it appears
+(first load, fragment, `@oob`). Add `data-plain` to opt a specific dialog out.
+
 ## Shared functions
 
 ```rhai
