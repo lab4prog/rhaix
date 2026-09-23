@@ -1,0 +1,11 @@
+---
+// Не більше двох заходів за хвилину з однієї адреси.
+let key = `limited:${req.ip}`;
+let blocked = !state.allow(key, 2, 60);
+if blocked {
+    res.status(429);
+    res.header("Retry-After", `${state.retry_after(key)}`);
+}
+---
+<p>ip={{ req.ip }}</p>
+<p @if={blocked}>забагато спроб</p>

@@ -47,8 +47,10 @@ impl Default for SessionOptions {
 #[derive(Debug, Default)]
 struct Inner {
     data: Map,
-    /// Чи змінювали сесію в цьому запиті — тоді й тільки тоді ставимо cookie.
+    /// Чи змінювали сесію в цьому запиті — тоді ставимо cookie.
     dirty: bool,
+    /// Коли спливає cookie, з яким прийшов запит (0 — cookie не було).
+    expires: i64,
 }
 
 /// `session` у скрипті.
@@ -98,7 +100,11 @@ impl Session {
             .and_then(|v| v.clone().try_cast::<Map>())
             .unwrap_or_default();
 
-        Self(Arc::new(Mutex::new(Inner { data, dirty: false })))
+        Self(Arc::new(Mutex::new(Inner {
+            data,
+            dirty: false,
+            expires,
+        })))
     }
 
     fn with<T>(&self, f: impl FnOnce(&mut Inner) -> T) -> T {
@@ -140,9 +146,23 @@ impl Session {
         self.with(|inner| inner.data.is_empty())
     }
 
-    /// Готовий рядок `Set-Cookie`, або `None`, якщо сесію не чіпали.
+    /// Чи час перевидати незмінену сесію, щоб вона не спливла посеред роботи.
+    ///
+    /// Строк рахується від останньої видачі cookie, а видається воно лише тоді,
+    /// коли сесію змінюють. Без цього користувач, який щодня лише читає
+    /// сторінки, вилітав би рівно через `max_age` після входу. Перевидаємо,
+    /// коли минула половина строку: не на кожен запит (зайвий `Set-Cookie` і
+    /// підпис), але й не пізно.
+    fn needs_renewal(&self, options: &SessionOptions) -> bool {
+        self.with(|inner| {
+            !inner.data.is_empty() && inner.expires - now_secs() < options.max_age / 2
+        })
+    }
+
+    /// Готовий рядок `Set-Cookie`, або `None`, якщо сесію не чіпали й
+    /// продовжувати її ще рано.
     pub fn cookie(&self, secret: &[u8], options: &SessionOptions) -> Option<String> {
-        if !self.is_dirty() {
+        if !self.is_dirty() && !self.needs_renewal(options) {
             return None;
         }
         let flags = format!(
@@ -367,6 +387,64 @@ mod tests {
         let signature = sign(secret().bytes(), payload.as_bytes());
         let restored = Session::restore(Some(&format!("{payload}.{signature}")), secret().bytes());
         assert!(restored.is_empty());
+    }
+
+    /// Cookie зі строком, що спливає через `left` секунд.
+    fn cookie_expiring_in(left: i64, data: Map) -> String {
+        let mut envelope = Map::new();
+        envelope.insert("e".into(), Dynamic::from(now_secs() + left));
+        envelope.insert("d".into(), Dynamic::from_map(data));
+        let payload = base64url_encode(
+            json::from_dynamic(&Dynamic::from_map(envelope))
+                .to_string()
+                .as_bytes(),
+        );
+        let signature = sign(secret().bytes(), payload.as_bytes());
+        format!("{payload}.{signature}")
+    }
+
+    fn user() -> Map {
+        let mut data = Map::new();
+        data.insert("user".into(), Dynamic::from("оля".to_owned()));
+        data
+    }
+
+    #[test]
+    fn an_active_session_is_renewed_after_half_its_life() {
+        let options = SessionOptions::default();
+        // Лишилось менше половини — перевидаємо на повний строк, хоч нічого й
+        // не змінювали.
+        let raw = cookie_expiring_in(options.max_age / 2 - 60, user());
+        let session = Session::restore(Some(&raw), secret().bytes());
+        let header = session
+            .cookie(secret().bytes(), &options)
+            .expect("стара сесія має продовжитись");
+        assert!(
+            header.contains(&format!("Max-Age={}", options.max_age)),
+            "{header}"
+        );
+        let renewed = Session::restore(Some(&value_of(&header)), secret().bytes());
+        assert_eq!(renewed.get("user").into_string().unwrap(), "оля");
+    }
+
+    #[test]
+    fn a_fresh_session_is_not_reissued_on_every_request() {
+        let options = SessionOptions::default();
+        let raw = cookie_expiring_in(options.max_age - 60, user());
+        let session = Session::restore(Some(&raw), secret().bytes());
+        assert!(session.cookie(secret().bytes(), &options).is_none());
+    }
+
+    #[test]
+    fn an_empty_session_is_never_renewed() {
+        let options = SessionOptions::default();
+        let raw = cookie_expiring_in(60, Map::new());
+        let session = Session::restore(Some(&raw), secret().bytes());
+        assert!(session.cookie(secret().bytes(), &options).is_none());
+        // І без cookie взагалі — теж нічого.
+        assert!(Session::empty()
+            .cookie(secret().bytes(), &options)
+            .is_none());
     }
 
     #[test]

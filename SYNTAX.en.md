@@ -714,7 +714,7 @@ CORS is not provided. If the API is called cross-origin, set the headers with
 | `iter` | inside `@for` | iteration counters |
 | `page` | everywhere | shared page map: `page.title`, `page.layout` |
 | `req` `res` `hx` | everywhere | request / response / HTMX |
-| `state` | everywhere | process-wide store: `state.get/set/has/remove` |
+| `state` | everywhere | process-wide store: `state.get/set/has/remove`; rate limiting: `state.allow/retry_after/reset` (7.2) |
 | `db` | everywhere | database: `query/one/exec/tx` and `find/get/count/insert/update/delete` |
 | `session` | everywhere | signed cookie: `get/set/has/remove/clear/all`, `session.user` (7.2) |
 | `csrf` | everywhere | `csrf.token` (7.2) |
@@ -797,8 +797,16 @@ worth knowing up front:
 - `session.clear()` expires the cookie **in that browser**. An already-issued
   cookie cannot be revoked on the server — you can only wait for it to expire or
   change the secret.
-- `Set-Cookie` appears only when the session was actually modified. A page that
+- `Set-Cookie` appears when the session was actually modified. A page that
   writes nothing carries no cookie at all.
+- **A session stays alive while it is used.** Its lifetime (`session_days`)
+  counts from the last time the cookie was issued. Once half of it has passed,
+  any request reissues the cookie for the full lifetime — even if nothing in the
+  session changed. An active user is never logged out mid-work; an inactive one
+  is, `session_days` after their last visit.
+- A response carrying `Set-Cookie` gets `Cache-Control: private, no-store` unless
+  the script set caching itself: a shared cache (CDN, proxy) must not hand one
+  visitor's session to the next.
 
 **CSRF works by itself.** A form that changes data gets a hidden field added:
 
@@ -853,6 +861,46 @@ The signing key is looked up in this order: `RHAIX_SECRET` → `[app] secret` �
 a `.rhaix-secret` file (created by `rhaix dev`, never committed) → a random one
 for the lifetime of the process. The last option works, but after a restart every
 session becomes invalid — in production that is reported as a warning in the log.
+
+**Rate limiting — `state.allow`.** Password guessing, form spam, an overly
+chatty API client — all of it is "no more than N times per T seconds":
+
+```rhai
+// pages/login.rhx
+let attempts = `login:${req.ip}:${username.to_lower()}`;
+if !state.allow(attempts, 5, 300) {          // 5 attempts per 5 minutes
+    error = `Too many attempts. Try again in ${state.retry_after(attempts)} s`;
+    res.status(429);
+} else if verify_password(password, user.password) {
+    state.reset(attempts);                   // a successful login starts over
+    // …
+}
+```
+
+| Call | What it does |
+|---|---|
+| `state.allow(key, max, seconds)` | counts one attempt; `true` if it fits the limit |
+| `state.retry_after(key)` | seconds until the window resets — for the message and `Retry-After` |
+| `state.reset(key)` | forget the attempts under this key |
+
+The key is any string, so a limit can hang on an address, a user, an API token
+or a combination. For a login the key must include **the user name too**:
+otherwise an attacker logs into their own account, `state.reset` clears the
+counter for their address, and guessing someone else's password carries on.
+Counters live in process memory: two copies behind a load balancer count
+separately, and a restart clears them — enough to stop password guessing.
+
+**`req.ip`** is the client address. Behind your own reverse proxy (nginx,
+Caddy) it is always the proxy's address, so turn this on there:
+
+```toml
+[server]
+trust_proxy = true   # req.ip comes from the last X-Forwarded-For entry
+```
+
+Without the flag `X-Forwarded-For` is ignored entirely: anyone can send it, and
+a limit would be one header away from useless. Turn it on **only** when the app
+cannot be reached except through your proxy.
 
 ### 7.3 `http` — calling other services
 

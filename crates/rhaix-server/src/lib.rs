@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{RawPathParams, State};
+use axum::extract::{ConnectInfo, RawPathParams, State};
 use axum::http::{header, HeaderName, HeaderValue, Request as HttpRequest, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -97,6 +97,9 @@ pub struct AppConfig {
     pub mail: MailConfig,
     /// Мова за замовчуванням (`[app] locale`).
     pub locale: String,
+    /// `[server] trust_proxy`: застосунок стоїть за своїм зворотним проксі
+    /// (nginx, Caddy), і `req.ip` береться з `X-Forwarded-For`.
+    pub trust_proxy: bool,
 }
 
 impl Default for AppConfig {
@@ -109,6 +112,7 @@ impl Default for AppConfig {
             http_timeout: Duration::from_secs(10),
             mail: MailConfig::default(),
             locale: "uk".to_owned(),
+            trust_proxy: false,
         }
     }
 }
@@ -143,6 +147,9 @@ struct ConfigFile {
 #[derive(Debug, Default, serde::Deserialize)]
 struct ServerSection {
     port: Option<u16>,
+    /// Довіряти `X-Forwarded-For`. Лише за власним проксі: без нього цей
+    /// заголовок підставляє будь-хто, і `req.ip` став би що завгодно.
+    trust_proxy: Option<bool>,
 }
 
 /// `[app]` у `rhaix.toml`.
@@ -227,6 +234,13 @@ fn app_config(
     app
 }
 
+fn trust_proxy(file: &ConfigFile) -> bool {
+    file.server
+        .as_ref()
+        .and_then(|server| server.trust_proxy)
+        .unwrap_or(false)
+}
+
 /// Знайти ключ підпису cookie.
 ///
 /// Порядок такий: `RHAIX_SECRET` → `[app] secret` → файл `.rhaix-secret` у
@@ -299,13 +313,14 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
-        let app = app_config(
+        let mut app = app_config(
             file.app.as_ref(),
             file.mail.as_ref(),
             Path::new(""),
             false,
             false,
         );
+        app.trust_proxy = trust_proxy(&file);
         Ok(Self {
             root: PathBuf::new(),
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
@@ -362,13 +377,14 @@ impl Config {
             .or_else(|| file.server.as_ref().and_then(|s| s.port))
             .unwrap_or(3000);
 
-        let app = app_config(
+        let mut app = app_config(
             file.app.as_ref(),
             file.mail.as_ref(),
             &root,
             dev,
             dev && persist_secret,
         );
+        app.trust_proxy = trust_proxy(&file);
         Ok(Self {
             root,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
@@ -820,10 +836,15 @@ async fn serve_page(
     file: PathBuf,
     kind: RouteKind,
 ) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip());
     let mut data = match collect_request(params, request).await {
         Ok(data) => data,
         Err(err) => return err.respond(kind),
     };
+    data.ip = client_ip(peer, &data.headers, state.config.app.trust_proxy);
     // Куди `upload.save(...)` пише файли — відносно кореня проєкту, як і база.
     data.upload_root = state.config.root.clone();
     let hx_request = data.hx_request;
@@ -847,6 +868,31 @@ async fn serve_page(
     };
 
     build_response(body, response_state, hx_request, kind)
+}
+
+/// IP-адреса клієнта для `req.ip`.
+///
+/// За замовчуванням — адреса TCP-з'єднання. За власним проксі вона завжди
+/// адреса проксі, тож із `trust_proxy` беремо **останній** запис
+/// `X-Forwarded-For`: його дописав наш проксі, а все, що лівіше, прийшло від
+/// клієнта і може бути вигадане. Без `trust_proxy` заголовок ігнорується
+/// повністю — інакше ліміт спроб обходився б одним рядком у запиті.
+fn client_ip(
+    peer: Option<std::net::IpAddr>,
+    headers: &std::collections::BTreeMap<String, String>,
+    trust_proxy: bool,
+) -> String {
+    if trust_proxy {
+        let forwarded = headers
+            .get("x-forwarded-for")
+            .and_then(|raw| raw.rsplit(',').map(str::trim).find(|ip| !ip.is_empty()))
+            .or_else(|| headers.get("x-real-ip").map(|ip| ip.trim()))
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok());
+        if let Some(ip) = forwarded {
+            return ip.to_string();
+        }
+    }
+    peer.map(|ip| ip.to_string()).unwrap_or_default()
 }
 
 /// Зібрати дані запиту у вигляді, зрозумілому скрипту.
@@ -936,6 +982,8 @@ async fn collect_request(
         cookies,
         body: body_text,
         upload_root: std::path::PathBuf::new(),
+        // Ставить `serve_page`: адреса з'єднання й довіра до проксі — не тіло запиту.
+        ip: String::new(),
     })
 }
 
@@ -985,6 +1033,15 @@ fn build_response(
             if let Ok(value) = HeaderValue::from_str(cookie) {
                 headers.append(header::SET_COOKIE, value);
             }
+        }
+        // Відповідь із cookie сесії — особиста. Спільний кеш (CDN, проксі), що
+        // збереже її, роздасть чужу сесію всім наступним відвідувачам. Явне
+        // рішення скрипта (`res.header("Cache-Control", …)`) лишаємо в силі.
+        if !state.cookies.is_empty() && !headers.contains_key(header::CACHE_CONTROL) {
+            headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            );
         }
         if let Some(trigger) = rhaix_script::triggers_header(&state.triggers) {
             insert_header(headers, "HX-Trigger", &trigger);
@@ -1868,17 +1925,46 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     }
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    // `ConnectInfo` — щоб `req.ip` знав адресу з'єднання.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_ip_ignores_forwarded_headers_unless_told_to_trust_a_proxy() {
+        let peer = Some("10.0.0.5".parse().unwrap());
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert(
+            "x-forwarded-for".to_owned(),
+            "6.6.6.6, 203.0.113.7".to_owned(),
+        );
+
+        // Без проксі заголовок підробляє будь-хто — не віримо.
+        assert_eq!(client_ip(peer, &headers, false), "10.0.0.5");
+        // За проксі — останній запис: його дописав наш проксі, а `6.6.6.6`
+        // прийшло від клієнта.
+        assert_eq!(client_ip(peer, &headers, true), "203.0.113.7");
+
+        // Сміття в заголовку — назад до адреси з'єднання.
+        headers.insert("x-forwarded-for".to_owned(), "не адреса".to_owned());
+        assert_eq!(client_ip(peer, &headers, true), "10.0.0.5");
+
+        headers.clear();
+        headers.insert("x-real-ip".to_owned(), "198.51.100.1".to_owned());
+        assert_eq!(client_ip(peer, &headers, true), "198.51.100.1");
+        assert_eq!(client_ip(None, &headers, false), "");
+    }
 
     #[test]
     fn catalog_loads_every_locale_file() {

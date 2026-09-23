@@ -1,5 +1,49 @@
 # Зміни
 
+## 1.3.0 — 2026-09-23
+
+### Додано
+
+- **Обмеження спроб: `state.allow(key, max, seconds)`.** Не більше `max`
+  спроб за `seconds` секунд під будь-яким ключем — адреса, користувач, токен
+  API. `state.retry_after(key)` каже, скільки чекати (для тексту й
+  `Retry-After`), `state.reset(key)` забуває спроби. Лічильники процесні, з
+  межею на кількість ключів, щоб перебір адрес не роздув пам'ять. Вхід у demo
+  тепер обмежено: 5 спроб за 5 хвилин на пару «адреса + ім'я» (саме пару —
+  інакше вхід у власний акаунт обнуляв би спроби на чужий).
+- **`req.ip`** — адреса клієнта. За власним проксі — `[server] trust_proxy =
+  true`, тоді адреса береться з останнього запису `X-Forwarded-For`; без
+  прапорця заголовок ігнорується, бо його підставляє будь-хто.
+
+### Виправлено
+
+- **Активного користувача розлогінювало через `session_days` після входу.**
+  Cookie видавався лише тоді, коли сесію змінювали, і строк рахувався від
+  того моменту. Тепер, щойно минула половина строку, будь-який запит
+  перевидає cookie на повний строк.
+- **Відповідь із cookie сесії могла осісти в спільному кеші.** CDN чи проксі,
+  що кешує HTML, роздав би `Set-Cookie` з чужою сесією наступним
+  відвідувачам. Тепер така відповідь отримує `Cache-Control: private,
+  no-store`, якщо скрипт сам не задав кешування.
+
+### Тести
+
+`session.rs`: `an_active_session_is_renewed_after_half_its_life`,
+`a_fresh_session_is_not_reissued_on_every_request`,
+`an_empty_session_is_never_renewed`; `web.rs`:
+`rate_limit_allows_up_to_max_then_waits_for_the_window`,
+`rate_limit_forgets_expired_keys_before_refusing_new_ones`,
+`rate_limit_is_reachable_from_scripts`; `lib.rs`:
+`client_ip_ignores_forwarded_headers_unless_told_to_trust_a_proxy`;
+`pages.rs`: `attempts_are_limited_per_client_address`,
+`a_response_that_sets_a_session_cookie_is_never_shared_by_caches`.
+
+Перевірено живим браузером на demo: п'ять хибних паролів — 422, шостий — 429
+з «Спробуйте за 296 с», правильний пароль під час блокування — теж 429, інше
+ім'я з тієї самої адреси проходить.
+
+Тестів у воркспейсі 354, clippy з -D warnings і fmt чисті.
+
 ## 1.2.5 — 2026-09-23
 
 **Виправлення до 1.2.4.** Там про «тости показуються двічі» написано «не

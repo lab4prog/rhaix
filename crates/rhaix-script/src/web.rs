@@ -5,11 +5,13 @@
 //! перетворює на HTTP-відповідь. Завдяки цьому логіку можна виконати й
 //! перевірити без жодного сокета.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rhai::{Array, Dynamic, Engine, Map};
+
+use crate::datetime::now_secs;
 
 // ------------------------------------------------------------------- запит
 
@@ -48,6 +50,10 @@ pub struct RequestData {
     pub hx_request: bool,
     /// Запит від `hx-boost` (звичайне посилання чи форма під `<body hx-boost>`).
     pub is_boosted: bool,
+    /// IP-адреса клієнта. За проксі — з `X-Forwarded-For`, але лише якщо
+    /// `[server] trust_proxy = true`: інакше цей заголовок підробляє будь-хто.
+    /// Порожній рядок, якщо адреса невідома.
+    pub ip: String,
     /// Корінь, відносно якого `upload.save(...)` пише файли. Ставить сервер.
     pub upload_root: PathBuf,
 }
@@ -266,6 +272,7 @@ pub fn register_web(engine: &mut Engine) {
         .register_get("body", |req: &mut Request| req.0.body.clone())
         .register_get("is_htmx", |req: &mut Request| req.0.is_htmx)
         .register_get("is_boosted", |req: &mut Request| req.0.is_boosted)
+        .register_get("ip", |req: &mut Request| req.0.ip.clone())
         .register_fn("param", |req: &mut Request, name: &str| {
             lookup(&req.0.params, name)
         })
@@ -441,43 +448,112 @@ fn to_map(values: &BTreeMap<String, String>) -> Map {
 /// демо-форма не має де тримати дані, тому зроблено раніше. Дані живуть до
 /// перезапуску процесу і не переживають рестарт — для чогось серйознішого
 /// буде `db`.
+///
+/// Тут же — лічильники спроб (`state.allow(...)`): обмеження частоти теж
+/// процесний стан, і йому не місце в базі.
 #[derive(Debug, Default, Clone)]
-pub struct State(Arc<Mutex<Map>>);
+pub struct State(Arc<StateInner>);
+
+#[derive(Debug, Default)]
+struct StateInner {
+    values: Mutex<Map>,
+    limits: Mutex<HashMap<String, Window>>,
+}
 
 impl State {
     pub fn new() -> Self {
         Self::default()
     }
+
+    fn values(&self) -> std::sync::MutexGuard<'_, Map> {
+        self.0.values.lock().expect("сховище не отруєне")
+    }
+
+    fn limits(&self) -> std::sync::MutexGuard<'_, HashMap<String, Window>> {
+        self.0.limits.lock().expect("лічильники не отруєні")
+    }
+}
+
+/// Вікно лічильника: скільки спроб було і коли рахунок почнеться заново.
+#[derive(Debug, Clone, Copy)]
+struct Window {
+    count: i64,
+    resets_at: i64,
+}
+
+/// Скільки різних ключів тримаємо, перш ніж відмовляти новим.
+///
+/// Без межі той, хто перебирає ключі (кожен запит — нова IP-адреса),
+/// роздув би пам'ять процесу. Прострочені вікна прибираються раніше; сюди
+/// доходить лише справжня злива, і тоді безпечніше відмовити новому ключу,
+/// ніж пустити його без обліку.
+const MAX_LIMIT_KEYS: usize = 100_000;
+
+/// Одна спроба під ключем `key`: не більше `max` за `seconds` секунд.
+/// Фіксоване вікно — просто, передбачувано й достатньо для входу чи API.
+fn hit(limits: &mut HashMap<String, Window>, key: &str, max: i64, seconds: i64, now: i64) -> bool {
+    let seconds = seconds.max(1);
+    if !limits.contains_key(key) && limits.len() >= MAX_LIMIT_KEYS / 2 {
+        limits.retain(|_, window| window.resets_at > now);
+        if limits.len() >= MAX_LIMIT_KEYS {
+            tracing::warn!("state.allow: {MAX_LIMIT_KEYS} активних ключів — новий відхилено");
+            return false;
+        }
+    }
+    let window = limits.entry(key.to_owned()).or_insert(Window {
+        count: 0,
+        resets_at: now + seconds,
+    });
+    if window.resets_at <= now {
+        *window = Window {
+            count: 0,
+            resets_at: now + seconds,
+        };
+    }
+    // Відхилені спроби теж рахуються, але вікна не подовжують: хто стукає
+    // далі, чекає рівно до кінця поточного вікна, не довше.
+    window.count = window.count.saturating_add(1);
+    window.count <= max
+}
+
+/// Скільки секунд лишилось до нового вікна (0 — ключ не обмежений).
+fn retry_after(limits: &HashMap<String, Window>, key: &str, now: i64) -> i64 {
+    limits
+        .get(key)
+        .map(|window| (window.resets_at - now).max(0))
+        .unwrap_or(0)
 }
 
 fn register_state(engine: &mut Engine) {
     engine
         .register_type_with_name::<State>("State")
         .register_fn("get", |state: &mut State, key: &str| {
-            state
-                .0
-                .lock()
-                .expect("сховище не отруєне")
-                .get(key)
-                .cloned()
-                .unwrap_or(Dynamic::UNIT)
+            state.values().get(key).cloned().unwrap_or(Dynamic::UNIT)
         })
         .register_fn("set", |state: &mut State, key: &str, value: Dynamic| {
-            state
-                .0
-                .lock()
-                .expect("сховище не отруєне")
-                .insert(key.into(), value);
+            state.values().insert(key.into(), value);
         })
         .register_fn("has", |state: &mut State, key: &str| {
-            state
-                .0
-                .lock()
-                .expect("сховище не отруєне")
-                .contains_key(key)
+            state.values().contains_key(key)
         })
         .register_fn("remove", |state: &mut State, key: &str| {
-            state.0.lock().expect("сховище не отруєне").remove(key);
+            state.values().remove(key);
+        })
+        // `state.allow("login:" + req.ip, 5, 60)` — чи вкладається ця спроба в
+        // ліміт: не більше 5 за 60 секунд. Кожен виклик — одна спроба.
+        .register_fn(
+            "allow",
+            |state: &mut State, key: &str, max: i64, seconds: i64| {
+                hit(&mut state.limits(), key, max, seconds, now_secs())
+            },
+        )
+        // Скільки чекати, секунд — для повідомлення й `Retry-After`.
+        .register_fn("retry_after", |state: &mut State, key: &str| {
+            retry_after(&state.limits(), key, now_secs())
+        })
+        // Забути спроби: після успішного входу рахунок починається заново.
+        .register_fn("reset", |state: &mut State, key: &str| {
+            state.limits().remove(key);
         });
 }
 
@@ -624,6 +700,60 @@ mod tests {
         assert!(up.resolve("../../secret").is_err());
         assert!(up.resolve("public/../../x").is_err());
         assert!(up.resolve("").is_err());
+    }
+
+    #[test]
+    fn rate_limit_allows_up_to_max_then_waits_for_the_window() {
+        let mut limits = HashMap::new();
+        for _ in 0..3 {
+            assert!(hit(&mut limits, "login:1.2.3.4", 3, 60, 1000));
+        }
+        assert!(!hit(&mut limits, "login:1.2.3.4", 3, 60, 1010));
+        // Відмова не подовжує вікно: чекати до 1060, а не до 1070.
+        assert_eq!(retry_after(&limits, "login:1.2.3.4", 1010), 50);
+        // Інший ключ живе окремо.
+        assert!(hit(&mut limits, "login:5.6.7.8", 3, 60, 1010));
+        // Нове вікно — нові спроби.
+        assert!(hit(&mut limits, "login:1.2.3.4", 3, 60, 1060));
+        assert_eq!(retry_after(&limits, "невідомий", 1060), 0);
+    }
+
+    #[test]
+    fn rate_limit_forgets_expired_keys_before_refusing_new_ones() {
+        let mut limits = HashMap::new();
+        for index in 0..MAX_LIMIT_KEYS {
+            limits.insert(
+                format!("k{index}"),
+                Window {
+                    count: 1,
+                    resets_at: 100,
+                },
+            );
+        }
+        // Усі вікна прострочені — місце звільняється, новий ключ проходить.
+        assert!(hit(&mut limits, "новий", 1, 60, 200));
+        assert_eq!(limits.len(), 1);
+    }
+
+    #[test]
+    fn rate_limit_is_reachable_from_scripts() {
+        let engine = engine(Limits::default());
+        let mut scope = Scope::new();
+        scope.push("state", State::new());
+        let value = engine
+            .eval_with_scope::<Array>(
+                &mut scope,
+                r#"let k = "login:x";
+                   let a = state.allow(k, 1, 60);
+                   let b = state.allow(k, 1, 60);
+                   let wait = state.retry_after(k);
+                   state.reset(k);
+                   [a, b, wait > 0, state.allow(k, 1, 60), state.has(k)]"#,
+            )
+            .expect("скрипт");
+        let flags: Vec<bool> = value.into_iter().map(|v| v.as_bool().unwrap()).collect();
+        // Лічильники не змішуються з `state.get/has`.
+        assert_eq!(flags, vec![true, false, true, true, false]);
     }
 
     #[cfg(windows)]

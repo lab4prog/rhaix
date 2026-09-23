@@ -5,8 +5,15 @@ let error = "";
 if req.method == "POST" {
     let username = req.form("username").trim();
     let password = req.form("password");
+    // Перебір паролів: не більше 5 спроб за 5 хвилин на пару «адреса + ім'я».
+    // Успішний вхід рахунок скидає (`state.reset` нижче) — саме тому в ключі
+    // є ім'я: вхід у власний акаунт не має обнуляти спроби на чужий.
+    let attempts = `login:${req.ip}:${username.to_lower()}`;
 
-    if is_blank(username) || is_blank(password) {
+    if !state.allow(attempts, 5, 300) {
+        error = `Забагато спроб. Спробуйте за ${state.retry_after(attempts)} с`;
+        res.status(429);
+    } else if is_blank(username) || is_blank(password) {
         error = "Введіть ім'я та пароль";
         res.status(422);
     } else {
@@ -17,10 +24,12 @@ if req.method == "POST" {
         if found.is_empty() {
             db.insert("users", #{ username: username, password: hash_password(password) });
             session.set("user", username);
+            state.reset(attempts);
             hx.toast(`Реєстрація успішна, ${username}!`, "success");
             res.redirect("/admin");
         } else if verify_password(password, found[0].password) {
             session.set("user", username);
+            state.reset(attempts);
             hx.toast(`Вітаємо, ${username}!`, "success");
             res.redirect("/admin");
         } else {

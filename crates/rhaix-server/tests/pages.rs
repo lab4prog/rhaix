@@ -292,6 +292,82 @@ async fn a_toast_on_a_plain_page_load_travels_in_the_body() {
     assert!(trigger.contains("showToast"), "{trigger}");
 }
 
+/// Запит «з мережі»: з адресою з'єднання, як це робить справжній сервер.
+fn from_ip(path: &str, ip: &str, forwarded: Option<&str>) -> Request<Body> {
+    let peer: std::net::SocketAddr = format!("{ip}:50000").parse().expect("адреса");
+    let mut builder = Request::builder()
+        .uri(path)
+        .extension(axum::extract::ConnectInfo(peer));
+    if let Some(value) = forwarded {
+        builder = builder.header("x-forwarded-for", value);
+    }
+    builder.body(Body::empty()).expect("запит")
+}
+
+async fn send(router: &axum::Router, request: Request<Body>) -> (StatusCode, String, String) {
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("запит має оброблятись");
+    let status = response.status();
+    let retry = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("тіло");
+    (status, retry, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn attempts_are_limited_per_client_address() {
+    // Один застосунок на весь тест: лічильники живуть у процесі.
+    let router = app();
+
+    for _ in 0..2 {
+        let (status, _, body) = send(&router, from_ip("/limited", "192.0.2.1", None)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("ip=192.0.2.1"), "{body}");
+        assert!(!body.contains("забагато"), "{body}");
+    }
+    let (status, retry, body) = send(&router, from_ip("/limited", "192.0.2.1", None)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert!(body.contains("забагато спроб"), "{body}");
+    let seconds: i64 = retry.parse().expect("Retry-After — число секунд");
+    assert!((1..=60).contains(&seconds), "{retry}");
+
+    // Сусідня адреса рахується окремо.
+    let (status, _, _) = send(&router, from_ip("/limited", "192.0.2.2", None)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Підставлений X-Forwarded-For без `trust_proxy` нічого не дає: це та
+    // сама адреса з'єднання, і вона вже вичерпала ліміт.
+    let (status, _, body) = send(
+        &router,
+        from_ip("/limited", "192.0.2.1", Some("203.0.113.9")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert!(body.contains("ip=192.0.2.1"), "{body}");
+}
+
+#[tokio::test]
+async fn a_response_that_sets_a_session_cookie_is_never_shared_by_caches() {
+    // Звичайний (не htmx) захід на сторінку з формою видає cookie з токеном.
+    let (_, headers, _) = call(get("/form")).await;
+    assert!(header(&headers, "set-cookie").is_some(), "{headers:?}");
+    assert_eq!(header(&headers, "cache-control"), Some("private, no-store"));
+
+    // Сторінка без сесії кешування не забороняє.
+    let (_, headers, _) = call(get("/")).await;
+    assert!(header(&headers, "set-cookie").is_none(), "{headers:?}");
+    assert_eq!(header(&headers, "cache-control"), None);
+}
+
 #[tokio::test]
 async fn a_redirect_from_a_boosted_form_still_uses_hx_redirect() {
     // htmx не йде за 303 сам — і для boosted-форми теж.

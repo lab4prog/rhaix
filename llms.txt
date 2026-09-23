@@ -209,14 +209,14 @@ menu, a header counter) re-renders itself. Two consequences:
 
 | Name | What |
 |---|---|
-| `req` | `req.method`, `req.path`, `req.is_htmx`, `req.param/query/form/header/cookie`, typed `query_int/query_float/query_bool` and `form_int/form_float/form_bool`, `req.all_query()`, `req.all_form()`, `req.body` |
+| `req` | `req.method`, `req.path`, `req.ip`, `req.is_htmx`, `req.param/query/form/header/cookie`, typed `query_int/query_float/query_bool` and `form_int/form_float/form_bool`, `req.all_query()`, `req.all_form()`, `req.body` |
 | `res` | `res.status(422)`, `res.header(k,v)`, `res.cookie(k,v)`, `res.redirect("/login")` |
 | `hx` | `hx.toast(msg, "success")`, `hx.trigger(name[, detail])`, `hx.redirect`, `hx.refresh`, `hx.push_url`, `hx.retarget`, `hx.reswap`, `hx.location` |
 | `db` | see below |
 | `session` | `session.set/get/has/remove/clear/all`, `session.user` |
 | `csrf` | `csrf.token` |
 | `http` | `http.get/post/put/patch/delete` |
-| `state` | process-wide key/value: `state.get/set/has/remove` |
+| `state` | process-wide key/value: `state.get/set/has/remove`; rate limit: `state.allow(key, max, seconds)`, `state.retry_after(key)`, `state.reset(key)` |
 | `page` | shared map for the page and its layout |
 | `log` | `log.info/warn/error` |
 | `props` `slots` | inside components |
@@ -266,6 +266,7 @@ Config, `rhaix.toml`:
 ```toml
 [server]
 port = 3000
+# trust_proxy = true      # only behind your own proxy: req.ip from X-Forwarded-For
 
 [db]
 driver = "sqlite"                 # sqlite | postgres
@@ -313,6 +314,25 @@ A session is a **signed cookie**, not server state: the app stays one binary you
 can run twice behind a load balancer. The client can read the contents (base64,
 not encryption) but cannot change them. Keep it under ~4 KB; put ids in the
 session and data in the database. A session cannot be revoked server-side.
+It slides: once half of `session_days` has passed, any request reissues the
+cookie for the full lifetime. Responses with `Set-Cookie` get
+`Cache-Control: private, no-store` unless the script set caching.
+
+Rate limiting (password guessing, form spam, API clients):
+
+```rhai
+let attempts = `login:${req.ip}:${username.to_lower()}`;   // include the user name
+if !state.allow(attempts, 5, 300) {                      // 5 per 5 minutes
+    res.status(429);
+    error = `Try again in ${state.retry_after(attempts)} s`;
+} else if verify_password(password, user.password) {
+    state.reset(attempts);
+}
+```
+
+Counters are per process (not shared between copies, cleared on restart).
+`req.ip` is the TCP peer; behind your own proxy set `[server] trust_proxy = true`
+to read the last `X-Forwarded-For` entry — never otherwise, it is forgeable.
 
 **CSRF needs nothing from you.** A form that changes data gets a hidden field; a
 non-form element with `hx-post`/`hx-put`/`hx-patch`/`hx-delete` gets an
