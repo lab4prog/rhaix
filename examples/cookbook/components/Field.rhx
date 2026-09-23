@@ -6,7 +6,7 @@ let name  = props.name;
 let label = props.label;
 let value = props.value ?? "";
 let error = props.error;
-// "text" за замовчуванням; для textarea — @multiline={true}.
+// "text" за замовчуванням; для textarea — multiline={true}.
 let kind = props.type ?? "text";
 let multiline = props.multiline ?? false;
 ---

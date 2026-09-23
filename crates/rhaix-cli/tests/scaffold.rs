@@ -124,3 +124,56 @@ async fn a_fresh_project_updates_the_title_and_the_active_nav_item_on_navigation
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_fresh_project_does_not_draw_toasts_a_second_time() {
+    // До 1.2.5 скелет клав у public/app.js власний слухач showToast — поруч із
+    // тим, що вже є у фреймворку, і кожен тост у новому проєкті малювався двічі.
+    let root = temp_project();
+    scaffold(&root);
+    let app_js = std::fs::read_to_string(root.join("public/app.js")).expect("app.js");
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(!app_js.contains("addEventListener"), "{app_js}");
+}
+
+#[tokio::test]
+async fn eject_ui_hands_the_interface_to_the_project() {
+    let root = temp_project();
+    scaffold(&root);
+
+    let status = Command::new(env!("CARGO_BIN_EXE_rhaix"))
+        .args(["eject", "ui", "--root"])
+        .arg(&root)
+        .status()
+        .expect("`rhaix eject ui` має запуститись");
+    assert!(status.success());
+
+    // Файл — рівно вбудований UI, і далі він належить проєкту.
+    let owned = std::fs::read_to_string(root.join("public/rhaix-ui.js")).expect("rhaix-ui.js");
+    assert_eq!(owned, rhaix_server::UI_JS);
+
+    // Сторінка підключає файл проєкту ЗАМІСТЬ вбудованого, і лише один раз.
+    let config = Config::load(root.clone(), Some(0)).expect("конфіг");
+    let (router, _) = build(config).expect("застосунок");
+    let (_, page) = body_of(router, get("/")).await;
+    assert!(
+        page.contains(r#"<script src="/rhaix-ui.js"></script>"#),
+        "{page}"
+    );
+    assert!(!page.contains("/_rhaix/ui.js"), "{page}");
+    assert_eq!(page.matches("rhaix-ui.js").count(), 1, "{page}");
+
+    // Повторний eject без --force нічого не перезаписує.
+    let again = Command::new(env!("CARGO_BIN_EXE_rhaix"))
+        .args(["eject", "ui", "--root"])
+        .arg(&root)
+        .status()
+        .expect("повторний запуск");
+    assert!(
+        !again.success(),
+        "без --force файл проєкту не перезаписується"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

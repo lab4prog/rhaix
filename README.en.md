@@ -151,7 +151,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | `rhaix-script` | the Rhai engine, limits, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, sessions and CSRF, `http`, dates and strings |
 | `rhaix-template` | `.rhx` lexer, AST, expression compilation, components, renderer, escaping |
 | `rhaix-server` | axum: routing, layout, the fragment rule, static files |
-| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check` |
+| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check`, `rhaix eject ui` |
 | `rhaix-lsp` | language server: diagnostics, go-to-component, completion |
 
 Licence: MIT or Apache-2.0.

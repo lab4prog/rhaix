@@ -1,14 +1,35 @@
-//! `rhaix.js` — крихітний клієнт, який ядро віддає саме.
+//! Клієнтська частина, яку ядро віддає саме.
 //!
-//! Це той самий код, який у Node-RED-стартері доводилось тримати в `main.js`
-//! і копіювати з проєкту в проєкт: тости з `HX-Trigger` і реєстр уже
-//! завантажених асетів. Різниця в тому, що тут він приїжджає з фреймворком.
+//! Два шари, і межа між ними — навмисна:
+//!
+//! - **ядро** (`/_rhaix/rhaix.js`, `client/rhaix.js`) — протокол між сервером і
+//!   htmx: реєстр асетів компонентів, своп відповідей із кодом ≠ 2xx,
+//!   дедуплікація стилів. Замінювати не треба й не можна.
+//! - **UI** (`/_rhaix/ui.js`, `client/ui.js`) — тости й модальні вікна. Це
+//!   лише типова реалізація: проєкт перевизначає окремі функції або цілком
+//!   забирає файл собі (`rhaix eject ui` → `public/rhaix-ui.js`), і тоді ядро
+//!   підключає його замість вбудованого.
+//!
+//! Обидва — у `<head>`, синхронно. htmx свопить лише `<body>`, тож на
+//! boosted-переходах вони не виконуються вдруге (до 1.2.5 стояли в кінці
+//! `<body>` і перевиконувались: тости множились із кожним таким переходом).
 
-/// Шлях, за яким віддається клієнт.
+/// Шлях ядра клієнта.
 pub const CLIENT_ROUTE: &str = "/_rhaix/rhaix.js";
 
-/// Шлях, за яким віддається htmx.
+/// Шлях вбудованого UI (тости, модалки).
+pub const UI_ROUTE: &str = "/_rhaix/ui.js";
+
+/// Шлях htmx.
 pub const HTMX_ROUTE: &str = "/_rhaix/htmx.js";
+
+/// Версія вшитого htmx. Іде в адресу скрипта як `?v=`: файл кешується на рік
+/// (`immutable`), і без цього оновлення htmx у новому релізі rhaix не дійшло б
+/// до браузерів, які вже мають стару копію.
+pub const HTMX_VERSION: &str = "2.0.7";
+
+/// Файл у `public/`, який заміняє вбудований UI. Шлях — як його бачить браузер.
+pub const UI_OVERRIDE: &str = "/rhaix-ui.js";
 
 /// htmx, вшитий у бінарник.
 ///
@@ -20,91 +41,31 @@ pub const HTMX_ROUTE: &str = "/_rhaix/htmx.js";
 /// без умов). Джерело: https://htmx.org
 pub const HTMX_JS: &str = include_str!("../vendor/htmx.min.js");
 
-/// Вміст `rhaix.js`.
-pub const CLIENT_JS: &str = r##"(() => {
-  const seen = new Set();
+/// Ядро клієнта.
+pub const CLIENT_JS: &str = include_str!("../client/rhaix.js");
 
-  // `window.__rhaix` — не перезаписуємо, а доповнюємо: якщо `public/*.js`
-  // (він підключається ПІСЛЯ цього файлу) ще не встиг нічого покласти сюди,
-  // об'єкт однаково має існувати вже зараз, до першого доступу до нього.
-  window.__rhaix = window.__rhaix || {};
+/// Типовий UI: тости й модалки. Той самий текст кладе `rhaix eject ui`.
+pub const UI_JS: &str = include_str!("../client/ui.js");
 
-  // htmx за замовчуванням свопить лише 2xx (config.responseHandling) і мовчки
-  // викидає решту. У rhaix `res.status(...)` — це частина звичайної відповіді,
-  // не сигнал «щось не так»: 422 несе ту саму сторінку з помилками під
-  // полями (SYNTAX 7.5), 403 — пояснення, 404 — готову сторінку. Без цього
-  // рядка `validate()` на сервері відпрацьовує правильно, а користувач не
-  // бачить жодної помилки — клік просто «нічого не робить».
-  htmx.config.responseHandling = [{ code: "...", swap: true }];
+/// Реєстр асетів — інлайн, першим у `<head>`.
+///
+/// Скрипти компонентів стоять у `<body>` і виконуються під час розбору
+/// сторінки; реєстр мусить існувати раніше за них. Окремим файлом він не
+/// встиг би: той міг би ще завантажуватись.
+pub const REGISTRY_JS: &str = "window.__rhaix=window.__rhaix||{};if(!window.__rhaix.seen){const s=new Set();window.__rhaix.seen=h=>s.has(h)||(s.add(h),false)}";
 
-  // Реєстр асетів: піднятий <script> компонента виконується один раз на
-  // життя сторінки, навіть якщо компонент приїхав ще кілька разів фрагментом.
-  window.__rhaix.seen = window.__rhaix.seen || function (hash) {
-    if (seen.has(hash)) return true;
-    seen.add(hash);
-    return false;
-  };
-
-  // Тости: сервер шле подію заголовком HX-Trigger (`hx.toast(...)`), клієнт
-  // її малює. Сам малюнок — окрема функція, а не логіка всередині
-  // слухача, — щоб її можна було замінити, не чіпаючи подію:
-  //
-  //   // public/app.js, підключається ПІСЛЯ rhaix.js — просто перевизначте:
-  //   window.__rhaix.toast = (message, type) => myToastLib.show(message, type);
-  //
-  // Перевизначення читається щоразу під час самої події, а не запам'ятовується
-  // наперед, тому працює незалежно від того, коли саме app.js це зробив.
-  window.__rhaix.toast = window.__rhaix.toast || function (message, type) {
-    const box = document.getElementById("toasts");
-    if (!box) return;
-    const toast = document.createElement("div");
-    toast.className = `toast ${type ?? "info"}`;
-    toast.textContent = message ?? "";
-    box.appendChild(toast);
-    setTimeout(() => toast.remove(), 3000);
-  };
-  document.body.addEventListener("showToast", (event) => {
-    const detail = event.detail ?? {};
-    window.__rhaix.toast(detail.message, detail.type);
-  });
-
-  // <dialog>, де б він не з'явився — у першому завантаженні чи в htmx-фрагменті
-  // (звичайному чи oob), — відкривається як справжній модал: нативний backdrop,
-  // Esc, фокус-пастка, без жодного рядка коду в проєкті. Досить писати
-  // `<dialog>` замість `<div class="modal">`. Закривається сам, щойно елемент
-  // прибирають зі сторінки (порожня відповідь на те саме `hx-target` — типовий
-  // спосіб закрити діалог, SYNTAX 4.7).
-  //
-  // Проєкту, якому потрібен саме нейтральний, немодальний `<dialog>`, досить
-  // додати `data-plain` — тоді ця функція його не чіпає.
-  //
-  // `htmx:load` — єдина подія, що покриває і початкове завантаження, і кожен
-  // своп, і oob-свопи однаково (офіційна заміна htmx:afterProcessNode).
-  document.body.addEventListener("htmx:load", (event) => {
-    const root = event.detail?.elt ?? document;
-    const dialogs = root.matches?.("dialog") ? [root] : [];
-    dialogs.push(...(root.querySelectorAll?.("dialog") ?? []));
-    for (const dialog of dialogs) {
-      if (dialog.hasAttribute("data-rhx-modal") || dialog.hasAttribute("data-plain")) continue;
-      dialog.removeAttribute("open"); // showModal() сам відкриє й додасть top-layer
-      dialog.setAttribute("data-rhx-modal", "");
-      dialog.showModal();
-    }
-  });
-
-  // Стилі, що приїхали разом із фрагментом, можуть повторювати вже наявні:
-  // лишаємо перший, решту прибираємо, щоб документ не ріс на кожному свопі.
-  document.addEventListener("htmx:afterSwap", () => {
-    const styles = document.querySelectorAll("style[data-rhx]");
-    const kept = new Set();
-    for (const style of styles) {
-      const hash = style.getAttribute("data-rhx");
-      if (kept.has(hash)) style.remove();
-      else kept.add(hash);
-    }
-  });
-})();
-"##;
+/// Теги для `<head>`: реєстр, htmx, ядро, UI (вбудований або проєктний).
+///
+/// `own_ui` — чи є в проєкті `public/rhaix-ui.js`.
+pub fn core_tags(own_ui: bool) -> Vec<String> {
+    let ui = if own_ui { UI_OVERRIDE } else { UI_ROUTE };
+    vec![
+        format!("<script>{REGISTRY_JS}</script>"),
+        format!("<script src=\"{HTMX_ROUTE}?v={HTMX_VERSION}\"></script>"),
+        format!("<script src=\"{CLIENT_ROUTE}\"></script>"),
+        format!("<script src=\"{ui}\"></script>"),
+    ]
+}
 
 /// `<style>` компонента у вигляді тега з міткою.
 pub fn style_tag(hash: &str, body: &str) -> String {
@@ -133,40 +94,78 @@ mod tests {
     }
 
     #[test]
-    fn client_defines_the_registry_before_anything_else() {
-        assert!(CLIENT_JS.contains("window.__rhaix"), "реєстр є");
-        assert!(CLIENT_JS.contains("showToast"), "тости є");
+    fn the_core_has_no_user_interface() {
+        // Межа між шарами: у ядрі немає ні тостів, ні модалок — інакше їх не
+        // можна було б замінити, не лагодячи фреймворк.
+        assert!(!CLIENT_JS.contains("showToast"));
+        assert!(!CLIENT_JS.contains("showModal"));
+        assert!(!CLIENT_JS.contains("createElement"));
     }
 
     #[test]
-    fn error_status_responses_still_swap() {
+    fn error_status_responses_still_swap_but_204_does_not() {
         // За замовчуванням htmx свопить лише 2xx і мовчки викидає решту —
         // без цього `res.status(422)` із помилками під полями чи `403` з
         // поясненням ніколи не з'являються на екрані.
         assert!(CLIENT_JS.contains("htmx.config.responseHandling"));
-        assert!(CLIENT_JS.contains(r#"code: "...", swap: true"#));
+        assert!(CLIENT_JS.contains(r#"{ code: "[45]..", swap: true, error: true }"#));
+        // 204 — без тіла: своп стер би ціль.
+        assert!(CLIENT_JS.contains(r#"{ code: "204", swap: false }"#));
+        // 422 — штатна валідація, не збій; і правило для нього стоїть раніше
+        // за загальне [45].., бо htmx бере перше, що збіглося.
+        let exact = CLIENT_JS
+            .find(r#"{ code: "422", swap: true }"#)
+            .expect("окреме правило для 422");
+        let general = CLIENT_JS.find(r#"{ code: "[45].."#).expect("загальне");
+        assert!(exact < general);
+    }
+
+    #[test]
+    fn both_layers_are_idempotent() {
+        // Якщо файл виконався вдруге (layout без <rhaix:head/>, boosted-своп),
+        // слухачі не мають реєструватись повторно — інакше кожен тост двічі.
+        assert!(CLIENT_JS.contains("if (rhaix.coreLoaded) return;"));
+        assert!(UI_JS.contains("if (rhaix.uiLoaded) return;"));
     }
 
     #[test]
     fn toast_rendering_is_an_overridable_hook() {
-        // Малюнок — окрема функція на `window.__rhaix.toast`, а не логіка
-        // всередині слухача: інакше проєкту не було б за що зачепитись, щоб
-        // намалювати тост власним компонентом.
-        assert!(CLIENT_JS.contains("window.__rhaix.toast = window.__rhaix.toast || function"));
-        // `||` — не перезаписати те, що вже поклав public/*.js.
-        assert!(CLIENT_JS.contains("window.__rhaix = window.__rhaix || {}"));
+        // `||` — не перезаписати те, що вже поклав проєкт.
+        assert!(UI_JS.contains("rhaix.toast = rhaix.toast || function"));
+        // Кілька hx.toast(...) за запит приходять одним detail з `items`.
+        assert!(UI_JS.contains("detail.items"));
+    }
+
+    #[test]
+    fn toasts_carried_in_the_page_are_shown_once() {
+        // Сервер кладе їх у `<script data-rhx-toasts>` (flash і звичайні GET).
+        assert!(UI_JS.contains("script[data-rhx-toasts]"));
+        // Прибирається після показу: boosted-перехід назад їх не повторить.
+        assert!(UI_JS.contains("carrier.remove()"));
     }
 
     #[test]
     fn dialog_elements_are_opened_as_native_modals() {
         assert!(
-            CLIENT_JS.contains("htmx:load"),
+            UI_JS.contains("htmx:load"),
             "єдина подія на всі шляхи появи"
         );
-        assert!(CLIENT_JS.contains("showModal()"));
+        assert!(UI_JS.contains("showModal()"));
         assert!(
-            CLIENT_JS.contains("data-plain"),
+            UI_JS.contains("data-plain"),
             "має бути шлях відмовитись від автомодалу"
         );
+    }
+
+    #[test]
+    fn head_tags_put_the_registry_first_and_swap_in_a_project_ui() {
+        let builtin = core_tags(false);
+        assert!(builtin[0].contains("window.__rhaix.seen"), "{builtin:?}");
+        assert!(builtin[1].contains("htmx.js?v=2.0.7"), "{builtin:?}");
+        assert!(builtin[3].contains(UI_ROUTE), "{builtin:?}");
+
+        let own = core_tags(true);
+        assert!(own[3].contains(UI_OVERRIDE), "{own:?}");
+        assert!(!own.iter().any(|tag| tag.contains(UI_ROUTE)), "{own:?}");
     }
 }

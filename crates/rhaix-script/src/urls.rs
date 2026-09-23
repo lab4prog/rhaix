@@ -22,12 +22,10 @@ pub fn sanitize_url(value: &str) -> &str {
     if ALLOWED_SCHEMES.contains(&scheme.as_str()) {
         return value;
     }
-    // data: лишаємо тільки для картинок — усе інше вміє виконувати скрипт.
-    if scheme == "data"
-        && trimmed[scheme_end + 1..]
-            .to_ascii_lowercase()
-            .starts_with("image/")
-    {
+    // data: лишаємо тільки для растрових картинок — усе інше вміє виконувати
+    // скрипт. SVG теж: це «картинка», у якій може бути `<script>` і `onload`.
+    let media = trimmed[scheme_end + 1..].trim_start().to_ascii_lowercase();
+    if scheme == "data" && media.starts_with("image/") && !media.starts_with("image/svg") {
         return value;
     }
     "#"
@@ -43,6 +41,12 @@ mod tests {
         assert_eq!(sanitize_url("  JavaScript:alert(1)"), "#");
         assert_eq!(sanitize_url("data:text/html,<script>"), "#");
         assert_eq!(sanitize_url("vbscript:msgbox"), "#");
+        // SVG — «картинка» зі скриптом усередині.
+        assert_eq!(
+            sanitize_url("data:image/svg+xml,<svg onload=alert(1)>"),
+            "#"
+        );
+        assert_eq!(sanitize_url("data:IMAGE/SVG+XML;base64,PHN2Zz4="), "#");
     }
 
     #[test]

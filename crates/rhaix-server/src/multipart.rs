@@ -90,16 +90,42 @@ fn parse_part(segment: &[u8]) -> Option<Part> {
     })
 }
 
-/// Витягти значення `key="..."` із рядка заголовка.
+/// Витягти значення параметра `key="..."` із рядка заголовка.
+///
+/// Саме параметра, а не підрядка: `line.find("name=")` у рядку
+/// `filename="a.pdf"; name="doc"` знайшло б `name=` усередині `filename=`, і
+/// поле назвалося б «a.pdf». Порядок параметрів RFC 7578 не фіксує.
 fn extract(line: &str, key: &str) -> Option<String> {
-    let start = line.find(key)? + key.len();
-    let rest = &line[start..];
-    if let Some(stripped) = rest.strip_prefix('"') {
-        let end = stripped.find('"')?;
-        Some(stripped[..end].to_owned())
-    } else {
-        let end = rest.find([';', ' ']).unwrap_or(rest.len());
-        Some(rest[..end].to_owned())
+    let mut rest = line.split_once(':').map(|(_, value)| value).unwrap_or(line);
+    loop {
+        rest = rest.trim_start_matches([' ', ';', '\t']);
+        if rest.is_empty() {
+            return None;
+        }
+        let (name, after) = match rest.find(['=', ';']) {
+            Some(index) if rest.as_bytes()[index] == b'=' => (&rest[..index], &rest[index + 1..]),
+            // Параметр без значення (`form-data`) — просто пропускаємо.
+            Some(index) => {
+                rest = &rest[index..];
+                continue;
+            }
+            None => return None,
+        };
+        // Значення в лапках може містити `;` — читаємо до закривальної лапки.
+        let (value, tail) = match after.strip_prefix('"') {
+            Some(quoted) => {
+                let end = quoted.find('"')?;
+                (&quoted[..end], &quoted[end + 1..])
+            }
+            None => {
+                let end = after.find(';').unwrap_or(after.len());
+                (after[..end].trim(), &after[end..])
+            }
+        };
+        if name.trim().eq_ignore_ascii_case(key.trim_end_matches('=')) {
+            return Some(value.to_owned());
+        }
+        rest = tail;
     }
 }
 
@@ -206,5 +232,27 @@ mod tests {
     #[test]
     fn garbage_body_yields_no_parts() {
         assert!(parse(b"not multipart at all", "BOUND").is_empty());
+    }
+
+    #[test]
+    fn parameter_order_does_not_matter() {
+        // `find("name=")` знаходив `name=` усередині `filename=`.
+        let line = r#"Content-Disposition: form-data; filename="a.pdf"; name="doc""#;
+        assert_eq!(extract(line, "name=").as_deref(), Some("doc"));
+        assert_eq!(extract(line, "filename=").as_deref(), Some("a.pdf"));
+    }
+
+    #[test]
+    fn quoted_values_may_hold_separators() {
+        let line = r#"Content-Disposition: form-data; name="doc"; filename="звіт; квітень.pdf""#;
+        assert_eq!(
+            extract(line, "filename=").as_deref(),
+            Some("звіт; квітень.pdf")
+        );
+        assert_eq!(extract(line, "name=").as_deref(), Some("doc"));
+        // Без лапок і з іншим регістром імені параметра.
+        let line = "content-disposition: form-data; NAME=plain";
+        assert_eq!(extract(line, "name=").as_deref(), Some("plain"));
+        assert_eq!(extract(line, "filename="), None);
     }
 }

@@ -116,11 +116,193 @@ async fn full_load_wraps_the_page_in_the_layout() {
         body.contains(r#"<link rel="stylesheet" href="/style.css">"#),
         "{body}"
     );
+    // скрипти проєкту — у <head> з defer: один раз, коли <body> уже є
     assert!(
-        body.contains(r#"<script src="/app.js"></script>"#),
+        body.contains(r#"<script src="/app.js" defer></script>"#),
         "{body}"
     );
-    assert_eq!(header(&headers, "vary"), Some("HX-Request"));
+    assert_eq!(
+        header(&headers, "vary"),
+        Some("HX-Request, HX-Boosted, HX-History-Restore-Request")
+    );
+}
+
+/// Частина документа до `</head>` і після `<body`.
+fn split_head(body: &str) -> (&str, &str) {
+    let at = body.find("</head>").expect("документ має </head>");
+    (&body[..at], &body[at..])
+}
+
+#[tokio::test]
+async fn client_scripts_live_in_head_so_a_body_swap_never_reruns_them() {
+    // htmx свопить лише <body>. Скрипти з кінця <body> на boosted-переході
+    // виконувались би знову — до 1.2.5 так і було: кожен такий перехід
+    // додавав ще один слухач showToast, і тости множились.
+    let (_, _, body) = call(get("/")).await;
+    let (head, rest) = split_head(&body);
+
+    for src in [
+        "/_rhaix/htmx.js",
+        "/_rhaix/rhaix.js",
+        "/_rhaix/ui.js",
+        "/app.js",
+    ] {
+        assert!(head.contains(src), "{src} має бути в <head>: {head}");
+        assert!(!rest.contains(src), "{src} не має бути в <body>: {rest}");
+    }
+    // Реєстр — інлайн і першим: скрипти компонентів у <body> виконуються під
+    // час розбору й мають його застати.
+    let registry = head.find("window.__rhaix.seen").expect("реєстр");
+    let htmx = head.find("/_rhaix/htmx.js").expect("htmx");
+    assert!(registry < htmx, "{head}");
+    // Версія в адресі htmx: кеш на рік, а оновлення має до браузера дійти.
+    assert!(head.contains("/_rhaix/htmx.js?v="), "{head}");
+}
+
+fn boosted(path: &str) -> Request<Body> {
+    Request::builder()
+        .uri(path)
+        .header("HX-Request", "true")
+        .header("HX-Boosted", "true")
+        .body(Body::empty())
+        .expect("запит")
+}
+
+#[tokio::test]
+async fn a_boosted_request_gets_the_whole_page() {
+    // Звичайне посилання під <body hx-boost>: htmx свопне відповідь у ВЕСЬ
+    // <body>. Фрагмент без layout стер би меню, #main і контейнер тостів —
+    // до 1.2.5 так і ламався застосунок від першого ж такого кліку.
+    let (status, headers, body) = call(boosted("/")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.starts_with("<!DOCTYPE html>"), "{body}");
+    assert!(body.contains(r#"<main id="main">"#), "{body}");
+    // Заголовок — у <title> layout-а, а не окремим тегом фрагмента.
+    assert!(body.contains("<title>rhaix — Головна</title>"), "{body}");
+    // Кешувати не можна: адреса та сама, що й у звичайного заходу.
+    assert_eq!(header(&headers, "cache-control"), Some("private, no-store"));
+}
+
+#[tokio::test]
+async fn a_history_restore_request_gets_the_whole_page_too() {
+    let request = Request::builder()
+        .uri("/")
+        .header("HX-Request", "true")
+        .header("HX-History-Restore-Request", "true")
+        .body(Body::empty())
+        .expect("запит");
+    let (_, _, body) = call(request).await;
+    assert!(body.contains(r#"<main id="main">"#), "{body}");
+}
+
+#[tokio::test]
+async fn a_boosted_page_carries_its_component_styles_in_the_body() {
+    // <head> htmx на boosted-переході не чіпає: стиль компонента, якого не
+    // було на попередній сторінці, мусить приїхати разом із <body>.
+    let (_, _, full) = call(get("/assets")).await;
+    let (full_head, _) = split_head(&full);
+    assert!(full_head.contains("<style data-rhx="), "{full}");
+
+    let (_, _, body) = call(boosted("/assets")).await;
+    let (head, rest) = split_head(&body);
+    assert!(!head.contains("<style data-rhx="), "{head}");
+    assert!(rest.contains("<style data-rhx="), "{rest}");
+}
+
+#[tokio::test]
+async fn req_is_htmx_means_fragment_and_is_boosted_is_separate() {
+    // `req.is_htmx` — «відповідь буде фрагментом»: на boosted-запиті layout є,
+    // і oob-оновлення меню (`@if={req.is_htmx}`) продублювало б `#nav`.
+    let (_, _, plain) = call(htmx("/flags")).await;
+    assert!(plain.contains("[htmx=true boosted=]"), "{plain}");
+
+    let (_, _, body) = call(boosted("/flags")).await;
+    assert!(body.contains("[htmx= boosted=true]"), "{body}");
+
+    let (_, _, full) = call(get("/flags")).await;
+    assert!(full.contains("[htmx= boosted=]"), "{full}");
+}
+
+/// Відправити форму на `/flash` (тост + редірект) і повернути cookie сесії.
+async fn flash_cookie() -> String {
+    let ticket = ticket().await;
+    let (_, headers, _) = call(form_post("/flash", "x=1", &ticket)).await;
+
+    // На самій відповіді з редіректом тоста немає: htmx пішов би геть раніше,
+    // ніж його хтось побачив.
+    let trigger = header(&headers, "hx-trigger").unwrap_or_default();
+    assert!(!trigger.contains("showToast"), "{trigger}");
+    assert_eq!(header(&headers, "hx-redirect"), Some("/"));
+
+    header(&headers, "set-cookie")
+        .expect("тост має лягти в сесію")
+        .split(';')
+        .next()
+        .expect("значення cookie")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_toast_before_a_redirect_shows_on_the_next_full_page() {
+    let cookie = flash_cookie().await;
+
+    // Після HX-Redirect браузер робить звичайний перехід — повна сторінка.
+    let request = Request::builder()
+        .uri("/")
+        .header("cookie", &cookie)
+        .body(Body::empty())
+        .expect("запит");
+    let (_, headers, body) = call(request).await;
+    assert!(body.contains("data-rhx-toasts"), "{body}");
+    assert!(body.contains("Збережено"), "{body}");
+    // Показаний один раз: сесія очищається від нього.
+    assert!(header(&headers, "set-cookie").is_some(), "{headers:?}");
+}
+
+#[tokio::test]
+async fn a_toast_before_a_redirect_rides_hx_trigger_on_the_next_htmx_request() {
+    let cookie = flash_cookie().await;
+
+    let request = Request::builder()
+        .uri("/")
+        .header("HX-Request", "true")
+        .header("cookie", &cookie)
+        .body(Body::empty())
+        .expect("запит");
+    let (_, headers, body) = call(request).await;
+    let trigger = header(&headers, "hx-trigger").unwrap_or_default();
+    assert!(trigger.contains("showToast"), "{trigger}");
+    assert!(!body.contains("data-rhx-toasts"), "{body}");
+}
+
+#[tokio::test]
+async fn a_toast_on_a_plain_page_load_travels_in_the_body() {
+    // Звичайний перехід браузера HX-Trigger не читає.
+    let (_, headers, body) = call(get("/toast")).await;
+    assert!(body.contains("data-rhx-toasts"), "{body}");
+    assert!(body.contains("Привіт"), "{body}");
+    let trigger = header(&headers, "hx-trigger").unwrap_or_default();
+    assert!(!trigger.contains("showToast"), "{trigger}");
+
+    // А htmx-запит отримує подію, як і раніше.
+    let (_, headers, body) = call(htmx("/toast")).await;
+    assert!(!body.contains("data-rhx-toasts"), "{body}");
+    let trigger = header(&headers, "hx-trigger").unwrap_or_default();
+    assert!(trigger.contains("showToast"), "{trigger}");
+}
+
+#[tokio::test]
+async fn a_redirect_from_a_boosted_form_still_uses_hx_redirect() {
+    // htmx не йде за 303 сам — і для boosted-форми теж.
+    let request = Request::builder()
+        .uri("/guard")
+        .header("HX-Request", "true")
+        .header("HX-Boosted", "true")
+        .body(Body::empty())
+        .expect("запит");
+    let (_, headers, _) = call(request).await;
+    assert_eq!(header(&headers, "hx-redirect"), Some("/"));
 }
 
 #[tokio::test]
@@ -442,8 +624,14 @@ async fn the_client_script_is_served_by_the_core() {
             .contains("javascript"),
         "{headers:?}"
     );
-    assert!(body.contains("showToast"), "тости з коробки");
     assert!(body.contains("window.__rhaix"), "реєстр асетів");
+    // Ядро — лише протокол; тости й модалки — окремим файлом.
+    assert!(!body.contains("showToast"), "{body}");
+
+    let (status, _, ui) = call(get("/_rhaix/ui.js")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ui.contains("showToast"), "тости з коробки");
+    assert!(ui.contains("showModal"), "модалки з коробки");
 }
 
 // ----------------------------------------------------------- вшитий режим

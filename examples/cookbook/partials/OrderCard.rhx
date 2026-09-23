@@ -6,7 +6,7 @@ let order = if id == () { () } else { db.get("orders", id) };
 // Порожня відповідь прибирає діалог — саме так працює кнопка «Закрити».
 if req.query("close") != () { return ""; }
 ---
-{{! Без `open`: `<dialog>` тут відкриває сам rhaix.js — `showModal()` дає
+{{! Без `open`: `<dialog>` тут відкриває сам ui.js — `showModal()` дає
     нативний backdrop, Esc і фокус-пастку, яких атрибут `open` сам по собі не
     вміє (SYNTAX 7.7). }}
 <dialog @if={order}>

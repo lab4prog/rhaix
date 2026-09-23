@@ -502,10 +502,17 @@ let nav = [#{href:"/", t:"Home"}, #{href:"/todo", t:"ToDo"}];
 
 | Special tag | What it inserts |
 |---|---|
-| `<rhaix:head/>` | `public/**.css` plus hoisted component `<style>` |
-| `<rhaix:scripts/>` | `public/**.js`, `rhaix.js`, hoisted component `<script>` |
+| `<rhaix:head/>` | `public/**.css`, hoisted component `<style>`, **and the scripts**: htmx, the `rhaix.js` core, the `ui.js` interface (7.7), `public/**.js` with `defer` |
+| `<rhaix:scripts/>` | hoisted component `<script>` only |
 | `<rhaix:csrf/>` | a hidden CSRF field, when the automatic one cannot be placed (7.2) |
 | `<rhaix:raw>…</rhaix:raw>` | a block emitted without processing |
+
+Scripts go in `<head>`, not at the end of `<body>`, on purpose: htmx only swaps
+`<body>`, and a script from there would run again on every boosted navigation
+(before 1.2.5 it did — each such navigation added another listener, and toasts
+multiplied). Project scripts get `defer`: they run once, when `<body>` already
+exists. A layout without `<rhaix:head/>` still works — everything then goes into
+`<rhaix:scripts/>` as before.
 
 ### 6.2 Choosing a layout
 
@@ -526,14 +533,21 @@ must not lead anywhere.
 
 ### 6.3 The fragment rule
 
-- A request **without** `HX-Request` → page plus layout.
-- A request **with** `HX-Request` → only the page's or partial's own markup, no
-  layout.
+- A normal visit → page plus layout.
+- An explicit `hx-get`/`hx-post` (a request with `HX-Request`) → only the
+  page's or partial's own markup, no layout. In a script: `req.is_htmx`.
+- A **boosted** request (an ordinary link or form under `<body hx-boost>`,
+  header `HX-Boosted`) and a **history restore** (`HX-History-Restore-Request`)
+  → page plus layout. htmx swaps such a response into the **whole `<body>`**: a
+  fragment without the layout would wipe the nav, `#main` and the toast
+  container. `req.is_htmx` is false here and `req.is_boosted` is true.
+  Component styles travel inside `<body>` in such a response — htmx leaves
+  `<head>` alone.
 
 This is automatic — there is nothing to switch on. Every response carries
-`Vary: HX-Request`.
+`Vary: HX-Request, HX-Boosted, HX-History-Restore-Request`.
 
-Consequence: **the layout does not run at all on htmx navigation.** Everything
+Consequence: **the layout does not run on htmx navigation (explicit `hx-get`).** Everything
 in it — a nav menu, a footer, a header counter — stays exactly as the first
 full render drew it, until something updates those spots itself.
 
@@ -1012,16 +1026,26 @@ Because of this, no HTML sanitizer is needed — there is nowhere for anything
 dangerous to come from. `markdown()` is enabled by the `markdown` build
 feature (which `rhaix build` turns on when it's used).
 
-### 7.7 Client: errors still get through, toasts and modals are yours
+### 7.7 Client: the core stays put, the interface is yours
+
+The client side has two layers, and the boundary between them is deliberate:
+
+| Layer | File | What it does | Replace it |
+|---|---|---|---|
+| core | `/_rhaix/rhaix.js` | component script registry, swapping non-2xx responses, style dedup | no |
+| interface | `/_rhaix/ui.js` | toasts, modal `<dialog>` | yes — piece by piece or wholesale |
+
+The core has not a single line about how anything looks. Everything visible
+lives in `ui.js`, and a project can replace it without patching the framework.
 
 **Responses with a status other than 2xx swap too.** htmx by default only
 swaps `2xx` and silently drops the rest (`config.responseHandling`). In rhaix
 `res.status(...)` is part of an ordinary response, not a signal that
 something's wrong: `422` carries the same page with errors under the fields
 (7.5), `403` explains an expired form, `404`/`500` carry a full page with
-diagnostics. The core overrides this in one line of `rhaix.js`, so
-`validate()` succeeding on the server never stays invisible on screen —
-nothing to do in the project.
+diagnostics. The core overrides this, so `validate()` on the server never
+stays invisible on screen. `htmx:responseError` still fires for anyone
+listening, and `204` does not swap — there is no body.
 
 **Validation under fields is a component, not a directive.** The framework
 deliberately adds no dedicated `<Field>` tag: `@if={errors.x}` plus a `<span>`
@@ -1051,21 +1075,32 @@ let error = props.error;
 One component instead of three lines of markup per form field. A working
 example with a `<textarea>` variant is `examples/cookbook/components/Field.rhx`.
 
-**Toasts are drawn by `window.__rhaix.toast(message, type)`.** `hx.toast(...)`
-(7.5) stays as it is — the server only sends a `showToast` event via the
-`HX-Trigger` header. The rendering itself lives in a separate, overridable
-function:
+**Toasts.** `hx.toast(message, type)` (7.5) on the server sends a `showToast`
+event via the `HX-Trigger` header; `ui.js` draws it into `#toasts` (creating
+the container itself if the layout has none). Types are `info` (default),
+`success`, `error`, `warning`. A click dismisses a toast; otherwise it goes
+after `window.__rhaix.toastTimeout` ms (4000; `0` keeps it). Several
+`hx.toast(...)` calls in one request all arrive: the detail is the first
+toast, plus an `items` array with all of them.
 
-```js
-// public/app.js — loaded AFTER rhaix.js, so you can just reassign it:
-window.__rhaix.toast = (message, type) => myToastLib.show(message, type);
-```
+The default styles have zero specificity (`:where(...)`), so any rule of
+yours — even a plain `.toast { … }` — wins.
 
-The override is read at the moment the event fires, not captured ahead of
-time, so it works no matter when exactly `app.js` does this.
+**A toast before a redirect is not lost (flash).** `hx.toast("Welcome");
+res.redirect("/admin")` is the most common pairing. On its own nobody would
+ever see that toast: htmx fires the `HX-Trigger` event and immediately leaves
+for the new address, and a plain form without htmx gets a `303` with no toast
+at all. So the toasts of a response that goes elsewhere (`res.redirect`,
+`hx.redirect`, `hx.refresh`) are stored in the session, and the very next
+non-redirect response delivers them — once. An htmx request gets them as a
+`showToast` event, a full page as an embedded
+`<script type="application/json" data-rhx-toasts>` that `ui.js` picks up. The
+toasts of a plain (non-htmx) page load travel the same way, since the browser
+does not read `HX-Trigger` there. Nothing to do on your side — it only needs a
+session (there is one in `pages/`, none in `api/`).
 
 **`<dialog>` opens itself as a real modal.** Write `<dialog>` instead of
-`<div class="modal">` — the core calls `showModal()` for every `<dialog>`,
+`<div class="modal">` — `ui.js` calls `showModal()` for every `<dialog>`,
 wherever it shows up: on the first load, in a fragment, outside the main
 target via `@oob`. Native backdrop, `Esc`, focus trap — with no code in the
 project at all. It closes itself the moment the element is removed from the
@@ -1073,6 +1108,31 @@ page (an empty response to the same `hx-target` is the usual way to close a
 dialog). A project that genuinely wants a plain, non-modal `<dialog>` just
 adds `data-plain`. A working example is
 `examples/cookbook/partials/OrderCard.rhx`.
+
+**Changing the interface — two levels.**
+
+Piece by piece: override one function in `public/*.js`. It is read at the
+moment of the event, so load order does not matter:
+
+```js
+// public/app.js
+window.__rhaix.toast = (message, type) => myToastLib.show(message, type);
+window.__rhaix.toastTimeout = 8000;
+```
+
+Wholesale: `rhaix eject ui` copies the built-in `ui.js` into
+`public/rhaix-ui.js`. As soon as that file exists, the framework loads it
+**instead of** `/_rhaix/ui.js` — from then on it is ordinary project code:
+edit it, rewrite it on top of your own library, or leave it empty to turn off
+both toasts and auto-modals entirely. Any replacement has to honour the same
+contract: listen for `showToast` (with `items` for several toasts), show the
+toasts from `script[data-rhx-toasts]` in the page and, if you like, do
+something with your `<dialog>` elements.
+
+```
+rhaix eject ui            # in the current project
+rhaix eject ui --force    # overwrite an already ejected file with the built-in one
+```
 
 ---
 
@@ -1105,7 +1165,10 @@ adds `data-plain`. A working example is
   keep theme variables in a plain `public/*.css`.
 - `<script>` is hoisted into `<rhaix:scripts/>` and runs **once per page
   lifetime**. In a fragment it travels with the markup, wrapped in a registry
-  check from `rhaix.js`, so a repeated swap does not run it again.
+  check, so a repeated swap does not run it again. The registry and htmx
+  already exist at that point (they are in `<head>`), but `public/**.js` do
+  not yet: they have `defer` and run after the page is parsed. Reach for them
+  from event handlers, not at the top level of a component script.
 - Tags with `src` are not hoisted: they load once anyway, and their position in
   the document often matters.
 - There is no hoisting in a layout — the layout is the document, its tags stay

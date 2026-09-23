@@ -37,7 +37,17 @@ pub struct RequestData {
     pub headers: BTreeMap<String, String>,
     pub cookies: BTreeMap<String, String>,
     pub body: String,
+    /// Відповідь на цей запит — фрагмент без layout (SYNTAX 6.3). Не те саме,
+    /// що «запит прийшов від htmx»: boosted-посилання й відновлення історії
+    /// теж шлють `HX-Request`, але htmx свопить їхню відповідь у весь
+    /// `<body>`, тож їм потрібна повна сторінка — див. `hx_request`.
     pub is_htmx: bool,
+    /// Запит узагалі прийшов від htmx (`HX-Request`). Потрібно для редіректу:
+    /// htmx не йде за 303, тому йому шлемо `HX-Redirect` — у тому числі на
+    /// boosted-формі, де `is_htmx` хибне.
+    pub hx_request: bool,
+    /// Запит від `hx-boost` (звичайне посилання чи форма під `<body hx-boost>`).
+    pub is_boosted: bool,
     /// Корінь, відносно якого `upload.save(...)` пише файли. Ставить сервер.
     pub upload_root: PathBuf,
 }
@@ -115,11 +125,17 @@ impl Upload {
             return Err("порожній шлях для save()".to_owned());
         }
         let candidate = Path::new(path);
-        if candidate.is_absolute()
-            || path.starts_with('/')
-            || path.starts_with('\\')
-            || candidate.components().any(|c| c.as_os_str() == "..")
-        {
+        // Лише звичайні сегменти. `is_absolute()` і перевірки `..` мало: на
+        // Windows `D:evil.txt` — не абсолютний шлях і без `..`, але
+        // `root.join("D:evil.txt")` ВІДКИДАЄ корінь і пише на інший диск. Тому
+        // забороняємо будь-що, крім Normal/CurDir: префікс диска, корінь, `..`.
+        let only_plain = candidate.components().all(|c| {
+            matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
+        if !only_plain || path.starts_with('/') || path.starts_with('\\') {
             return Err(format!(
                 "небезпечний шлях `{path}`: без абсолютних шляхів і `..`"
             ));
@@ -249,6 +265,7 @@ pub fn register_web(engine: &mut Engine) {
         .register_get("path", |req: &mut Request| req.0.path.clone())
         .register_get("body", |req: &mut Request| req.0.body.clone())
         .register_get("is_htmx", |req: &mut Request| req.0.is_htmx)
+        .register_get("is_boosted", |req: &mut Request| req.0.is_boosted)
         .register_fn("param", |req: &mut Request, name: &str| {
             lookup(&req.0.params, name)
         })
@@ -467,19 +484,38 @@ fn register_state(engine: &mut Engine) {
 /// Зібрати заголовок `HX-Trigger` з подій, які накидав скрипт.
 ///
 /// `hx.trigger("x")` без даних дає `true`, `hx.toast(...)` — обʼєкт із
-/// повідомленням; саме це чекає `rhaix.js` на клієнті.
+/// повідомленням; саме це чекає `ui.js` на клієнті.
+///
+/// `HX-Trigger` — JSON-обʼєкт, ключ — ім'я події, тож дві події з одним
+/// іменем в одному запиті не вмістити. Для тостів це означало б, що з
+/// `hx.toast("Збережено"); hx.toast("Лист надіслано")` доходить лише другий.
+/// Тому тости збираються в один `showToast`: перший — у самому detail (як і
+/// раніше, для слухачів, що читають `detail.message`), а всі — в `items`.
+/// Для решти подій із тим самим іменем лишається остання.
 pub fn triggers_header(triggers: &[(String, Dynamic)]) -> Option<String> {
     if triggers.is_empty() {
         return None;
     }
     let mut object = serde_json::Map::new();
+    let mut toasts: Vec<serde_json::Value> = Vec::new();
     for (name, detail) in triggers {
         let value = if detail.is_unit() {
             serde_json::Value::Bool(true)
         } else {
             serde_json::to_value(detail).unwrap_or(serde_json::Value::Bool(true))
         };
-        object.insert(name.clone(), value);
+        if name == "showToast" {
+            toasts.push(value);
+        } else {
+            object.insert(name.clone(), value);
+        }
+    }
+    if let Some(first) = toasts.first() {
+        let mut detail = first.as_object().cloned().unwrap_or_default();
+        if toasts.len() > 1 {
+            detail.insert("items".into(), serde_json::Value::Array(toasts.clone()));
+        }
+        object.insert("showToast".into(), serde_json::Value::Object(detail));
     }
     Some(escape_non_ascii(
         &serde_json::Value::Object(object).to_string(),
@@ -589,6 +625,24 @@ mod tests {
         assert!(up.resolve("public/../../x").is_err());
         assert!(up.resolve("").is_err());
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn upload_save_path_rejects_another_drive() {
+        // `D:evil.txt` — не абсолютний і без `..`, але `join` відкидає корінь.
+        let up = Upload::new(
+            UploadData {
+                filename: "x.png".into(),
+                content_type: "image/png".into(),
+                data: Arc::new(vec![1]),
+            },
+            PathBuf::from(r"C:\proj"),
+        );
+        assert!(up.resolve("D:evil.txt").is_err());
+        assert!(up.resolve(r"C:\Windows\x").is_err());
+        assert!(up.resolve(r"\\server\share\x").is_err());
+        assert!(up.resolve("public/./x.png").is_ok());
+    }
     use crate::{engine, Limits};
     use rhai::Scope;
 
@@ -686,6 +740,34 @@ mod tests {
         // кирилиця — через \uXXXX, інакше заголовок не пройде у відповідь
         assert!(header.is_ascii(), "{header}");
         assert!(header.contains(r"\u0413"), "{header}");
+    }
+
+    #[test]
+    fn several_toasts_in_one_request_all_arrive() {
+        // JSON-ключ один на подію: до 1.2.5 другий hx.toast(...) мовчки
+        // перезаписував перший.
+        let (_, response) = run(
+            r#"hx.toast("one", "success"); hx.toast("two", "error")"#,
+            request(),
+        );
+        let header = triggers_header(&response.triggers).expect("є події");
+        let value: serde_json::Value = serde_json::from_str(&header).expect("JSON");
+        let toast = &value["showToast"];
+        // Перший — у самому detail, для слухачів, що читають detail.message.
+        assert_eq!(toast["message"], "one", "{header}");
+        let items = toast["items"].as_array().expect("items");
+        assert_eq!(items.len(), 2, "{header}");
+        assert_eq!(items[1]["message"], "two");
+        assert_eq!(items[1]["type"], "error");
+    }
+
+    #[test]
+    fn a_single_toast_keeps_its_old_shape() {
+        let (_, response) = run(r#"hx.toast("one")"#, request());
+        let header = triggers_header(&response.triggers).expect("є події");
+        let value: serde_json::Value = serde_json::from_str(&header).expect("JSON");
+        assert_eq!(value["showToast"]["message"], "one");
+        assert!(value["showToast"].get("items").is_none(), "{header}");
     }
 
     #[test]

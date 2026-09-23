@@ -142,15 +142,18 @@ li.done span { text-decoration: line-through; opacity: .55 }
 .toast.success { background: #15803d } .toast.error { background: #b91c1c }
 "##;
 
-const APP_JS: &str = r##"// Тости з HX-Trigger: сервер шле подію, клієнт показує повідомлення.
-document.body.addEventListener("showToast", (event) => {
-  const { message, type } = event.detail ?? {};
-  const el = document.createElement("div");
-  el.className = `toast ${type ?? "info"}`;
-  el.textContent = message ?? "";
-  document.getElementById("toasts")?.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
-});
+// Раніше тут стояв власний слухач `showToast` — поруч із тим, що вже є у
+// фреймворку, тож у кожному проєкті з `rhaix new` кожен тост малювався двічі.
+// Тепер файл — лише місце для коду проєкту й підказка, як змінити UI.
+const APP_JS: &str = r##"// Клієнтський код проєкту. Усі public/*.js підключаються самі — один раз,
+// коли <body> уже є, тож document.body тут доступний.
+//
+// Тости (`hx.toast(...)` на сервері) і модальні <dialog> малює вбудований
+// /_rhaix/ui.js. Змінити вигляд тоста, не чіпаючи решту:
+//
+//   window.__rhaix.toast = (message, type) => { /* свій компонент */ };
+//
+// Забрати весь UI собі й правити як завгодно: `rhaix eject ui`.
 "##;
 
 const GITIGNORE: &str = "\

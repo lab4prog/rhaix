@@ -1,7 +1,8 @@
 //! `rhaix` — командний рядок фреймворку.
 //!
-//! `dev` — сервер розробки, `new` — скелет проєкту, `check` — перевірка всіх
-//! `.rhx` без запуску. `build` приїде в M8.
+//! `dev` — сервер розробки, `serve` — продакшн з диска, `new` — скелет
+//! проєкту, `build` — один бінарник, `check` — перевірка всіх `.rhx` без
+//! запуску, `eject` — забрати вбудовану частину фреймворку в проєкт.
 
 use std::path::PathBuf;
 
@@ -76,6 +77,26 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Забрати вбудовану частину фреймворку в проєкт, щоб правити її самому
+    Eject {
+        #[command(subcommand)]
+        what: Eject,
+
+        /// Корінь проєкту
+        #[arg(long, default_value = ".", global = true)]
+        root: PathBuf,
+
+        /// Перезаписати файл, якщо він уже є
+        #[arg(long, global = true)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum Eject {
+    /// Тости й модальні вікна → public/rhaix-ui.js (замість вбудованого /_rhaix/ui.js)
+    Ui,
 }
 
 #[tokio::main]
@@ -102,6 +123,12 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Command::New { path } => scaffold::create(&path),
+
+        Command::Eject {
+            what: Eject::Ui,
+            root,
+            force,
+        } => eject_ui(&normalise(root), force),
 
         Command::Build {
             root,
@@ -142,13 +169,45 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// canonicalize на Windows повертає UNC-шлях виду `\?\C:\...` — у виводі це
-/// лише заважає, тому префікс прибираємо.
+/// `rhaix eject ui`: покласти вбудований UI (тости, модалки) у
+/// `public/rhaix-ui.js`. Щойно файл є, фреймворк підключає його замість
+/// `/_rhaix/ui.js` — і далі це звичайний код проєкту.
+fn eject_ui(root: &std::path::Path, force: bool) -> anyhow::Result<()> {
+    if !root.join("rhaix.toml").is_file() && !root.join("pages").is_dir() {
+        anyhow::bail!("у теці `{}` не схоже на проєкт rhaix", root.display());
+    }
+    let target = root.join("public").join("rhaix-ui.js");
+    if target.exists() && !force {
+        anyhow::bail!(
+            "`{}` уже є — це і є ваш UI. Перезаписати вбудованим: --force",
+            target.display()
+        );
+    }
+    std::fs::create_dir_all(target.parent().expect("public/"))?;
+    std::fs::write(&target, rhaix_server::UI_JS)?;
+    println!("UI забрано в проєкт: {}", target.display());
+    println!();
+    println!("Тепер фреймворк підключає цей файл замість вбудованого /_rhaix/ui.js.");
+    println!("Правте як завгодно; порожній файл вимикає тости й автомодалки зовсім.");
+    Ok(())
+}
+
+/// canonicalize на Windows повертає verbatim-шлях виду `\\?\C:\...` — у виводі
+/// це заважає, а в згенерованому `rhaix build` маніфесті стає `//?/C:/...`.
+/// Префікс прибираємо лише перед буквою диска: `\\?\UNC\server\share` без
+/// нього перестав би бути правильним шляхом.
 fn normalise(path: PathBuf) -> PathBuf {
     let path = path.canonicalize().unwrap_or(path);
-    match path.to_str().and_then(|text| text.strip_prefix(r"\?\")) {
-        Some(stripped) => PathBuf::from(stripped),
-        None => path,
+    strip_verbatim(path)
+}
+
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
     }
 }
 
@@ -177,4 +236,26 @@ fn detect_framework() -> build::Framework {
 fn is_framework_checkout(root: &std::path::Path) -> bool {
     root.join("crates/rhaix-server/Cargo.toml").is_file()
         && root.join("crates/rhaix-template/Cargo.toml").is_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_prefix_is_stripped_only_before_a_drive() {
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\work\app")),
+            PathBuf::from(r"C:\work\app")
+        );
+        // Мережевий шлях без префікса перестав би бути шляхом — лишаємо як є.
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\?\UNC\server\share")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from("/home/app")),
+            PathBuf::from("/home/app")
+        );
+    }
 }

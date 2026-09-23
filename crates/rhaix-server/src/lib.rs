@@ -13,7 +13,7 @@ mod multipart;
 mod scripts;
 
 pub use check::{check, Issue};
-pub use client::{CLIENT_JS, CLIENT_ROUTE, HTMX_JS, HTMX_ROUTE};
+pub use client::{CLIENT_JS, CLIENT_ROUTE, HTMX_JS, HTMX_ROUTE, UI_JS, UI_OVERRIDE, UI_ROUTE};
 
 use std::fs;
 use std::net::SocketAddr;
@@ -631,6 +631,24 @@ pub fn build_watched(
         }),
     );
 
+    // Вбудований UI — окремим файлом, щоб проєкт міг підмінити саме його,
+    // не чіпаючи ядро (`public/rhaix-ui.js`, SYNTAX 7.7).
+    let router = router.route(
+        UI_ROUTE,
+        axum::routing::get(|| async {
+            (
+                [
+                    (
+                        header::CONTENT_TYPE,
+                        "application/javascript; charset=utf-8",
+                    ),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                UI_JS,
+            )
+        }),
+    );
+
     // htmx їде з бінарника, а не з CDN: інакше застосунок не працював би без
     // інтернету, і «один файл» було б перебільшенням. Кеш довгий — вміст
     // прив'язаний до версії фреймворку.
@@ -808,7 +826,7 @@ async fn serve_page(
     };
     // Куди `upload.save(...)` пише файли — відносно кореня проєкту, як і база.
     data.upload_root = state.config.root.clone();
-    let is_htmx = data.is_htmx;
+    let hx_request = data.hx_request;
 
     // Скрипт користувача синхронний і може ходити в БД, тому виконується на
     // окремому потоці; рушій спільний (`sync`-збірка Rhai), шаблон — теж.
@@ -828,7 +846,7 @@ async fn serve_page(
         }
     };
 
-    build_response(body, response_state, is_htmx, kind)
+    build_response(body, response_state, hx_request, kind)
 }
 
 /// Зібрати дані запиту у вигляді, зрозумілому скрипту.
@@ -888,6 +906,19 @@ async fn collect_request(
         }
     }
 
+    // Три різні речі, які легко сплутати (саме так і сталося до 1.2.5):
+    // - `hx_request` — запит прийшов від htmx узагалі;
+    // - `is_boosted` — це звичайне посилання чи форма під `<body hx-boost>`;
+    // - `is_htmx` — відповідь має бути фрагментом без layout.
+    // Boosted-запит і відновлення історії htmx свопить у ВЕСЬ `<body>`: якщо
+    // віддати їм фрагмент, зникають меню, `#main` і контейнер тостів, і
+    // застосунок ламається до перезавантаження. Тому фрагмент — лише для
+    // явних hx-get/hx-post із власною ціллю.
+    let hx_request = headers.contains_key("hx-request");
+    let is_boosted = headers.contains_key("hx-boosted");
+    let is_history_restore = headers.contains_key("hx-history-restore-request");
+    let is_htmx = hx_request && !is_boosted && !is_history_restore;
+
     Ok(RequestData {
         method: parts.method.as_str().to_owned(),
         path: parts.uri.path().to_owned(),
@@ -898,7 +929,9 @@ async fn collect_request(
         query: parts.uri.query().map(parse_urlencoded).unwrap_or_default(),
         form,
         files,
-        is_htmx: headers.contains_key("hx-request"),
+        is_htmx,
+        hx_request,
+        is_boosted,
         headers,
         cookies,
         body: body_text,
@@ -907,7 +940,12 @@ async fn collect_request(
 }
 
 /// Скласти HTTP-відповідь із того, що попросив скрипт.
-fn build_response(body: String, state: ResponseData, is_htmx: bool, kind: RouteKind) -> Response {
+fn build_response(
+    body: String,
+    state: ResponseData,
+    hx_request: bool,
+    kind: RouteKind,
+) -> Response {
     let mut status = StatusCode::from_u16(state.status).unwrap_or(StatusCode::OK);
     let mut response = Response::new(Body::from(body));
 
@@ -927,8 +965,12 @@ fn build_response(body: String, state: ResponseData, is_htmx: bool, kind: RouteK
         if !kind.is_api() {
             // Vary самого по собі мало: деякі CDN його ігнорують і можуть віддати
             // фрагмент замість сторінки (RISKS 2.9), тому HTMX-відповіді не кешуємо.
-            headers.insert(header::VARY, HeaderValue::from_static("HX-Request"));
-            if is_htmx {
+            // Відповідь залежить від усіх трьох заголовків (див. collect_request).
+            headers.insert(
+                header::VARY,
+                HeaderValue::from_static("HX-Request, HX-Boosted, HX-History-Restore-Request"),
+            );
+            if hx_request {
                 headers.insert(
                     header::CACHE_CONTROL,
                     HeaderValue::from_static("private, no-store"),
@@ -952,9 +994,9 @@ fn build_response(body: String, state: ResponseData, is_htmx: bool, kind: RouteK
             insert_header(headers, "HX-Refresh", "true");
         }
         if let Some(url) = &state.redirect {
-            // htmx сам не піде за 302 у фрагменті — для нього потрібен заголовок,
-            // а для звичайного заходу — звичайний редірект.
-            if is_htmx {
+            // htmx сам не піде за 303 — для нього потрібен заголовок (і для
+            // boosted-форми теж), а для звичайного заходу — звичайний редірект.
+            if hx_request {
                 insert_header(headers, "HX-Redirect", url);
             } else {
                 insert_header(headers, "Location", url);
@@ -1030,7 +1072,11 @@ fn render_page(
         }
     }
 
-    let (body, mut response) = render_inner(state, file, kind, data, &session, &csrf, &i18n)?;
+    let hx_request = data.hx_request;
+    let (mut body, mut response) = render_inner(state, file, kind, data, &session, &csrf, &i18n)?;
+    if !kind.is_api() {
+        body = carry_flash(&session, &mut response, body, hx_request);
+    }
     // Cookie ставиться, лише якщо сесію справді змінювали — інакше кожна
     // сторінка тягла б за собою `Set-Cookie` і псувала кешування.
     // `api/` не видає cookie ніколи: сесії він не читає, тож і писати її означало
@@ -1041,6 +1087,84 @@ fn render_page(
         }
     }
     Ok((body, response))
+}
+
+/// Ключ сесії для тостів, що мають пережити редірект.
+const FLASH_KEY: &str = "_flash";
+
+/// Тости через редірект (flash).
+///
+/// `hx.toast("Вітаємо"); res.redirect("/admin")` — найчастіше поєднання, і без
+/// цього тост ніхто не бачить: htmx малює подію з `HX-Trigger`, а наступним
+/// рядком робить `location.href = HX-Redirect`, і сторінка йде геть разом із
+/// тостом (звичайна форма без htmx узагалі отримує 303 без жодного тосту).
+///
+/// Тому тости відповіді, що веде деінде (`res.redirect`, `hx.redirect`,
+/// `hx.refresh`), лягають у сесію, а перша ж відповідь без редіректу їх
+/// віддає: htmx-запиту — подією `showToast`, повній сторінці — вкладеним
+/// `<script type="application/json" data-rhx-toasts>`, який підхоплює `ui.js`.
+fn carry_flash(
+    session: &Session,
+    response: &mut ResponseData,
+    mut body: String,
+    hx_request: bool,
+) -> String {
+    let pending: Vec<Dynamic> = session
+        .get(FLASH_KEY)
+        .try_cast::<rhai::Array>()
+        .unwrap_or_default();
+
+    if response.redirect.is_some() || response.refresh {
+        let mut all = pending;
+        all.extend(take_toasts(response));
+        if !all.is_empty() {
+            session.set(FLASH_KEY, Dynamic::from_array(all));
+        }
+        return body;
+    }
+
+    if !pending.is_empty() {
+        session.remove(FLASH_KEY);
+    }
+    if hx_request {
+        // Попереду тих, що поставила сама ця сторінка: вони сталися раніше.
+        let mut triggers: Vec<(String, Dynamic)> = pending
+            .into_iter()
+            .map(|toast| ("showToast".to_owned(), toast))
+            .collect();
+        triggers.append(&mut response.triggers);
+        response.triggers = triggers;
+    } else {
+        // Звичайне завантаження сторінки: HX-Trigger браузер не читає, тож
+        // власні тости сторінки теж їдуть у тілі — інакше вони губились би.
+        let mut all = pending;
+        all.extend(take_toasts(response));
+        if all.is_empty() {
+            return body;
+        }
+        // JSON у <script> — `</` не має закрити тег.
+        let json = rhaix_script::json_encode(&Dynamic::from_array(all)).replace("</", "<\\/");
+        let tag = format!("<script type=\"application/json\" data-rhx-toasts>{json}</script>");
+        match body.rfind("</body>") {
+            Some(at) => body.insert_str(at, &tag),
+            None => body.push_str(&tag),
+        }
+    }
+    body
+}
+
+/// Забрати з відповіді всі `showToast`, лишивши інші події на місці.
+fn take_toasts(response: &mut ResponseData) -> Vec<Dynamic> {
+    let mut toasts = Vec::new();
+    response.triggers.retain(|(name, detail)| {
+        if name == "showToast" {
+            toasts.push(detail.clone());
+            false
+        } else {
+            true
+        }
+    });
+    toasts
 }
 
 /// Чи може цей метод щось змінити. `GET`, `HEAD` і `OPTIONS` — ні.
@@ -1071,6 +1195,9 @@ fn render_inner(
     i18n: &I18n,
 ) -> Result<(String, ResponseData), PageError> {
     let is_htmx = data.is_htmx;
+    // Boosted-перехід і відновлення історії: повна сторінка, але htmx візьме з
+    // неї лише `<body>` — `<head>` він не чіпає.
+    let full_swap = data.hx_request && !data.is_htmx;
     let path = data.path.clone();
     let response = ScriptResponse::new();
 
@@ -1227,12 +1354,29 @@ fn render_inner(
         })?;
 
     // Підняті стилі — у `<rhaix:head/>`, підняті скрипти — у `<rhaix:scripts/>`.
-    let head = format!(
-        "{}{}",
-        collect_head(state.config.files.as_ref(), &state.config.public_dir()),
-        assets.head()
-    );
-    let scripts = format!("{}{}", collect_scripts(&state.config), assets.scripts());
+    //
+    // Крім boosted-переходу: htmx візьме з відповіді лише `<body>`, і стилі з
+    // `<head>` до сторінки не доїхали б — компонент, якого не було на
+    // попередній сторінці, лишився б без стилю. Тому тут асети їдуть разом зі
+    // сторінкою, як у фрагмента.
+    let (page_html, head_assets, body_assets) = if full_swap {
+        (assets.append_to(page_html), String::new(), String::new())
+    } else {
+        (page_html, assets.head(), assets.scripts())
+    };
+    let css = collect_head(state.config.files.as_ref(), &state.config.public_dir());
+    let client = client_scripts(&state.config);
+    // Layout без `<rhaix:head/>` (писали й так) лишився б без htmx — тоді
+    // ядро йде туди, де воно стояло раніше, у `<rhaix:scripts/>`. Там воно
+    // переживає boosted-своп лише завдяки охороні від повторного запуску.
+    let (head, scripts) = if layout.source().text().contains("<rhaix:head") {
+        (format!("{css}{head_assets}\n  {client}"), body_assets)
+    } else {
+        (
+            format!("{css}{head_assets}"),
+            format!("{client}\n  {body_assets}"),
+        )
+    };
     let wrapped = layout
         .render_with(
             &state.engine,
@@ -1269,22 +1413,29 @@ fn collect_head(files: &dyn Files, public: &Path) -> String {
         )
 }
 
-/// htmx першим, далі решта `public/**.js` — саме те, що в Node-RED-стартері
-/// доводилось вписувати в `index.html` руками.
-fn collect_scripts(config: &Config) -> String {
+/// Скрипти для `<head>`: реєстр, htmx, ядро, UI, далі `public/**.js` — саме
+/// те, що в Node-RED-стартері доводилось вписувати в `index.html` руками.
+///
+/// Усе це — у `<head>`, а не в кінці `<body>`: htmx свопить лише `<body>`, і
+/// скрипти звідти на boosted-переході виконувались би знову (до 1.2.5 так і
+/// було — кожен такий перехід додавав ще один слухач тостів).
+///
+/// Ядро й UI — синхронно, до `<body>`: скрипти компонентів у `<body>`
+/// виконуються під час розбору й мають застати і реєстр, і htmx. Скрипти
+/// проєкту — `defer`: вони виконуються один раз, коли `<body>` уже є, тож
+/// звичний `document.body.addEventListener(...)` на верхньому рівні працює.
+fn client_scripts(config: &Config) -> String {
     let mut scripts = list_assets(config.files.as_ref(), &config.public_dir(), "js");
+    // Розширення htmx (`htmx-ext-*.js`) — першими серед проєктних.
     scripts.sort_by_key(|src| !src.contains("htmx"));
+    let own_ui = scripts.iter().any(|src| src == UI_OVERRIDE);
 
-    // htmx — першим, `rhaix.js` — другим: підняті скрипти компонентів питають
-    // у нього реєстр, тому обидва мають бути вже завантажені.
-    let mut out: Vec<String> = vec![
-        format!("<script src=\"{HTMX_ROUTE}\"></script>"),
-        format!("<script src=\"{CLIENT_ROUTE}\"></script>"),
-    ];
+    let mut out = client::core_tags(own_ui);
     out.extend(
         scripts
             .into_iter()
-            .map(|src| format!("<script src=\"{src}\"></script>")),
+            .filter(|src| src != UI_OVERRIDE)
+            .map(|src| format!("<script src=\"{src}\" defer></script>")),
     );
 
     // У режимі розробки додається крихітний клієнт живого перезавантаження:

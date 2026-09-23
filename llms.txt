@@ -158,23 +158,29 @@ errors, reported before the first request.
 
 ## Layout and the fragment rule
 
-`layouts/main.rhx` is the only full document. It is used **only** on a normal
-visit; when the request carries `HX-Request`, the page's own markup is returned
-with no layout. Files in `partials/` are never wrapped.
+`layouts/main.rhx` is the only full document. An explicit `hx-get`/`hx-post`
+(header `HX-Request`) gets the page's own markup with no layout —
+`req.is_htmx` is true. A **boosted** link/form under `<body hx-boost>`
+(`HX-Boosted`) and a history restore get the **full page**: htmx swaps them
+into the whole `<body>`, so a bare fragment would wipe the layout.
+`req.is_boosted` tells you which. Files in `partials/` are never wrapped.
 
 ```html
 <!DOCTYPE html>
 <html lang="uk">
 <head>
   <title>{{ page.title ?? "app" }}</title>
-  <rhaix:head />        <!-- public/*.css + hoisted <style> -->
+  <rhaix:head />        <!-- css, hoisted <style>, htmx + rhaix.js + ui.js, public/*.js (defer) -->
 </head>
 <body hx-boost="true">
   <main id="main"><slot /></main>
-  <rhaix:scripts />     <!-- public/*.js + rhaix.js + hoisted <script> -->
+  <rhaix:scripts />     <!-- hoisted component <script> only -->
 </body>
 </html>
 ```
+
+Scripts live in `<head>` because htmx only swaps `<body>`: a script at the end
+of `<body>` would re-run on every boosted navigation.
 
 `page` is a shared map: set `page.title` in the page, read it in the layout.
 `page.layout = "admin"` picks `layouts/admin.rhx`; `page.layout = false` renders
@@ -398,11 +404,15 @@ alpha alnum`.
 
 ## Client: errors swap, toasts and modals are yours
 
+Two layers: the **core** `/_rhaix/rhaix.js` (asset registry, non-2xx swapping,
+style dedup — never replace it) and the **interface** `/_rhaix/ui.js` (toasts,
+modal `<dialog>` — yours to replace).
+
 htmx only swaps `2xx` responses by default and silently drops the rest. In
 rhaix `res.status(...)` is an ordinary response (422 with errors, 403 with an
 explanation, 404/500 with diagnostics), so the core overrides
-`htmx.config.responseHandling` to swap everything — nothing to do in the
-project.
+`htmx.config.responseHandling` to swap them (204 excepted) — nothing to do in
+the project.
 
 Validation-under-fields is a component, not a built-in tag:
 
@@ -421,13 +431,27 @@ let value = props.value ?? ""; let error = props.error;
 <Field name="email" label="Email" value={form.email} error={errors.email} />
 ```
 
-Toasts: rendering lives in `window.__rhaix.toast(message, type)`, read at
-event time — override it in `public/app.js` (loaded after `rhaix.js`) to draw
-your own. `hx.toast(...)` on the server is unchanged.
+Toasts: `hx.toast(message, type)` → event `showToast` → `ui.js` draws into
+`#toasts` (created if missing). Types: info, success, error, warning. Several
+toasts per request arrive as one detail with an `items` array. Override just
+the drawing in `public/*.js` — `window.__rhaix.toast = (message, type) => …`,
+`window.__rhaix.toastTimeout = 8000` — read at event time. Default styles use
+`:where()`, so any project CSS wins.
+
+Flash: toasts on a response that redirects (`res.redirect`, `hx.redirect`,
+`hx.refresh`) are kept in the session and delivered once with the next
+non-redirect response — as `showToast` to htmx, as
+`<script type="application/json" data-rhx-toasts>` in a full page (which is
+also how toasts of a plain non-htmx page load arrive). So
+`hx.toast("Welcome"); res.redirect("/admin")` just works.
 
 `<dialog>` opens itself as a real modal (native backdrop, Esc, focus trap) —
-the core calls `showModal()` for every `<dialog>`, wherever it appears
+`ui.js` calls `showModal()` for every `<dialog>`, wherever it appears
 (first load, fragment, `@oob`). Add `data-plain` to opt a specific dialog out.
+
+Replace the whole interface: `rhaix eject ui` copies it to
+`public/rhaix-ui.js`, which is then loaded instead of `/_rhaix/ui.js`. An empty
+file disables toasts and auto-modals.
 
 ## Shared functions
 
@@ -454,7 +478,9 @@ both deduplicated by content hash. `<style scoped>` narrows selectors to the
 file's own markup: every element of that file gets `data-rhx-<hash8>` and
 `[data-rhx-…]` is appended to the last compound selector. Slot content stays in
 the parent's scope; `@keyframes` is left alone; `:root` will not match. A script runs **once per page lifetime**,
-even if its component arrives through several HTMX swaps. `<style>` is global
+even if its component arrives through several HTMX swaps. htmx is already
+loaded when it runs; `public/*.js` (deferred) are not yet — use them from
+event handlers. `<style>` is global
 in v1 — scoping is v1.1. There are no islands and no `<script client>`.
 
 ---
@@ -525,6 +551,7 @@ rhaix serve <dir>    # production from disk: frozen cache, compression
 rhaix build <dir>    # one binary with every file embedded
 rhaix new <dir>      # project skeleton
 rhaix check <dir>    # compile everything without starting; --json for CI
+rhaix eject ui       # copy the built-in toasts/modals into public/rhaix-ui.js to own them
 ```
 
 ## Not in v1, on purpose

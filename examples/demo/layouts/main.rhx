@@ -15,7 +15,8 @@
   <main id="main"><slot /></main>
 
   <div id="toasts" class="toasts"></div>
-  {{! тости й реєстр асетів приїжджають із rhaix.js — його додає <rhaix:scripts/> }}
+  {{! тости малює вбудований /_rhaix/ui.js (його разом із htmx додає <rhaix:head/>);
+      свій вигляд — `window.__rhaix.toast = …` або `rhaix eject ui` (SYNTAX 7.7) }}
 
   <rhaix:scripts />
 </body>
