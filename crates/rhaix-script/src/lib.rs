@@ -4,6 +4,7 @@
 //! не зафіксувати в одному місці: що виводиться замість `()`, що вважається
 //! хибним в `@if`, які ліміти стоять на скрипті користувача.
 
+mod attach;
 mod auth;
 mod crypto;
 mod csv;
@@ -115,6 +116,7 @@ pub fn engine(limits: Limits) -> Engine {
     paginate::register_paginate(&mut engine);
     csv::register_csv(&mut engine);
     grid::register_grid(&mut engine);
+    attach::register_attach(&mut engine);
     live::register_live(&mut engine);
     mail::register_mail(&mut engine);
     markdown::register_markdown(&mut engine);

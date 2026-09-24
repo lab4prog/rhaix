@@ -69,6 +69,7 @@ pub fn check(config: &Config) -> Vec<Issue> {
     let mut issues = Vec::new();
 
     for file in collect_files(config) {
+        issues.extend(markup_warnings(config, &file));
         let loader = Loader::new(config.root.clone(), engine.clone(), cache.clone());
         let Err(diagnostic) = loader.load(&file) else {
             continue;
@@ -93,8 +94,73 @@ pub fn check(config: &Config) -> Vec<Issue> {
     }
 
     issues.extend(layout_warnings(config));
+    issues.extend(config_warnings(config));
     issues.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
     issues
+}
+
+/// Розмітка, що компілюється, але робить не те (див. `lint`).
+fn markup_warnings(config: &Config, file: &Path) -> Vec<Issue> {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return Vec::new();
+    };
+    let name = crate::display_path(&config.root, file);
+    crate::lint::lint(&text)
+        .into_iter()
+        .map(|finding| {
+            let before = &text[..finding.offset];
+            let line = before.matches('\n').count() + 1;
+            let col = before
+                .rsplit('\n')
+                .next()
+                .map(|l| l.chars().count())
+                .unwrap_or(0)
+                + 1;
+            let source = text.lines().nth(line - 1).unwrap_or("").trim_end();
+            Issue {
+                severity: Severity::Warning,
+                rendered: format!(
+                    "попередження: {name}:{line}:{col}\n  {}\n  | {source}\n  підказка: {}\n",
+                    finding.message, finding.hint
+                ),
+                file: name.clone(),
+                line,
+                col,
+                message: finding.message,
+                hint: Some(finding.hint),
+            }
+        })
+        .collect()
+}
+
+/// Ключі `rhaix.toml`, яких фреймворк не читає.
+fn config_warnings(config: &Config) -> Vec<Issue> {
+    let Ok(text) = std::fs::read_to_string(config.root.join("rhaix.toml")) else {
+        return Vec::new();
+    };
+    crate::config_keys::unknown_keys(&text)
+        .into_iter()
+        .map(|unknown| {
+            let message = unknown.message();
+            let hint = unknown
+                .suggestion
+                .as_ref()
+                .map(|s| format!("можливо, `{s}`"))
+                .unwrap_or_else(|| "приберіть рядок або перевірте назву в SYNTAX.md".to_owned());
+            Issue {
+                severity: Severity::Warning,
+                file: "rhaix.toml".to_owned(),
+                line: unknown.line,
+                col: 1,
+                rendered: format!(
+                    "попередження: rhaix.toml:{}\n  {message}\n  підказка: {hint}\n",
+                    unknown.line
+                ),
+                message,
+                hint: Some(hint),
+            }
+        })
+        .collect()
 }
 
 /// Layout, який компілюється, але тихо ламає клієнт.

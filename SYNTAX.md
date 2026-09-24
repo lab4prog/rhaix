@@ -1159,6 +1159,27 @@ let g = db.grid("orders", req, #{
 Готовий рецепт із живим пошуком, який не втрачає фокус, —
 `examples/cookbook/pages/grid.rhx`.
 
+**`db.attach` і `db.attach_count` — пов'язане одним запитом.** Найчастіша
+причина повільної сторінки — запит на кожен рядок таблиці:
+`db.get("companies", d.company_id)` у `@for` дає 25 запитів замість одного. На
+SQLite це майже непомітно, а на PostgreSQL кожен запит — похід по мережі. У
+CRM на rhaix сторінка клієнтів із трьома такими запитами на рядок відповідала
+195 мс, а після `attach` — 19.
+
+```rhai
+let deals = db.find("deals", #{}, #{ limit: 25 });
+deals = db.attach(deals, "companies", "company_id", "company");      // d.company — запис або ()
+let companies = db.find("companies", #{}, #{ limit: 25 });
+companies = db.attach_count(companies, "deals", "company_id", "deals");  // c.deals — число, 0 якщо нема
+```
+
+```html
+<td>{{ d.company.name ?? "-" }}</td>   <td>{{ c.deals }}</td>
+```
+
+`attach` бере записи одним `where id in (…)`, `attach_count` рахує одним
+`group by`. Імена таблиць і колонок перевіряються так само, як у `db.find`.
+
 **Завантаження файлів.** Форма з `enctype="multipart/form-data"`:
 
 ```rhai
@@ -1537,6 +1558,18 @@ error: невідома змінна `todoz`
   │
   = у ланцюжку: pages/todo.rhx → components/TodoList.rhx
 ```
+
+**Попередження `rhaix check`.** Окрім помилок, `check` називає те, що
+компілюється, але робить не те. Попередження не змінюють код виходу.
+
+| Що | Чому це пастка |
+|---|---|
+| `<td>{c.name}</td>` | у тексті одинарні дужки — просто символи (2.4): виведеться буквальне `{c.name}`; треба `{{ c.name }}` |
+| `@class={#{"selected": …}}` | `selected`, `checked`, `disabled` тощо — атрибути, у `@class` вони стають класом; треба `@attr` |
+| layout без `<rhaix:head/>` | скрипти фреймворку перевиконуються на boosted-переходах, а без `<rhaix:scripts/>` htmx не підключається зовсім |
+| невідомий ключ у `rhaix.toml` | `minify_html = true` чи `sesion_days = 7` фреймворк не читає; з підказкою найближчого відомого |
+
+Невідомі ключі конфігу потрапляють і в лог при старті сервера.
 
 ---
 

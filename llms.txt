@@ -245,6 +245,10 @@ db.query("select * from orders where amount > ?", [100])
 db.one("select count(*) as n from orders")
 db.exec("update orders set status = ? where id = ?", ["paid", id])
 db.tx(|t| { t.insert(...); t.update(...); })   // one connection; any error rolls back
+
+// No query per row! One query for the related rows / counts:
+deals = db.attach(deals, "companies", "company_id", "company");       // d.company: row or ()
+companies = db.attach_count(companies, "deals", "company_id", "deals"); // c.deals: int, 0 if none
 ```
 
 Filter operators: `eq ne gt gte lt lte in nin contains starts ends between
@@ -661,7 +665,9 @@ rhaix serve <dir>    # production from disk: frozen cache, compression
 rhaix build <dir>    # one binary with every file embedded
 rhaix new <dir>      # project skeleton
 rhaix check <dir>    # compile everything without starting; --json for CI; warns
-                     # (exit 0) on a layout without <rhaix:head/>
+                     # (exit 0) on: layout without <rhaix:head/>, `{x}` in text
+                     # (literal — use {{ x }}), @class with selected/checked/…
+                     # (use @attr), unknown rhaix.toml keys
 rhaix openapi <dir>  # OpenAPI 3.1 of api/ derived from the files; -o file
 rhaix eject ui       # copy the built-in toasts/modals into public/rhaix-ui.js to own them
 ```

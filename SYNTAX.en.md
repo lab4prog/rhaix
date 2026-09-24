@@ -1167,6 +1167,28 @@ The option is `order`, not `default`: that is a reserved word in Rhai. A
 working recipe with live search that keeps focus is
 `examples/cookbook/pages/grid.rhx`.
 
+**`db.attach` and `db.attach_count` — related rows in one query.** The most
+common reason for a slow page is a query per table row:
+`db.get("companies", d.company_id)` inside `@for` is 25 queries instead of one.
+On SQLite it barely shows; on PostgreSQL every query is a network round trip.
+In a CRM built on rhaix the companies page, with three such queries per row,
+took 195 ms, and 19 ms after `attach`.
+
+```rhai
+let deals = db.find("deals", #{}, #{ limit: 25 });
+deals = db.attach(deals, "companies", "company_id", "company");      // d.company — a row or ()
+let companies = db.find("companies", #{}, #{ limit: 25 });
+companies = db.attach_count(companies, "deals", "company_id", "deals");  // c.deals — a number, 0 if none
+```
+
+```html
+<td>{{ d.company.name ?? "-" }}</td>   <td>{{ c.deals }}</td>
+```
+
+`attach` fetches the rows with one `where id in (…)`, `attach_count` counts
+with one `group by`. Table and column names are checked the same way as in
+`db.find`.
+
 **File uploads.** A form with `enctype="multipart/form-data"`:
 
 ```rhai
@@ -1528,6 +1550,19 @@ error: unknown variable `todoz`
   │
   = chain: pages/todo.rhx → components/TodoList.rhx
 ```
+
+**`rhaix check` warnings.** Besides errors, `check` names what compiles but
+does the wrong thing. Warnings do not change the exit code.
+
+| What | Why it is a trap |
+|---|---|
+| `<td>{c.name}</td>` | in text single braces are just characters (2.4): the literal `{c.name}` is printed; use `{{ c.name }}` |
+| `@class={#{"selected": …}}` | `selected`, `checked`, `disabled` and the like are attributes; in `@class` they become a class; use `@attr` |
+| a layout without `<rhaix:head/>` | framework scripts rerun on boosted navigation, and without `<rhaix:scripts/>` htmx is not loaded at all |
+| an unknown key in `rhaix.toml` | the framework does not read `minify_html = true` or `sesion_days = 7`; the nearest known key is suggested |
+
+Unknown config keys are also logged when the server starts.
+
 
 ---
 

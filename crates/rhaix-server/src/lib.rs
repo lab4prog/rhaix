@@ -9,6 +9,8 @@
 
 mod check;
 mod client;
+mod config_keys;
+mod lint;
 mod multipart;
 mod openapi;
 mod scripts;
@@ -384,6 +386,13 @@ fn app_config(
     app
 }
 
+/// Ключ, якого фреймворк не читає, — у лог при старті (див. `config_keys`).
+fn warn_unknown_keys(text: &str) {
+    for unknown in config_keys::unknown_keys(text) {
+        tracing::warn!("{} (рядок {})", unknown.message(), unknown.line);
+    }
+}
+
 fn cors(file: &ConfigFile) -> Cors {
     file.api
         .as_ref()
@@ -466,6 +475,7 @@ impl Config {
     /// Цим користується код, який генерує `rhaix build`.
     pub fn embedded(files: Arc<dyn Files>, port: Option<u16>) -> anyhow::Result<Self> {
         let raw = files.read_text(Path::new("rhaix.toml")).unwrap_or_default();
+        warn_unknown_keys(&raw);
         let file: ConfigFile =
             toml::from_str(&raw).map_err(|err| anyhow::anyhow!("rhaix.toml: {err}"))?;
         let port = port
@@ -529,6 +539,10 @@ impl Config {
         let path = root.join("rhaix.toml");
         let file: ConfigFile = if path.is_file() {
             let text = fs::read_to_string(&path)?;
+            // `rhaix check` скаже про це сам, попередженням із рядком.
+            if persist_secret {
+                warn_unknown_keys(&text);
+            }
             toml::from_str(&text).map_err(|err| anyhow::anyhow!("rhaix.toml: {err}"))?
         } else {
             ConfigFile::default()
@@ -2456,14 +2470,37 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     // `ConnectInfo` — щоб `req.ip` знав адресу з'єднання.
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async {
+    let app = router.into_make_service_with_connect_info::<SocketAddr>();
+    let shutdown = || async {
         let _ = tokio::signal::ctrl_c().await;
-    })
-    .await?;
+    };
+
+    // `localhost` на Windows (і не лише) спершу означає IPv6 `::1`. Сервер
+    // лише на `127.0.0.1` там не відповідає, і клієнт чекає ~200 мс, перш ніж
+    // спробувати IPv4 — на кожне нове з'єднання. Знайдено на CRM, де кожна
+    // сторінка «відповідала» 0,2 с, а насправді — 5 мс. Тож на loopback
+    // слухаємо обидві адреси; якщо IPv6 немає, просто лишаємось на IPv4.
+    let v6 = match config.addr {
+        SocketAddr::V4(v4) if v4.ip().is_loopback() && v4.port() != 0 => {
+            tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, v4.port()))
+                .await
+                .ok()
+        }
+        _ => None,
+    };
+    match v6 {
+        Some(v6) => {
+            tokio::try_join!(
+                axum::serve(listener, app.clone()).with_graceful_shutdown(shutdown()),
+                axum::serve(v6, app).with_graceful_shutdown(shutdown()),
+            )?;
+        }
+        None => {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(shutdown())
+                .await?
+        }
+    }
     Ok(())
 }
 

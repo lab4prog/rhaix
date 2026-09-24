@@ -24,7 +24,7 @@ use rhai::{Dynamic, Map};
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresDriver;
-pub use query::{Sql, PRIMARY_KEY};
+pub use query::{ident, Sql, PRIMARY_KEY};
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteDriver;
 
