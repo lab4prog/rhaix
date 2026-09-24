@@ -78,6 +78,17 @@ enum Command {
         json: bool,
     },
 
+    /// Опис `api/` у форматі OpenAPI 3.1 — виводиться з самих файлів
+    Openapi {
+        /// Корінь проєкту
+        #[arg(default_value = ".")]
+        root: PathBuf,
+
+        /// Записати у файл замість виводу в консоль
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
     /// Забрати вбудовану частину фреймворку в проєкт, щоб правити її самому
     Eject {
         #[command(subcommand)]
@@ -112,18 +123,41 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Dev { root, port } => {
             let root = normalise(root);
+            // Власний код на Rust не підвантажиш у готовий бінарник — його
+            // збирає cargo разом із сервером.
+            if build::native_module(&root).is_some() {
+                return build::run_native(&root, &detect_framework(), false, port);
+            }
             let config = rhaix_server::Config::load(root, port)?;
             rhaix_server::serve(config).await
         }
 
         Command::Serve { root, port } => {
             let root = normalise(root);
+            if build::native_module(&root).is_some() {
+                return build::run_native(&root, &detect_framework(), true, port);
+            }
             let config = rhaix_server::Config::load_release(root, port)?;
             rhaix_server::serve(config).await
         }
 
         Command::New { path } => scaffold::create(&path),
 
+        Command::Openapi { root, out } => {
+            let root = normalise(root);
+            let config = rhaix_server::Config::load_for_check(root)?;
+            let spec = rhaix_server::openapi(&config)?;
+            let text = serde_json::to_string_pretty(&spec)?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, format!("{text}\n"))?;
+                    let count = spec["paths"].as_object().map(|p| p.len()).unwrap_or(0);
+                    println!("Опис API ({count} шляхів) → {}", path.display());
+                }
+                None => println!("{text}"),
+            }
+            Ok(())
+        }
         Command::Eject {
             what: Eject::Ui,
             root,
@@ -147,20 +181,32 @@ async fn main() -> anyhow::Result<()> {
             let config = rhaix_server::Config::load_for_check(root)?;
             let issues = rhaix_server::check(&config);
 
+            let errors = issues
+                .iter()
+                .filter(|issue| issue.severity == rhaix_server::Severity::Error)
+                .count();
+            let warnings = issues.len() - errors;
+
             if json {
                 let body: Vec<String> = issues.iter().map(|issue| issue.to_json()).collect();
                 println!("[{}]", body.join(","));
-            } else if issues.is_empty() {
-                println!("Помилок не знайдено.");
             } else {
                 for issue in &issues {
                     println!("{}", issue.rendered);
                 }
-                println!("Знайдено проблем: {}", issues.len());
+                if errors == 0 {
+                    println!("Помилок не знайдено.");
+                } else {
+                    println!("Знайдено помилок: {errors}");
+                }
+                if warnings > 0 {
+                    println!("Попереджень: {warnings}");
+                }
             }
 
             // Ненульовий код — щоб `rhaix check` можна було поставити в CI.
-            if issues.is_empty() {
+            // Лише за помилки: попередження не має ламати збірку.
+            if errors == 0 {
                 Ok(())
             } else {
                 std::process::exit(1);

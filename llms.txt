@@ -218,6 +218,7 @@ menu, a header counter) re-renders itself. Two consequences:
 | `http` | `http.get/post/put/patch/delete` |
 | `state` | process-wide key/value: `state.get/set/has/remove`; rate limit: `state.allow(key, max, seconds)`, `state.retry_after(key)`, `state.reset(key)` |
 | `page` | shared map for the page and its layout |
+| `live` | `live.send(topic[, detail])` — tell open pages that data changed |
 | `log` | `log.info/warn/error` |
 | `props` `slots` | inside components |
 | `iter` | inside `@for` |
@@ -386,6 +387,8 @@ raw(v) bool(v)
 
 Date pattern tokens: `YYYY YY MM M DD D HH H mm m ss s`; text in double quotes
 is kept verbatim. `date()` accepts both a timestamp and a database string.
+Parsing is strict: `2026-02-31`, `2026-02-29` (non-leap), `25:00`, `12:60` are
+not dates — `timestamp()` gives `()`, `date()` "", `validate` rule `date` fails.
 
 ## Form validation, pagination, uploads, mail
 
@@ -408,6 +411,18 @@ if !errors.is_empty() { res.status(422); }
 let p = paginate(db.count("orders"), 20, req.query_int("page") ?? 1);
 db.find("orders", #{}, #{ sort: "id desc", limit: 20, skip: p.skip });
 // p: page pages per_page total skip from to has_prev has_next prev next first last window
+
+// admin table in one call: sort + filters + pages, all in the URL
+let g = db.grid("orders", req, #{
+    sort: ["id", "customer", "amount"],        // whitelist: ?sort= outside it is ignored
+    order: "id desc",                          // NOT `default` — reserved word in Rhai
+    filters: #{ status: "eq", customer: "contains", amount: "between" },  // between: amount_from/amount_to
+    per_page: 20,
+    where: #{ owner_id: page.user.id },        // applied last, the URL cannot override it
+});
+// g: rows page total sort dir values sort_url arrow page_url prev_url next_url reset_url filtered
+// markup: href={g.sort_url.amount}  {{ g.arrow.amount }}  href={g.page_url[`${n}`]}
+// operators: eq ne contains starts ends gt gte lt lte between; unknown option/operator is an error
 
 // file uploads (multipart/form-data forms only)
 let f = req.file("doc");          // first upload or (); also req.files(name), req.has_file(name)
@@ -582,7 +597,61 @@ cookies, or another site could act as the logged-in user. Authenticate with a
 header token in `middleware.rhx`. For JSON *with* a session, use a normal page
 with `page.layout = false` and `res.header("content-type", ...)`.
 
-CORS is not provided; set the headers yourself if you need cross-origin calls.
+CORS for `api/` only (pages never get it — they carry the cookie session):
+
+```toml
+[api]
+cors = ["https://app.example.com"]   # or "*" (safe: api/ has no cookies)
+openapi = true                       # serve /api/openapi.json (off by default)
+title = "Orders API"                 # info.title; defaults to the project dir name
+version = "1.0.0"
+```
+
+Preflight is answered before any script; errors and 404 under /api also get
+`Access-Control-Allow-Origin`.
+
+OpenAPI 3.1 is derived from the files, no annotations: `rhaix openapi [-o file]`.
+Paths/params from file names; methods from `if req.method == "X" { … }` blocks
+(the rest of the file is GET; `req.method != "X"` guard → X only); query params
+and types from `req.query_int("page")` etc.; JSON body schema from
+`validate(sent, #{ … })` rules; response codes from `res.status(N)` in that
+branch; summary from the leading comment; bearer + 401/429 from the `/api`
+block of middleware.rhx.
+
+## Live updates
+
+```rhai
+db.insert("orders", o);
+live.send("orders");                       // or live.send("orders", #{ id: id })
+```
+
+```html
+<div id="orders" hx-get="/orders" hx-trigger="live:orders from:body"
+     hx-select="#orders" hx-target="this" hx-swap="outerHTML">…</div>
+```
+
+The server sends only "topic changed"; each page re-fetches with its own
+session, so nothing leaks. The core opens one SSE to `/_rhaix/live` for all
+topics on the page (`hx-trigger="live:…"` or `data-live="a b"`), fires
+`live:<topic>` on <body>, and after a reconnect fires every topic with
+`{ reconnected: true }`. Topic: `[A-Za-z0-9_.-]{1,64}`. Per process (not shared
+between copies behind a balancer).
+
+## Native Rust functions
+
+```rust
+// native/lib.rs
+use rhaix_server::rhai::Engine;           // use this re-export, not your own `rhai`
+pub fn register(engine: &mut Engine) {
+    engine.register_fn("fib", |n: i64| -> i64 { /* … */ n });
+}
+```
+
+`rhaix build` compiles it into the binary; `rhaix dev` / `rhaix serve` see
+`native/` and build a server with it via cargo (target/rhaix-native), templates
+still reload live. Extra crates: `native/dependencies.toml` (`regex = "1"`).
+Embedding: `Config::load(".", None)?.with_native(register)`. A function of the
+same name in scripts/*.rhai overrides the Rust one.
 
 ## Commands
 
@@ -591,7 +660,9 @@ rhaix dev <dir>      # live reload, diagnostics in the browser
 rhaix serve <dir>    # production from disk: frozen cache, compression
 rhaix build <dir>    # one binary with every file embedded
 rhaix new <dir>      # project skeleton
-rhaix check <dir>    # compile everything without starting; --json for CI
+rhaix check <dir>    # compile everything without starting; --json for CI; warns
+                     # (exit 0) on a layout without <rhaix:head/>
+rhaix openapi <dir>  # OpenAPI 3.1 of api/ derived from the files; -o file
 rhaix eject ui       # copy the built-in toasts/modals into public/rhaix-ui.js to own them
 ```
 

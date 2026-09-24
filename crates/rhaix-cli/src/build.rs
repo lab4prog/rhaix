@@ -56,11 +56,18 @@ pub fn build(root: &Path, framework: &Framework, out: Option<PathBuf>) -> anyhow
     let driver = read_driver(root);
     let has_mail = has_section(root, "[mail]");
     let features = server_features(driver.as_deref(), has_mail);
+    let native = native_module(root);
     std::fs::write(
         workdir.join("Cargo.toml"),
-        manifest(&name, framework, &features),
+        manifest(&name, framework, &features, &native_dependencies(root)),
     )?;
-    std::fs::write(workdir.join("src/main.rs"), main_rs(root, &files))?;
+    std::fs::write(
+        workdir.join("src/main.rs"),
+        main_rs(root, &files, native.as_deref()),
+    )?;
+    if native.is_some() {
+        println!("Власний код: native/lib.rs");
+    }
     if let Some(driver) = &driver {
         println!("Драйвер бази: {driver}");
     }
@@ -235,7 +242,111 @@ fn server_features(driver: Option<&str>, mail: bool) -> String {
     format!(", default-features = false, features = [{list}]")
 }
 
-fn manifest(name: &str, framework: &Framework, server_features: &str) -> String {
+/// `native/lib.rs` — власні функції проєкту на Rust, якщо вони є.
+///
+/// Шлях — абсолютний і з прямими слешами: він іде в `#[path = r"…"]`
+/// згенерованого крейта, що лежить деінде.
+pub fn native_module(root: &Path) -> Option<String> {
+    let lib = root.join("native").join("lib.rs");
+    lib.is_file().then(|| {
+        std::fs::canonicalize(&lib)
+            .unwrap_or(lib)
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/")
+    })
+}
+
+/// Залежності власного коду: `native/dependencies.toml` рядками формату
+/// `[dependencies]` із Cargo (`regex = "1"`). Ідуть у згенерований маніфест
+/// як є.
+fn native_dependencies(root: &Path) -> String {
+    std::fs::read_to_string(root.join("native").join("dependencies.toml")).unwrap_or_default()
+}
+
+/// Рядки `main.rs`, що підключають `native/lib.rs`.
+fn native_lines(native: Option<&str>) -> (String, &'static str) {
+    match native {
+        Some(path) => (
+            format!("#[path = r\"{path}\"]\nmod native;\n"),
+            ".with_native(native::register)",
+        ),
+        None => (String::new(), ""),
+    }
+}
+
+/// `rhaix dev` / `rhaix serve` у проєкті з `native/`.
+///
+/// Готовий `rhaix` не може підвантажити Rust-код проєкту: його треба
+/// скомпілювати разом із сервером. Тож генеруємо крихітний крейт, який читає
+/// проєкт із диска (шаблони й далі перезавантажуються наживо), додає
+/// `native::register` і запускається через `cargo run`. Cargo перезбирає
+/// лише те, що змінилось, тож повторний запуск — секунди.
+pub fn run_native(
+    root: &Path,
+    framework: &Framework,
+    release: bool,
+    port: Option<u16>,
+) -> anyhow::Result<()> {
+    let native = native_module(root).expect("викликається лише з native/lib.rs");
+    let workdir = root.join("target").join("rhaix-native");
+    std::fs::create_dir_all(workdir.join("src"))?;
+
+    let driver = read_driver(root);
+    let features = server_features(driver.as_deref(), has_section(root, "[mail]"));
+    let name = format!("{}-native", project_name(root));
+    std::fs::write(
+        workdir.join("Cargo.toml"),
+        manifest(&name, framework, &features, &native_dependencies(root)),
+    )?;
+    let absolute = std::fs::canonicalize(root)
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('\\', "/");
+    let loader = if release { "load_release" } else { "load" };
+    let (module, _) = native_lines(Some(&native));
+    std::fs::write(
+        workdir.join("src/main.rs"),
+        format!(
+            r##"//! Згенеровано `rhaix {mode}`: сервер разом із native/lib.rs проєкту.
+{module}
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {{
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rhaix=info,tower_http=warn".into()),
+        )
+        .with_target(false)
+        .init();
+    let port = std::env::var("RHAIX_PORT").ok().and_then(|p| p.parse().ok());
+    let config = rhaix_server::Config::{loader}(r"{absolute}", port)?
+        .with_native(native::register);
+    rhaix_server::serve(config).await
+}}
+"##,
+            mode = if release { "serve" } else { "dev" },
+        ),
+    )?;
+
+    println!("Власний код: native/lib.rs — збираю сервер разом із ним (cargo)…");
+    let mut command = Command::new("cargo");
+    command.arg("run").current_dir(&workdir);
+    if release {
+        command.arg("--release");
+    }
+    if let Some(port) = port {
+        command.env("RHAIX_PORT", port.to_string());
+    }
+    let status = command.status()?;
+    if !status.success() {
+        anyhow::bail!("сервер із native/lib.rs не зібрався або завершився з помилкою");
+    }
+    Ok(())
+}
+
+fn manifest(name: &str, framework: &Framework, server_features: &str, extra: &str) -> String {
     let server = framework.dependency("rhaix-server", server_features);
     let template = framework.dependency("rhaix-template", "");
     format!(
@@ -256,7 +367,7 @@ rhaix-template = {template}
 anyhow = "1"
 tokio = {{ version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }}
 tracing-subscriber = {{ version = "0.3", features = ["env-filter"] }}
-
+{extra}
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -269,7 +380,8 @@ path = "src/main.rs"
     )
 }
 
-fn main_rs(root: &Path, files: &[PathBuf]) -> String {
+fn main_rs(root: &Path, files: &[PathBuf], native: Option<&str>) -> String {
+    let (module, with_native) = native_lines(native);
     let mut entries = String::new();
     for file in files {
         let relative = file
@@ -285,7 +397,7 @@ fn main_rs(root: &Path, files: &[PathBuf]) -> String {
 
     format!(
         r##"//! Згенеровано `rhaix build`. Усі файли проєкту вшиті нижче.
-
+{module}
 /// Файли проєкту: шлях відносно кореня → вміст.
 static FILES: &[(&str, &[u8])] = &[
 {entries}];
@@ -297,7 +409,7 @@ async fn main() -> anyhow::Result<()> {{
     // Порт: спершу змінна оточення (зручно для контейнерів), далі `rhaix.toml`.
     let port = std::env::var("PORT").ok().and_then(|value| value.parse().ok());
     let files = rhaix_template::EmbeddedFiles::new(FILES);
-    let config = rhaix_server::Config::embedded(files, port)?;
+    let config = rhaix_server::Config::embedded(files, port)?{with_native};
     rhaix_server::serve(config).await
 }}
 
@@ -331,7 +443,7 @@ mod tests {
     #[test]
     fn generated_main_lists_files_with_relative_paths() {
         let root = Path::new("C:/app");
-        let code = main_rs(root, &[PathBuf::from("C:/app/pages/index.rhx")]);
+        let code = main_rs(root, &[PathBuf::from("C:/app/pages/index.rhx")], None);
         assert!(
             code.contains("(\"pages/index.rhx\", include_bytes!"),
             "{code}"
@@ -341,11 +453,41 @@ mod tests {
         // Зібраний застосунок має вміти говорити: інакше попередження про
         // незаданий секрет нікуди не потрапляє.
         assert!(code.contains("tracing_subscriber::fmt()"), "{code}");
+        assert!(
+            !code.contains("mod native"),
+            "без native/ — без модуля: {code}"
+        );
+    }
+
+    #[test]
+    fn native_code_is_compiled_into_the_binary() {
+        let root = Path::new("C:/app");
+        let code = main_rs(root, &[], Some("C:/app/native/lib.rs"));
+        assert!(
+            code.contains(
+                "#[path = r\"C:/app/native/lib.rs\"]
+mod native;"
+            ),
+            "{code}"
+        );
+        assert!(code.contains(".with_native(native::register)"), "{code}");
+
+        let text = manifest(
+            "demo",
+            &Framework::Registry("1.2.1".into()),
+            "",
+            "regex = \"1\"
+",
+        );
+        assert!(
+            text.contains("regex = \"1\""),
+            "залежності native/ — у маніфест: {text}"
+        );
     }
 
     #[test]
     fn manifest_declares_its_own_workspace() {
-        let text = manifest("demo", &Framework::Path("C:/rhaix".into()), "");
+        let text = manifest("demo", &Framework::Path("C:/rhaix".into()), "", "");
         assert!(text.contains("[workspace]"), "{text}");
         assert!(text.contains("C:/rhaix/crates/rhaix-server"), "{text}");
         assert!(text.contains("tracing-subscriber"), "{text}");
@@ -362,7 +504,7 @@ mod tests {
     fn a_released_cli_builds_against_crates_io() {
         // Бінарник із релізу не має репозиторію поруч: згенерований крейт має
         // брати фреймворк із crates.io, і саме тієї версії, що й CLI.
-        let text = manifest("demo", &Framework::Registry("1.2.1".into()), "");
+        let text = manifest("demo", &Framework::Registry("1.2.1".into()), "", "");
         // `[[bin]] path = "src/main.rs"` лишається — шукаємо саме шлях до крейтів.
         assert!(!text.contains("/crates/"), "шлях до чужої машини: {text}");
         assert!(
@@ -378,7 +520,7 @@ mod tests {
     #[test]
     fn registry_mode_keeps_the_features() {
         let features = server_features(Some("postgres"), true);
-        let text = manifest("demo", &Framework::Registry("1.2.1".into()), &features);
+        let text = manifest("demo", &Framework::Registry("1.2.1".into()), &features, "");
         assert!(
             text.contains(
                 "rhaix-server = { version = \"=1.2.1\", default-features = false, features = [\"postgres\", \"mail\"] }"

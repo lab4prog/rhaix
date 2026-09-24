@@ -1,0 +1,86 @@
+---
+// ЗАДАЧА: таблиця для адмінки — сортування за будь-якою колонкою, фільтри,
+// сторінки, і все це живе в адресі (посилання можна надіслати колезі).
+//
+// `db.grid` читає з адреси `sort`, `dir`, `page` і фільтри, звіряє колонку
+// сортування зі списком дозволених (інакше це ін'єкція в `order by`) і
+// повертає рядки, пагінацію та готові посилання, які зберігають усе інше.
+page.title = "Адмін-таблиця";
+
+let g = db.grid("orders", req, #{
+    sort:     ["id", "customer", "amount", "status", "created"],
+    order:    "id desc",
+    filters:  #{ status: "eq", customer: "contains", amount: "between" },
+    // Маленька сторінка, щоб на чотирьох демо-замовленнях було видно пагінацію.
+    per_page: 2,
+});
+
+let columns = [
+    #{ key: "id",       title: "№" },
+    #{ key: "customer", title: "Клієнт" },
+    #{ key: "amount",   title: "Сума" },
+    #{ key: "status",   title: "Статус" },
+    #{ key: "created",  title: "Створено" },
+];
+---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
+<h1>Адмін-таблиця</h1>
+
+<!-- Звичайна GET-форма: без JS вона теж працює. hx-get робить те саме без
+     перезавантаження, а `sort`/`dir` у прихованих полях — щоб фільтр не
+     скидав сортування. Оновлюються лише результати (`hx-select`): якби
+     перемальовувалась і форма, поле втрачало б фокус посеред набору. -->
+<form class="grid-filters" action="/grid" method="get"
+      hx-get="/grid" hx-target="#grid-results" hx-select="#grid-results"
+      hx-swap="outerHTML" hx-push-url="true"
+      hx-trigger="input changed delay:400ms from:input[name=customer], change, submit">
+  <input type="hidden" name="sort" value={g.sort}>
+  <input type="hidden" name="dir" value={g.dir}>
+  <label>Клієнт <input name="customer" value={g.values.customer} placeholder="частина імені"></label>
+  <label>Статус
+    <select name="status">
+      <option value="">усі</option>
+      <option @for={s in ["new", "paid", "cancelled"]} value={s}
+              @attr={#{ selected: s == g.values.status }}>{{ status_label(s) }}</option>
+    </select>
+  </label>
+  <label>Сума від <input name="amount_from" value={g.values.amount_from} size="6"></label>
+  <label>до <input name="amount_to" value={g.values.amount_to} size="6"></label>
+  <button>Знайти</button>
+</form>
+
+<div id="grid-results">
+<p @if={g.filtered}>Показано з фільтром.
+  <a href={g.reset_url} hx-get={g.reset_url} hx-target="#main" hx-push-url="true">Скинути</a></p>
+<table>
+  <thead>
+    <tr>
+      <th @for={c in columns}>
+        <a href={g.sort_url[c.key]} hx-get={g.sort_url[c.key]}
+           hx-target="#main" hx-push-url="true">{{ c.title }} {{ g.arrow[c.key] }}</a>
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr @for={o in g.rows}>
+      <td>{{ o.id }}</td>
+      <td>{{ o.customer }}</td>
+      <td>{{ money(o.amount) }}</td>
+      <td><span @class={status_class(o.status)}>{{ status_label(o.status) }}</span></td>
+      <td>{{ date(o.created, "DD.MM.YYYY HH:mm") }}</td>
+    </tr>
+    <tr @if={g.rows.is_empty()}><td colspan="5">Нічого не знайдено</td></tr>
+  </tbody>
+</table>
+
+<p class="filters">
+  <a @if={g.page.has_prev} href={g.prev_url} hx-get={g.prev_url}
+     hx-target="#main" hx-push-url="true">← назад</a>
+  <a @for={n in g.page.window} href={g.page_url[`${n}`]} hx-get={g.page_url[`${n}`]}
+     hx-target="#main" hx-push-url="true" @class={#{"active": n == g.page.page}}>{{ n }}</a>
+  <a @if={g.page.has_next} href={g.next_url} hx-get={g.next_url}
+     hx-target="#main" hx-push-url="true">далі →</a>
+</p>
+<p>Показано {{ g.page.from }}–{{ g.page.to }} з {{ g.total }}.</p>
+</div>

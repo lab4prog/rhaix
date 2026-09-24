@@ -47,4 +47,60 @@
       else kept.add(hash);
     }
   });
+
+  // Живі оновлення (`live.send("orders")` на сервері). Сторінка слухає теми
+  // звичайним htmx: `hx-trigger="live:orders from:body"` — а тут одна
+  // SSE-підписка на всі теми, які згадані на сторінці (у `hx-trigger` або в
+  // `data-live="orders users"` для власного JS). Подія приходить на <body>
+  // як `live:<тема>` з detail від сервера.
+  let source = null;
+  let subscribed = "";
+  let dropped = false;
+
+  function topics() {
+    const found = new Set();
+    for (const el of document.querySelectorAll('[hx-trigger*="live:"], [data-live]')) {
+      const trigger = el.getAttribute("hx-trigger") || "";
+      for (const match of trigger.matchAll(/live:([\w.-]+)/g)) found.add(match[1]);
+      for (const name of (el.getAttribute("data-live") || "").split(/[\s,]+/)) {
+        if (name) found.add(name);
+      }
+    }
+    return [...found].sort();
+  }
+
+  function fire(topic, detail) {
+    document.body.dispatchEvent(
+      new CustomEvent(`live:${topic}`, { detail: detail ?? {}, bubbles: true })
+    );
+  }
+
+  // Після свопу набір тем міг змінитись — перепідписуємось лише тоді.
+  function subscribe() {
+    const list = topics();
+    const key = list.join(",");
+    if (key === subscribed) return;
+    subscribed = key;
+    if (source) source.close();
+    source = null;
+    if (!list.length) return;
+    source = new EventSource(`/_rhaix/live?topics=${encodeURIComponent(key)}`);
+    source.onmessage = (event) => {
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      fire(message.topic, message.detail);
+    };
+    // Поки з'єднання не було, події могли пройти повз. EventSource
+    // перепідключається сам; ми лише кажемо всім темам «перезапитай».
+    source.onerror = () => { dropped = true; };
+    source.onopen = () => {
+      if (!dropped) return;
+      dropped = false;
+      for (const topic of list) fire(topic, { reconnected: true });
+    };
+  }
+  rhaix.liveTopics = topics;
+
+  // `htmx:load` приходить і на першому завантаженні, і на кожному свопі.
+  document.addEventListener("htmx:load", subscribe);
 })();

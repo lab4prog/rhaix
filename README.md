@@ -64,6 +64,18 @@ rhaix new myapp && rhaix dev myapp
 - **асети компонента**: `<style>` і `<script>` живуть поруч із розміткою, а ядро
   піднімає їх у документ один раз; у фрагменті скрипт загорнутий у реєстр, тож
   не виконується повторно;
+- **таблиці для адмінки**: `db.grid("orders", req, #{ sort: [...], filters: #{...} })`
+  дає рядки, сторінки й посилання, що зберігають сортування й фільтри, а
+  колонка сортування звіряється з білим списком;
+- **живі оновлення**: `live.send("orders")` на сервері — і кожна відкрита
+  сторінка з `hx-trigger="live:orders from:body"` оновлюється сама;
+- **для API**: CORS для `api/` одним рядком конфігу, обмеження спроб
+  `state.allow(key, max, seconds)`, а `rhaix openapi` виводить опис OpenAPI 3.1
+  з самих файлів;
+- **вивантаження**: `res.download("замовлення.csv", csv(rows, #{ columns: [...] }))` —
+  RFC 4180, знешкоджені формули, BOM для Excel;
+- **власний Rust**: функції з `native/lib.rs` вшиває `rhaix build` і підхоплює
+  `rhaix dev` — коли Rhai не вистачає;
 - **тости й модалки — окремо від ядра**: `hx.toast(...)` на сервері, а малює
   їх вбудований `/_rhaix/ui.js`, який можна перевизначити однією функцією або
   забрати в проєкт цілком (`rhaix eject ui`); `<dialog>` сам стає справжнім
@@ -179,7 +191,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | `rhaix-script` | рушій Rhai, ліміти, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, сесії й CSRF, `http`, дати й рядки, бенчмарк |
 | `rhaix-template` | лексер `.rhx`, AST, компіляція виразів, компоненти, рендер, екранування |
 | `rhaix-server` | axum: маршрути, layout, правило фрагмента, статика |
-| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check`, `rhaix eject ui` |
+| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check`, `rhaix openapi`, `rhaix eject ui` |
 | `rhaix-lsp` | мовний сервер: діагностика, перехід до компонента, доповнення |
 
 `rhaix-runtime` поки лишається частиною `rhaix-template`: реєстр компонентів

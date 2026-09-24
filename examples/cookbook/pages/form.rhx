@@ -24,6 +24,7 @@ if req.method == "POST" {
             status:   "new",
         });
         saved = db.get("orders", id);
+        live.send("orders", #{ id: id });
         form = #{ customer: "", email: "", amount: "" };
         hx.toast("Замовлення створено", "success");
     } else {

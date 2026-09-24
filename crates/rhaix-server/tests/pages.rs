@@ -1294,3 +1294,50 @@ async fn scoped_styles_only_reach_their_own_component() {
         "{body}"
     );
 }
+
+#[tokio::test]
+async fn live_send_reaches_only_the_pages_listening_to_that_topic() {
+    use tokio_stream::StreamExt;
+
+    // Один застосунок: підписка й сповіщення мають іти через той самий канал.
+    let router = app();
+    let subscription = router
+        .clone()
+        .oneshot(get("/_rhaix/live?topics=orders"))
+        .await
+        .expect("підписка");
+    assert_eq!(
+        subscription.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+    let mut events = subscription.into_body().into_data_stream();
+
+    let (status, _, _) = send(&router, get("/notify")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+        .await
+        .expect("подія має прийти")
+        .expect("потік не закритий")
+        .expect("байти");
+    let text = String::from_utf8_lossy(&chunk);
+    // `users` ніхто на цій сторінці не слухає — першою приходить `orders`.
+    assert!(
+        text.contains(r#"data: {"topic":"orders","detail":{"id":7}}"#),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn native_rust_functions_are_callable_from_pages() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixture");
+    let config = Config::load(root, Some(0)).expect("конфіг").with_native(
+        |engine: &mut rhaix_server::rhai::Engine| {
+            engine.register_fn("native_tax", |amount: f64| amount * 0.2);
+        },
+    );
+    let router = build(config).expect("застосунок").0;
+    let (status, _, body) = send(&router, get("/native")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("ПДВ: 50"), "{body}");
+}

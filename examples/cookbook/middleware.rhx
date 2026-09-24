@@ -5,6 +5,14 @@
 // автентифікацію не знають нічого. Сесії там немає навмисно (SYNTAX 6.7), тож
 // єдиний спосіб назватись — заголовок `Authorization`.
 if req.path.starts_with("/api/") {
+    // Спершу ліміт за адресою — ще до перевірки токена, інакше токен можна
+    // підбирати без кінця. 120 запитів за хвилину з однієї адреси.
+    if !state.allow(`api-ip:${req.ip}`, 120, 60) {
+        res.status(429);
+        res.header("Retry-After", `${state.retry_after(`api-ip:${req.ip}`)}`);
+        return #{ error: "забагато запитів" };
+    }
+
     let sent = req.header("authorization") ?? "";
     // `Bearer <токен>` — решта форматів нас не цікавить.
     let token = if sent.starts_with("Bearer ") { sent.sub_string(7).trim() } else { "" };
@@ -16,6 +24,16 @@ if req.path.starts_with("/api/") {
         res.status(401);
         // Мапа стає JSON сама — бо маршрут із `api/`.
         return #{ error: "потрібен дійсний токен" };
+    }
+
+    // Потім — за самим токеном: один клієнт не має з'їсти сервер для всіх
+    // інших, хоч би з яких адрес він ходив. Ключ — хеш, а не токен: так
+    // сам токен не лежить у пам'яті процесу.
+    let per_token = `api-token:${sha256(token)}`;
+    if !state.allow(per_token, 60, 60) {
+        res.status(429);
+        res.header("Retry-After", `${state.retry_after(per_token)}`);
+        return #{ error: "ліміт: 60 запитів за хвилину на токен" };
     }
     return;
 }

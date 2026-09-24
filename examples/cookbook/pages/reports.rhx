@@ -16,6 +16,7 @@ if req.method == "POST" {
     let id = req.form_int("id");
     if id != () {
         db.update("orders", id, #{ status: "cancelled" });
+        live.send("orders");
         hx.toast(`Замовлення №${id} скасовано`, "success");
     }
 }

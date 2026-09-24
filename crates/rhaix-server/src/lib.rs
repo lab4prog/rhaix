@@ -10,10 +10,12 @@
 mod check;
 mod client;
 mod multipart;
+mod openapi;
 mod scripts;
 
-pub use check::{check, Issue};
+pub use check::{check, Issue, Severity};
 pub use client::{CLIENT_JS, CLIENT_ROUTE, HTMX_JS, HTMX_ROUTE, UI_JS, UI_OVERRIDE, UI_ROUTE};
+pub use openapi::openapi;
 
 use std::fs;
 use std::net::SocketAddr;
@@ -32,7 +34,7 @@ use rhai::{Dynamic, Engine, Map, Scope};
 use rhaix_db::Database;
 use rhaix_script::{
     display, engine as build_engine, parse_cookies, parse_tz_offset, parse_urlencoded, Catalog,
-    Csrf, Deadline, Http, Hx, I18n, Limits, LocaleScope, Log, Mail, MailConfig,
+    Csrf, Deadline, Http, Hx, I18n, Limits, Live, LocaleScope, Log, Mail, MailConfig,
     Request as ScriptRequest, RequestData, Response as ScriptResponse, ResponseData, Secret,
     Session, SessionOptions, State as ScriptState, UploadData, CSRF_FIELD, CSRF_HEADER,
 };
@@ -62,6 +64,19 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 
 /// Канал, яким `rhaix dev` повідомляє браузеру, що пора перезавантажитись.
 const RELOAD_ROUTE: &str = "/_rhaix/events";
+/// Канал живих оновлень (`live.send`): `/_rhaix/live?topics=orders,users`.
+pub const LIVE_ROUTE: &str = "/_rhaix/live";
+/// Скільки повідомлень може накопичитись для повільного підписника, перш
+/// ніж він їх пропустить. Пропуск не страшний: клієнт на перепідключенні
+/// перезапитує все, що слухає.
+const LIVE_BUFFER: usize = 1024;
+
+/// Одне повідомлення каналу: тема й detail у JSON.
+#[derive(Debug)]
+struct LiveMessage {
+    topic: String,
+    detail: String,
+}
 
 /// Налаштування застосунку: `rhaix.toml` плюс те, що задав CLI.
 #[derive(Clone)]
@@ -78,6 +93,53 @@ pub struct Config {
     pub embedded: bool,
     /// Секція `[app]`: секрет, сесія, CSRF, часовий пояс.
     pub app: AppConfig,
+    /// Власні функції на Rust (`native/lib.rs` або `with_native`).
+    pub native: Native,
+}
+
+/// Rhai, на якому працюють скрипти, — для коду проєкту на Rust:
+/// `rhaix_server::rhai::Engine`. Власна залежність `rhai` в іншій версії дала
+/// б інший тип `Engine`, і `register` просто не зібрався б.
+pub use rhai;
+
+/// Функція, що реєструє власні Rust-функції в рушії скриптів.
+///
+/// Коли Rhai не вистачає — важка математика, чужий крейт, швидкий парсер —
+/// проєкт пише звичайну функцію на Rust і реєструє її тут. Для скрипта вона
+/// нічим не відрізняється від вбудованих: `vat(total)`, `qr_svg(url)`.
+#[derive(Clone, Default)]
+pub struct Native(Option<Register>);
+
+/// `fn register(engine: &mut Engine)` проєкту.
+type Register = Arc<dyn Fn(&mut Engine) + Send + Sync>;
+
+impl std::fmt::Debug for Native {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Native(так)"
+        } else {
+            "Native(ні)"
+        })
+    }
+}
+
+impl Config {
+    /// Додати власні функції на Rust.
+    ///
+    /// ```ignore
+    /// let config = rhaix_server::Config::load(".", None)?
+    ///     .with_native(|engine| {
+    ///         engine.register_fn("vat", |amount: f64| amount * 0.2);
+    ///     });
+    /// rhaix_server::serve(config).await
+    /// ```
+    ///
+    /// `rhaix build`, `rhaix dev` і `rhaix serve` роблять це самі, якщо в
+    /// проєкті є `native/lib.rs` із `pub fn register(engine: &mut Engine)`.
+    pub fn with_native(mut self, register: impl Fn(&mut Engine) + Send + Sync + 'static) -> Self {
+        self.native = Native(Some(Arc::new(register)));
+        self
+    }
 }
 
 /// Те, що налаштовує поведінку застосунку, а не сервера.
@@ -100,6 +162,64 @@ pub struct AppConfig {
     /// `[server] trust_proxy`: застосунок стоїть за своїм зворотним проксі
     /// (nginx, Caddy), і `req.ip` береться з `X-Forwarded-For`.
     pub trust_proxy: bool,
+    /// `[api] cors`: яким сайтам браузер дозволить читати відповіді `api/`.
+    pub cors: Cors,
+    /// `[api] title` / `version` — для опису OpenAPI.
+    pub api_title: String,
+    pub api_version: String,
+    /// `[api] openapi = true` — віддавати опис на `/api/openapi.json`.
+    pub api_docs: bool,
+}
+
+/// Хто може звертатись до `api/` з браузера на іншому сайті.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Cors {
+    /// За замовчуванням: лише той самий сайт, як і без CORS узагалі.
+    #[default]
+    Off,
+    /// `cors = "*"` — будь-який сайт. У `api/` немає cookie-сесії, тож чужий
+    /// сайт не може діяти від імені залогіненого користувача: він побачить
+    /// рівно те, що побачив би `curl` без токена.
+    Any,
+    /// `cors = ["https://app.example.com"]` — лише ці адреси.
+    List(Vec<String>),
+}
+
+impl Cors {
+    /// Значення `Access-Control-Allow-Origin` для цього `Origin`, якщо можна.
+    fn allow(&self, origin: Option<&str>) -> Option<String> {
+        let origin = origin?;
+        match self {
+            Cors::Off => None,
+            Cors::Any => Some("*".to_owned()),
+            Cors::List(list) => list
+                .iter()
+                .any(|allowed| allowed.trim_end_matches('/').eq_ignore_ascii_case(origin))
+                .then(|| origin.to_owned()),
+        }
+    }
+}
+
+/// `[api] cors` у файлі: рядок `"*"` або список адрес.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum CorsSetting {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl CorsSetting {
+    fn into_cors(self) -> Cors {
+        match self {
+            CorsSetting::One(value) if value.trim() == "*" => Cors::Any,
+            CorsSetting::One(value) if value.trim().is_empty() => Cors::Off,
+            CorsSetting::One(value) => Cors::List(vec![value.trim().to_owned()]),
+            CorsSetting::Many(list) if list.is_empty() => Cors::Off,
+            CorsSetting::Many(list) => {
+                Cors::List(list.into_iter().map(|v| v.trim().to_owned()).collect())
+            }
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -113,6 +233,10 @@ impl Default for AppConfig {
             mail: MailConfig::default(),
             locale: "uk".to_owned(),
             trust_proxy: false,
+            cors: Cors::Off,
+            api_title: "API".to_owned(),
+            api_version: "1.0.0".to_owned(),
+            api_docs: false,
         }
     }
 }
@@ -125,6 +249,7 @@ impl std::fmt::Debug for Config {
             .field("database", &self.database)
             .field("dev", &self.dev)
             .field("app", &self.app)
+            .field("native", &self.native)
             .finish()
     }
 }
@@ -142,6 +267,31 @@ struct ConfigFile {
     db: Option<DatabaseConfig>,
     app: Option<AppSection>,
     mail: Option<MailSection>,
+    api: Option<ApiSection>,
+}
+
+/// `[api]` у `rhaix.toml`.
+#[derive(Debug, Default, serde::Deserialize)]
+struct ApiSection {
+    cors: Option<CorsSetting>,
+    title: Option<String>,
+    version: Option<String>,
+    openapi: Option<bool>,
+}
+
+/// `[api]` → поля `AppConfig`, що стосуються опису API.
+fn apply_api_section(app: &mut AppConfig, file: &ConfigFile, root: &Path) {
+    app.cors = cors(file);
+    let api = file.api.as_ref();
+    app.api_title = api
+        .and_then(|a| a.title.clone())
+        // Без назви — ім'я теки проєкту: краще, ніж безлике «API».
+        .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "API".to_owned());
+    if let Some(version) = api.and_then(|a| a.version.clone()) {
+        app.api_version = version;
+    }
+    app.api_docs = api.and_then(|a| a.openapi).unwrap_or(false);
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -234,6 +384,14 @@ fn app_config(
     app
 }
 
+fn cors(file: &ConfigFile) -> Cors {
+    file.api
+        .as_ref()
+        .and_then(|api| api.cors.clone())
+        .map(CorsSetting::into_cors)
+        .unwrap_or_default()
+}
+
 fn trust_proxy(file: &ConfigFile) -> bool {
     file.server
         .as_ref()
@@ -298,6 +456,7 @@ impl Config {
             files: DiskFiles::shared(),
             embedded: false,
             app: AppConfig::default(),
+            native: Native::default(),
         }
     }
 
@@ -321,6 +480,7 @@ impl Config {
             false,
         );
         app.trust_proxy = trust_proxy(&file);
+        apply_api_section(&mut app, &file, Path::new(""));
         Ok(Self {
             root: PathBuf::new(),
             addr: SocketAddr::from(([0, 0, 0, 0], port)),
@@ -329,6 +489,7 @@ impl Config {
             files,
             embedded: true,
             app,
+            native: Native::default(),
         })
     }
 
@@ -385,6 +546,7 @@ impl Config {
             dev && persist_secret,
         );
         app.trust_proxy = trust_proxy(&file);
+        apply_api_section(&mut app, &file, &root);
         Ok(Self {
             root,
             addr: SocketAddr::from(([127, 0, 0, 1], port)),
@@ -393,6 +555,7 @@ impl Config {
             files: DiskFiles::shared(),
             embedded: false,
             app,
+            native: Native::default(),
         })
     }
 
@@ -486,6 +649,9 @@ struct AppState {
     mail: Mail,
     /// Переклади з `locales/*.toml`, спільні для всіх запитів.
     catalog: Arc<Catalog>,
+    /// `live.send(...)` у скриптах і канал, з якого читає `/_rhaix/live`.
+    live: Live,
+    live_tx: broadcast::Sender<Arc<LiveMessage>>,
 }
 
 /// Зібрати застосунок: сторінки + статика з `public/`.
@@ -567,8 +733,22 @@ pub fn build_watched(
         config.files.clone(),
         config.dev,
     ));
+    // Власні функції — до спільних скриптів: ті можуть їх викликати.
+    if let Some(register) = &config.native.0 {
+        register(&mut engine);
+    }
     scripts::load_globals(&mut engine, &config.root, config.files.as_ref())?;
     let engine = Arc::new(engine);
+
+    let (live_tx, _) = broadcast::channel::<Arc<LiveMessage>>(LIVE_BUFFER);
+    let publisher = live_tx.clone();
+    let live = Live::new(Arc::new(move |topic: &str, detail: &str| {
+        // Немає підписників — не помилка: сторінку ніхто не тримає відкритою.
+        let _ = publisher.send(Arc::new(LiveMessage {
+            topic: topic.to_owned(),
+            detail: detail.to_owned(),
+        }));
+    }));
 
     let state = AppState {
         config: config.clone(),
@@ -586,6 +766,8 @@ pub fn build_watched(
         http: Http::new(config.app.http_timeout),
         mail: Mail::new(config.app.mail.clone()),
         catalog: Arc::new(load_catalog(&config)),
+        live,
+        live_tx,
     };
 
     let mut router = Router::new();
@@ -608,6 +790,42 @@ pub fn build_watched(
     // 404 — рівно та невідповідність, через яку розбір падає замість пояснення.
     // Маршрут реєструється, лише якщо `api/` узагалі є: інакше він перехопив би
     // цілком законний `public/api/…`.
+    // Опис API — лише якщо попросили (`[api] openapi = true`): перелік
+    // маршрутів і полів — не те, що кожен застосунок хоче показувати світу.
+    // Збирається при старті; у dev — на кожен запит, щоб правка файлу була
+    // видна одразу.
+    let router = if config.app.api_docs && routes.iter().any(|route| route.kind.is_api()) {
+        let docs_config = config.clone();
+        let frozen = if config.dev {
+            None
+        } else {
+            Some(openapi::openapi(&config)?.to_string())
+        };
+        router.route(
+            "/api/openapi.json",
+            axum::routing::get(move || {
+                let body = match &frozen {
+                    Some(body) => Ok(body.clone()),
+                    None => openapi::openapi(&docs_config).map(|spec| spec.to_string()),
+                };
+                std::future::ready(match body {
+                    Ok(body) => (
+                        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+                        body,
+                    )
+                        .into_response(),
+                    Err(err) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        json_body(&format!("опис API не зібрався: {err}")),
+                    )
+                        .into_response(),
+                })
+            }),
+        )
+    } else {
+        router
+    };
+
     let router = if routes.iter().any(|route| route.kind.is_api()) {
         router.route(
             "/api/{*rest}",
@@ -615,6 +833,21 @@ pub fn build_watched(
                 (StatusCode::NOT_FOUND, json_body("маршрут не знайдено")).into_response()
             }),
         )
+    } else {
+        router
+    };
+
+    // CORS — шаром над усім роутером, а не в `serve_page`: так ним накриті й
+    // відповіді маршрутів, і помилки, і 404 під `/api/`, а preflight
+    // (`OPTIONS`) відповідається ще до того, як запит дійде до скрипта.
+    let router = if state.config.app.cors != Cors::Off {
+        let cors = Arc::new(state.config.app.cors.clone());
+        router.layer(axum::middleware::from_fn(
+            move |request: HttpRequest<Body>, next: axum::middleware::Next| {
+                let cors = cors.clone();
+                async move { api_cors(&cors, request, next).await }
+            },
+        ))
     } else {
         router
     };
@@ -628,6 +861,48 @@ pub fn build_watched(
             let stream = BroadcastStream::new(reload.subscribe())
                 .map(|_| Ok::<Event, std::convert::Infallible>(Event::default().event("reload")));
             std::future::ready(Sse::new(stream).keep_alive(KeepAlive::default()))
+        }),
+    );
+
+    // Живі оновлення: одна SSE-підписка на сторінку, на ті теми, які вона
+    // слухає. Лише сигнал «тема змінилась» — дані сторінка перезапитує сама.
+    let live_tx = state.live_tx.clone();
+    let router = router.route(
+        LIVE_ROUTE,
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let topics: std::collections::HashSet<String> = uri
+                .query()
+                .map(parse_urlencoded)
+                .and_then(|query| query.get("topics").cloned())
+                .unwrap_or_default()
+                .split(',')
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let stream = BroadcastStream::new(live_tx.subscribe()).filter_map(move |message| {
+                // `Lagged` — пропущені повідомлення; клієнт надолужить сам.
+                let message = message.ok()?;
+                if !topics.contains(&message.topic) {
+                    return None;
+                }
+                let data = format!(
+                    "{{\"topic\":{},\"detail\":{}}}",
+                    serde_json::Value::String(message.topic.clone()),
+                    message.detail
+                );
+                Some(Ok::<Event, std::convert::Infallible>(
+                    Event::default().data(data),
+                ))
+            });
+            std::future::ready(
+                (
+                    // Проксі на кшталт nginx буферизує відповідь — і події
+                    // доходили б пачками з запізненням.
+                    [("X-Accel-Buffering", "no")],
+                    Sse::new(stream).keep_alive(KeepAlive::default()),
+                )
+                    .into_response(),
+            )
         }),
     );
 
@@ -879,6 +1154,78 @@ async fn serve_page(
     };
 
     build_response(body, response_state, hx_request, kind)
+}
+
+/// Чи стосується шлях `api/`.
+fn is_api_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
+/// CORS для `api/`: відповідь на preflight і дозвіл читати звичайні відповіді.
+///
+/// Сторінки й статика сюди не потрапляють: сторінки живуть на cookie-сесії, і
+/// дозвіл чужому сайту читати їх означав би віддати йому все, що бачить
+/// залогінений користувач.
+async fn api_cors(
+    cors: &Cors,
+    request: HttpRequest<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    if !is_api_path(request.uri().path()) {
+        return next.run(request).await;
+    }
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let allowed = cors.allow(origin.as_deref());
+
+    // Preflight: браузер питає дозволу перед запитом із заголовком
+    // `Authorization` чи JSON-тілом. Відповідаємо самі, до скрипта.
+    let is_preflight = request.method() == axum::http::Method::OPTIONS
+        && request
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+    if is_preflight {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        let headers = response.headers_mut();
+        if let Some(allow) = &allowed {
+            insert_header(headers, "Access-Control-Allow-Origin", allow);
+            insert_header(
+                headers,
+                "Access-Control-Allow-Methods",
+                "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+            );
+            let asked = request
+                .headers()
+                .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("Authorization, Content-Type")
+                .to_owned();
+            insert_header(headers, "Access-Control-Allow-Headers", &asked);
+            insert_header(headers, "Access-Control-Max-Age", "600");
+        }
+        headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+        return response;
+    }
+
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    if let Some(allow) = allowed {
+        insert_header(headers, "Access-Control-Allow-Origin", &allow);
+        // Без цього скрипт на чужому сайті не прочитає, скільки чекати після 429.
+        insert_header(
+            headers,
+            "Access-Control-Expose-Headers",
+            "Retry-After, Location",
+        );
+    }
+    // Відповідь залежить від `Origin` — кеш не має віддати її іншому сайту.
+    if !matches!(cors, Cors::Any) {
+        headers.append(header::VARY, HeaderValue::from_static("Origin"));
+    }
+    response
 }
 
 /// IP-адреса клієнта для `req.ip`.
@@ -1457,6 +1804,7 @@ fn render_inner(
     let globals = globals_for(
         &response,
         &state.state,
+        &state.live,
         &state.database,
         &state.http,
         &state.mail,
@@ -1857,6 +2205,7 @@ fn load_catalog(config: &Config) -> Catalog {
 fn globals_for(
     response: &ScriptResponse,
     state: &ScriptState,
+    live: &Live,
     database: &Database,
     http: &Http,
     mail: &Mail,
@@ -1873,6 +2222,7 @@ fn globals_for(
         .set("res", Dynamic::from(response.clone()))
         .set("hx", Dynamic::from(Hx::new(response.clone())))
         .set("state", Dynamic::from(state.clone()))
+        .set("live", Dynamic::from(live.clone()))
         .set("db", Dynamic::from(database.clone()))
         .set("http", Dynamic::from(http.clone()))
         .set("mail", Dynamic::from(mail.clone()))

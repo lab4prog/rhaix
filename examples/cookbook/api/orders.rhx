@@ -31,6 +31,7 @@ if req.method == "POST" {
         status:   "new",
     });
     // 201 і сам створений запис: клієнту не треба ходити другим запитом.
+    live.send("orders", #{ id: id });
     res.status(201);
     return db.get("orders", id);
 }

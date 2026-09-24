@@ -103,6 +103,17 @@ mod tests {
     }
 
     #[test]
+    fn live_updates_subscribe_once_to_the_topics_on_the_page() {
+        // Теми збираються з `hx-trigger="live:…"` і `data-live`, підписка —
+        // одна на сторінку, подія — на <body>, щоб працювало `from:body`.
+        assert!(CLIENT_JS.contains("/_rhaix/live?topics="));
+        assert!(CLIENT_JS.contains(r#"[hx-trigger*="live:"], [data-live]"#));
+        assert!(CLIENT_JS.contains("document.body.dispatchEvent"));
+        // Після обриву — «перезапитай усе», бо події могли пройти повз.
+        assert!(CLIENT_JS.contains("reconnected: true"));
+    }
+
+    #[test]
     fn error_status_responses_still_swap_but_204_does_not() {
         // За замовчуванням htmx свопить лише 2xx і мовчки викидає решту —
         // без цього `res.status(422)` із помилками під полями чи `403` з

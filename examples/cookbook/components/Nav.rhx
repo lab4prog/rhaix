@@ -13,6 +13,8 @@ let recipes = [
     #{ href: "/contact", label: "Пошта" },
     #{ href: "/roles", label: "Ролі" },
     #{ href: "/reports", label: "Звіт і CSV" },
+    #{ href: "/grid", label: "Адмін-таблиця" },
+    #{ href: "/live", label: "Живі оновлення" },
 ];
 ---
 <nav>

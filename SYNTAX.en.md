@@ -763,8 +763,47 @@ if req.path.starts_with("/api/") {
 A worked recipe with validation, partial update and mass-assignment protection
 lives in `examples/cookbook/api/`.
 
-CORS is not provided. If the API is called cross-origin, set the headers with
-`res.header(...)`; for your own frontend or mobile client it is not needed.
+**CORS — `[api] cors`.** If the API is called by a frontend on another domain:
+
+```toml
+[api]
+cors = ["https://app.example.com"]   # or "*" — any site
+```
+
+The permission applies to `/api/…` only. The framework answers the preflight
+(`OPTIONS`) itself before any script runs, adds `Access-Control-Allow-Origin`
+to every response (errors and 404 included) and `Vary: Origin`. Pages never get
+CORS: they live on the cookie session, and letting another site read them would
+hand it everything a signed-in user sees. `"*"` is safe in `api/` precisely
+because there are no cookies there. Your own frontend on the same domain or a
+mobile client does not need CORS.
+
+**API description — OpenAPI 3.1 from the files themselves.**
+
+```
+rhaix openapi                  # to the console
+rhaix openapi -o openapi.json  # to a file
+```
+
+No annotations to write: the description comes from what is already in
+`api/*.rhx`:
+
+| From | In the spec |
+|---|---|
+| file name `api/orders/[id].rhx` | path `/api/orders/{id}` and parameter `id` |
+| `if req.method == "POST" { … }` | a POST operation; the rest of the file is GET |
+| `if req.method != "POST" { res.status(405) … }` | the file is POST-only |
+| `req.query_int("page")`, `req.query("q")` | typed query parameters |
+| `req.json()` + `validate(sent, #{ … })` | the JSON body: fields, required, `email`, bounds, `enum` |
+| `res.status(422)` in a branch | possible response codes of that operation |
+| a comment at the top of the frontmatter | `summary` (first sentence) and `description` |
+| `middleware.rhx` reads `Authorization` for `/api` | a bearer scheme and 401/429 on every operation |
+
+It is a heuristic: what cannot be derived is simply absent, nothing is made
+up. To serve the spec live (for Swagger UI or client generators), set
+`[api] openapi = true`: it then appears at `/api/openapi.json`. In dev it is
+rebuilt on every request, in production once at startup. `[api] title` and
+`version` go into `info`.
 
 ---
 
@@ -779,6 +818,7 @@ CORS is not provided. If the API is called cross-origin, set the headers with
 | `page` | everywhere | shared page map: `page.title`, `page.layout` |
 | `req` `res` `hx` | everywhere | request / response / HTMX |
 | `state` | everywhere | process-wide store: `state.get/set/has/remove`; rate limiting: `state.allow/retry_after/reset` (7.2) |
+| `live` | everywhere | `live.send(topic[, detail])` — notify open pages (7.8) |
 | `db` | everywhere | database: `query/one/exec/tx` and `find/get/count/insert/update/delete` |
 | `session` | everywhere | signed cookie: `get/set/has/remove/clear/all`, `session.user` (7.2) |
 | `csrf` | everywhere | `csrf.token` (7.2) |
@@ -1023,6 +1063,12 @@ Time is stored in UTC internally; display is shifted by `tz_offset` from `[app]`
 There is no daylight-saving handling — if you need real time zones, take them
 from the database.
 
+Date parsing is strict: `2026-02-31`, `2026-02-29` (not a leap year),
+`2026-09-17 25:00` or `12:60` are not dates. `timestamp(...)` returns `()`,
+`date(...)` an empty string, and the `date` rule in `validate()` rejects such a
+form. Before 1.5.0 an extra day quietly rolled into the next month and a
+garbled time became zero.
+
 ```rhai
 slug("Привіт, світе!")     // "pryvit-svite" — transliteration per Ukrainian standard
 cut(text, 20)              // trim at a word boundary and add "…"
@@ -1079,6 +1125,47 @@ let rows = db.find("orders", #{}, #{ sort: "id desc", limit: 20, skip: p.skip })
 
 Fields: `page pages per_page total skip from to has_prev has_next prev next
 first last window`.
+
+**`db.grid(table, req, options)`** — an admin table in one call: sorting by
+column, filters, pages, all of it living in the URL.
+
+```rhai
+let g = db.grid("orders", req, #{
+    sort:     ["id", "customer", "amount", "created"],  // what may be sorted by
+    order:    "id desc",                                // when the URL says nothing
+    filters:  #{ status: "eq", customer: "contains", amount: "between" },
+    per_page: 20,
+    where:    #{ owner_id: page.user.id },              // a bound the URL cannot override
+});
+```
+
+```html
+<th><a href={g.sort_url.amount}>Amount {{ g.arrow.amount }}</a></th>
+<tr @for={o in g.rows}>…</tr>
+<a @for={n in g.page.window} href={g.page_url[`${n}`]}>{{ n }}</a>
+<input name="customer" value={g.values.customer}>
+```
+
+Returns: `rows`, `page` (the same as `paginate()`), `total`, `sort`, `dir`,
+`values` (current filter values for form fields), `sort_url` and `arrow`
+(link and ▲/▼ for each column in `sort`), `page_url` (keyed by page number as
+a string), `prev_url`, `next_url`, `reset_url`, `filtered`.
+
+- **The sort column from the URL is checked against `sort`.** A foreign
+  column or `id;drop table` is simply ignored: otherwise it would be an
+  injection into `order by`.
+- **Links keep all the state.** Sorting keeps the filter, the filter keeps
+  the sort, and the page resets to the first.
+- **Operators:** `eq ne contains starts ends gt gte lt lte between`.
+  `between` reads `field_from` and `field_to`. Numbers from the URL are
+  compared as numbers.
+- **`where` is applied last and wins:** `?owner_id=7` from the URL cannot
+  override `where: #{ owner_id: me }`.
+- **An unknown option or operator is an error,** not silence.
+
+The option is `order`, not `default`: that is a reserved word in Rhai. A
+working recipe with live search that keeps focus is
+`examples/cookbook/pages/grid.rhx`.
 
 **File uploads.** A form with `enctype="multipart/form-data"`:
 
@@ -1295,6 +1382,81 @@ something with your `<dialog>` elements.
 rhaix eject ui            # in the current project
 rhaix eject ui --force    # overwrite an already ejected file with the built-in one
 ```
+
+### 7.8 Live updates — `live.send`
+
+A page updates itself as soon as someone else changes the data:
+
+```rhai
+// where the data changes — a page, api/, anything
+db.insert("orders", order);
+live.send("orders");                 // or live.send("orders", #{ id: id })
+```
+
+```html
+<!-- where it is shown -->
+<div hx-get="/orders" hx-trigger="live:orders from:body"
+     hx-select="#orders" hx-target="this" hx-swap="outerHTML" id="orders">…</div>
+```
+
+The server sends only a signal, "this topic changed", not HTML. Each page
+re-requests its own data with its own session and permissions. So nothing a
+given user should not see can leak through the channel, and the server does not
+render a page per subscriber.
+
+The `rhaix.js` core collects the topics mentioned on the page
+(`hx-trigger="live:…"`, or `data-live="orders users"` for your own JS) and keeps
+**one** SSE subscription to `/_rhaix/live`. The event arrives on `<body>` as
+`live:<topic>` with the server's detail. After a dropped connection every topic
+gets an event with `{ reconnected: true }`, so whatever was missed is fetched
+again.
+
+A topic is Latin letters, digits, `_`, `-`, `.`, up to 64 characters.
+`live.send` refuses anything else: the topic becomes a DOM event name and part
+of a URL. The channel lives in process memory: two copies behind a load
+balancer each notify their own visitors. For infrequent changes (orders,
+statuses, a small team's chat) that is enough. Behind a proxy such as nginx SSE
+works out of the box: the response carries `X-Accel-Buffering: no`. Recipe:
+`examples/cookbook/pages/live.rhx`.
+
+### 7.9 Your own Rust functions — `native/`
+
+When Rhai is not enough (heavy computation, a Rust crate, a fast parser), the
+project writes a plain Rust function:
+
+```rust
+// native/lib.rs
+use rhaix_server::rhai::Engine;
+
+pub fn register(engine: &mut Engine) {
+    engine.register_fn("fib", |n: i64| -> i64 {
+        let (mut a, mut b) = (0_i64, 1_i64);
+        for _ in 0..n.clamp(0, 90) { (a, b) = (b, a + b); }
+        a
+    });
+}
+```
+
+```html
+<p>{{ fib(50) }}</p>
+```
+
+- **`rhaix build`** compiles `native/lib.rs` into the binary along with
+  everything else.
+- **`rhaix dev` and `rhaix serve`**, seeing `native/`, build their own server
+  with `cargo` (in `target/rhaix-native/`) and run it. Templates still reload
+  live as usual. After editing `native/`, just restart `rhaix dev`: cargo
+  rebuilds only what changed. This needs a Rust toolchain.
+- **Dependencies of your code** go into `native/dependencies.toml` as Cargo
+  lines (`regex = "1"`) and are added to the generated manifest.
+- **`rhaix_server::rhai`** is exactly the Rhai the scripts run on. Your own
+  `rhai` dependency in another version would be a different `Engine` type, and
+  `register` would not compile.
+- **Your own binary instead of the CLI:** if you embed rhaix in your own
+  program, use `Config::load(".", None)?.with_native(my::register)`.
+
+A function in `scripts/*.rhai` with the same name overrides the Rust one, so do
+not reuse names.
 
 ---
 

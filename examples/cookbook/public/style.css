@@ -7,6 +7,7 @@ nav a.active { background: #111; color: #fff }
 /* Посилання з @for ідуть без пробілів між собою — відступ дає flex. */
 .filters { display: flex; gap: .75rem; flex-wrap: wrap }
 .filters a.active { font-weight: 600; text-decoration: none }
+.grid-filters { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem }
 table { border-collapse: collapse; width: 100% }
 th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line) }
 th { font-size: .85rem; text-transform: uppercase; color: var(--muted) }

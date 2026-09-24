@@ -327,6 +327,9 @@ mod tests {
         // date — той самий формат, що віддає база.
         assert!(errors(&[("d", "2026-09-17")], &[("d", "date")]).is_empty());
         assert!(errors(&[("d", "позавчора")], &[("d", "date")]).contains_key("d"));
+        // Неіснуючі дата й час — теж ні.
+        assert!(errors(&[("d", "2026-02-31")], &[("d", "date")]).contains_key("d"));
+        assert!(errors(&[("d", "2026-09-17 25:00")], &[("d", "date")]).contains_key("d"));
 
         // alpha за Unicode: кирилиця проходить, цифри — ні.
         assert!(errors(&[("n", "Оля Литвин")], &[("n", "alpha")]).is_empty());

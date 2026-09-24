@@ -9,9 +9,11 @@ mod crypto;
 mod csv;
 mod data;
 mod datetime;
+mod grid;
 mod http;
 mod i18n;
 mod json;
+mod live;
 mod mail;
 mod markdown;
 mod paginate;
@@ -32,6 +34,7 @@ pub use json::{
     encode as json_encode, from_dynamic as json_from_dynamic, parse as json_parse,
     to_dynamic as json_to_dynamic,
 };
+pub use live::{Live, Publish};
 pub use mail::{register_mail, Mail, MailConfig};
 pub use markdown::{markdown, register_markdown};
 pub use session::{
@@ -111,6 +114,8 @@ pub fn engine(limits: Limits) -> Engine {
     validate::register_validate(&mut engine);
     paginate::register_paginate(&mut engine);
     csv::register_csv(&mut engine);
+    grid::register_grid(&mut engine);
+    live::register_live(&mut engine);
     mail::register_mail(&mut engine);
     markdown::register_markdown(&mut engine);
     i18n::register_i18n(&mut engine);

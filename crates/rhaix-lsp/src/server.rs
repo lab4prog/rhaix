@@ -366,7 +366,7 @@ const DIRECTIVES: [(&str, &str); 11] = [
     ("@oob", "out-of-band своп"),
 ];
 
-const GLOBALS: [(&str, &str); 13] = [
+const GLOBALS: [(&str, &str); 14] = [
     ("req", "запит"),
     ("res", "відповідь"),
     ("hx", "HTMX: тости, тригери, редіректи"),
@@ -375,17 +375,19 @@ const GLOBALS: [(&str, &str); 13] = [
     ("csrf", "csrf.token"),
     ("http", "виклик чужого API"),
     ("mail", "надсилання пошти"),
-    ("state", "процесне сховище"),
+    ("state", "процесне сховище; state.allow — ліміт спроб"),
+    ("live", "live.send(тема) — оновити відкриті сторінки"),
     ("page", "спільна мапа сторінки й layout"),
     ("log", "log.info/warn/error"),
     ("props", "значення, передані компоненту"),
     ("slots", "slots.has(name)"),
 ];
 
-const BUILTINS: [(&str, &str); 19] = [
+const BUILTINS: [(&str, &str); 20] = [
     ("t", "переклад: t(\"ключ\")"),
     ("validate", "перевірка форми"),
     ("paginate", "арифметика сторінок"),
+    ("csv", "таблиця в CSV: csv(rows, #{ columns: [...] })"),
     ("url", "посилання з параметрами"),
     ("date", "дата за шаблоном"),
     ("datetime", "дата й час"),

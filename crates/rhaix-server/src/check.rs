@@ -12,9 +12,19 @@ use rhaix_template::{Loader, TemplateCache};
 
 use crate::Config;
 
+/// Наскільки серйозно.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Файл не скомпілюється — сторінка впаде на першому ж запиті.
+    Error,
+    /// Працюватиме, але не так, як, найімовірніше, задумано.
+    Warning,
+}
+
 /// Одна знайдена проблема.
 #[derive(Debug, Clone)]
 pub struct Issue {
+    pub severity: Severity,
     pub file: String,
     pub line: usize,
     pub col: usize,
@@ -31,8 +41,12 @@ impl Issue {
             Some(hint) => format!("\"{}\"", escape(hint)),
             None => "null".to_owned(),
         };
+        let severity = match self.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        };
         format!(
-            "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"message\":\"{}\",\"hint\":{}}}",
+            "{{\"severity\":\"{severity}\",\"file\":\"{}\",\"line\":{},\"col\":{},\"message\":\"{}\",\"hint\":{}}}",
             escape(&self.file),
             self.line,
             self.col,
@@ -68,6 +82,7 @@ pub fn check(config: &Config) -> Vec<Issue> {
             None => (0, 0),
         };
         issues.push(Issue {
+            severity: Severity::Error,
             file: crate::display_path(&config.root, &file),
             line,
             col,
@@ -77,8 +92,66 @@ pub fn check(config: &Config) -> Vec<Issue> {
         });
     }
 
+    issues.extend(layout_warnings(config));
     issues.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
     issues
+}
+
+/// Layout, який компілюється, але тихо ламає клієнт.
+///
+/// Без `<rhaix:head/>` фреймворку нікуди поставити htmx і свої скрипти в
+/// `<head>`: вони їдуть у `<rhaix:scripts/>` у кінці `<body>`, а там кожен
+/// boosted-перехід виконує їх знову (саме так у 1.2.5 множились тости). А
+/// без обох тегів htmx не підключається взагалі — і жоден `hx-*` не працює,
+/// хоч помилки ніде й не видно.
+fn layout_warnings(config: &Config) -> Vec<Issue> {
+    let mut files = Vec::new();
+    walk(&config.root.join("layouts"), &mut files);
+    files.sort();
+
+    let mut warnings = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let has_head = text.contains("<rhaix:head");
+        let has_scripts = text.contains("<rhaix:scripts");
+        if has_head {
+            continue;
+        }
+        // Показуємо на `<head>`, якщо він є: саме туди тег і треба дописати.
+        let line = text
+            .find("<head")
+            .map(|at| text[..at].matches('\n').count() + 1)
+            .unwrap_or(1);
+        let name = crate::display_path(&config.root, &file);
+        let (message, hint) = if has_scripts {
+            (
+                "у layout немає <rhaix:head/>: htmx і скрипти фреймворку стоять у кінці \
+                 <body> і перевиконуються на кожному boosted-переході"
+                    .to_owned(),
+                "допишіть <rhaix:head/> усередину <head> — туди підуть стилі й скрипти".to_owned(),
+            )
+        } else {
+            (
+                "у layout немає ні <rhaix:head/>, ні <rhaix:scripts/>: htmx не \
+                 підключиться, і жоден hx-* атрибут не працюватиме"
+                    .to_owned(),
+                "допишіть <rhaix:head/> у <head> і <rhaix:scripts/> перед </body>".to_owned(),
+            )
+        };
+        let rendered = format!("попередження: {name}:{line}\n  {message}\n  підказка: {hint}\n");
+        warnings.push(Issue {
+            severity: Severity::Warning,
+            file: name,
+            line,
+            col: 1,
+            message,
+            hint: Some(hint),
+            rendered,
+        });
+    }
+    warnings
 }
 
 /// Усі файли, які має сенс компілювати.
@@ -139,6 +212,53 @@ mod tests {
         // А ось помилки рантайму (невідома змінна) чекають на запит: перевірка
         // компілює, але не виконує.
         assert!(!files.contains(&"pages/broken.rhx"), "{files:?}");
+    }
+
+    #[test]
+    fn a_layout_without_rhaix_head_is_a_warning_not_an_error() {
+        let root = std::env::temp_dir().join(format!("rhaix-check-{}", std::process::id()));
+        let layouts = root.join("layouts");
+        std::fs::create_dir_all(&layouts).unwrap();
+        std::fs::write(
+            layouts.join("main.rhx"),
+            "<!DOCTYPE html>\n<html>\n<head><title>x</title></head>\n<body><slot/><rhaix:scripts/></body>\n</html>\n",
+        )
+        .unwrap();
+        std::fs::write(
+            layouts.join("bare.rhx"),
+            "<html><body><slot/></body></html>\n",
+        )
+        .unwrap();
+        std::fs::write(
+            layouts.join("good.rhx"),
+            "<html><head><rhaix:head/></head><body><slot/><rhaix:scripts/></body></html>\n",
+        )
+        .unwrap();
+
+        let config = Config::new(root.clone(), SocketAddr::from(([127, 0, 0, 1], 0)));
+        let issues = check(&config);
+        std::fs::remove_dir_all(&root).ok();
+
+        assert!(
+            issues.iter().all(|i| i.severity == Severity::Warning),
+            "{issues:?}"
+        );
+        let main = issues
+            .iter()
+            .find(|i| i.file == "layouts/main.rhx")
+            .expect("main");
+        assert_eq!(main.line, 3, "показуємо на <head>");
+        assert!(main.message.contains("boosted"), "{}", main.message);
+        let bare = issues
+            .iter()
+            .find(|i| i.file == "layouts/bare.rhx")
+            .expect("bare");
+        assert!(bare.message.contains("htmx не"), "{}", bare.message);
+        assert!(
+            !issues.iter().any(|i| i.file == "layouts/good.rhx"),
+            "{issues:?}"
+        );
+        assert!(main.to_json().contains("\"severity\":\"warning\""));
     }
 
     #[test]

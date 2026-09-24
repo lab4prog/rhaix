@@ -107,7 +107,7 @@ fn json(value: Dynamic) -> Result<Html, Box<EvalAltResult>> {
 ///
 /// Ручна конкатенація ламається на `&` у значенні, тому в доках її немає:
 /// параметри кодуються, `()` і порожні рядки пропускаються.
-fn url_with_params(path: &str, params: Map) -> String {
+pub(crate) fn url_with_params(path: &str, params: Map) -> String {
     let mut query = String::new();
     for (key, value) in params.iter() {
         if value.is_unit() {

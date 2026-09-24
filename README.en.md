@@ -60,7 +60,20 @@ What already works:
   serialised automatically, no layout is applied, and errors and 404s are machine
   readable too. There is no session there on purpose — hence no CSRF to check,
   and no way for another site to act as the logged-in user;
-- **`middleware.rhx`** — one file guards every protected page;
+- **`middleware.rhx`** — one file guards every protected page; a ready recipe
+  for roles and permissions lives in `examples/cookbook`;
+- **admin tables**: `db.grid("orders", req, #{ sort: [...], filters: #{...} })`
+  gives rows, pages and links that keep sort and filters, with the sort column
+  checked against a whitelist;
+- **live updates**: `live.send("orders")` on the server, and every open page
+  listening with `hx-trigger="live:orders from:body"` refreshes itself;
+- **API extras**: CORS for `api/` in one line of config, rate limiting with
+  `state.allow(key, max, seconds)`, and `rhaix openapi` derives an OpenAPI 3.1
+  spec from the files themselves;
+- **exports**: `res.download("orders.csv", csv(rows, #{ columns: [...] }))` —
+  RFC 4180, formula cells defused, a BOM for Excel;
+- **your own Rust**: functions in `native/lib.rs` are compiled in by
+  `rhaix build` and picked up by `rhaix dev` — for when Rhai is not enough;
 - **`@oob`** — one response updates both the main target and a block outside it;
 - **database**: a `[db]` section in `rhaix.toml`, migrations from
   `migrations/*.sql` applied at startup, native queries (`db.query`), portable
@@ -151,7 +164,7 @@ cargo run --release -p rhaix-template --bin rhaix-render-bench
 | `rhaix-script` | the Rhai engine, limits, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, sessions and CSRF, `http`, dates and strings |
 | `rhaix-template` | `.rhx` lexer, AST, expression compilation, components, renderer, escaping |
 | `rhaix-server` | axum: routing, layout, the fragment rule, static files |
-| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check`, `rhaix eject ui` |
+| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check`, `rhaix openapi`, `rhaix eject ui` |
 | `rhaix-lsp` | language server: diagnostics, go-to-component, completion |
 
 Licence: MIT or Apache-2.0.

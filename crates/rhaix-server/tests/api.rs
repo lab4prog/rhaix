@@ -402,3 +402,88 @@ async fn the_html_recipes_still_work_without_any_token() {
     assert_eq!(reply.status, StatusCode::OK);
     assert!(reply.body.contains("<!DOCTYPE html>"), "{}", reply.body);
 }
+
+fn with_origin(method: &str, path: &str, origin: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(path)
+        .header("origin", origin)
+        .body(Body::empty())
+        .expect("запит")
+}
+
+#[tokio::test]
+async fn cors_preflight_is_answered_before_the_script_runs() {
+    let request = Request::builder()
+        .method("OPTIONS")
+        .uri("/api/ping")
+        .header("origin", "https://app.example.com")
+        .header("access-control-request-method", "POST")
+        .header(
+            "access-control-request-headers",
+            "authorization, content-type",
+        )
+        .body(Body::empty())
+        .expect("запит");
+    let reply = call(request).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        reply.header("access-control-allow-origin"),
+        Some("https://app.example.com")
+    );
+    assert!(reply
+        .header("access-control-allow-methods")
+        .unwrap_or_default()
+        .contains("POST"));
+    assert_eq!(
+        reply.header("access-control-allow-headers"),
+        Some("authorization, content-type")
+    );
+}
+
+#[tokio::test]
+async fn cors_allows_only_the_listed_sites() {
+    let allowed = call(with_origin("GET", "/api/ping", "https://app.example.com")).await;
+    assert_eq!(allowed.status, StatusCode::OK);
+    assert_eq!(
+        allowed.header("access-control-allow-origin"),
+        Some("https://app.example.com")
+    );
+    assert_eq!(allowed.header("vary"), Some("Origin"));
+
+    let stranger = call(with_origin("GET", "/api/ping", "https://evil.example")).await;
+    assert_eq!(stranger.header("access-control-allow-origin"), None);
+
+    // Навіть 404 під /api/ має бути читабельним для дозволеного сайту —
+    // інакше клієнт побачить «CORS error» замість «маршрут не знайдено».
+    let missing = call(with_origin("GET", "/api/nope", "https://app.example.com")).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing.header("access-control-allow-origin"),
+        Some("https://app.example.com")
+    );
+}
+
+#[tokio::test]
+async fn pages_never_get_cors_headers() {
+    // Сторінки живуть на cookie-сесії: дозвіл чужому сайту читати їх віддав
+    // би йому все, що бачить залогінений користувач.
+    let page = call(with_origin("GET", "/", "https://app.example.com")).await;
+    assert_eq!(page.header("access-control-allow-origin"), None);
+}
+
+#[tokio::test]
+async fn openapi_describes_the_api_from_its_own_files() {
+    let reply = call(get("/api/openapi.json")).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let spec = reply.json();
+    assert_eq!(spec["openapi"], "3.1.0");
+    assert_eq!(spec["info"]["title"], "Фікстура");
+    // `api/echo.rhx` читає `req.json()` — і це видно в описі.
+    let paths = spec["paths"].as_object().expect("paths");
+    assert!(paths.contains_key("/api/ping"), "{paths:?}");
+    assert!(paths.contains_key("/api/orders/{id}"), "{paths:?}");
+    let id = &spec["paths"]["/api/orders/{id}"]["get"]["parameters"][0];
+    assert_eq!(id["name"], "id");
+    assert_eq!(id["in"], "path");
+}

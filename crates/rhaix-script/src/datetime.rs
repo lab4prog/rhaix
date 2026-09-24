@@ -181,10 +181,33 @@ fn write_token(out: &mut String, token: &str, p: &Parts) {
     };
 }
 
-/// Розібрати `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]`, ISO-8601 із `T` і `Z`.
+/// Скільки днів у місяці. Високосний — за григоріанським правилом:
+/// кожен четвертий, крім столітніх, але 2000 — так.
+pub fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// Ціле з рядка цифр — суворо: без знака, пробілів і порожнечі.
+fn digits<T: std::str::FromStr>(text: &str) -> Option<T> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Розібрати `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS[.fff]]`, ISO-8601 із `T` і `Z`.
 ///
 /// Саме в такому вигляді дати повертає SQLite, тому ця функція — місток між
-/// базою й `date()`.
+/// базою й `date()`. І саме її використовує `validate(..., "date")`, тож
+/// розбір суворий: `2026-02-31` чи `25:00` — не дата, а не «якось та буде».
+/// Раніше день перевірявся лише на `1..=31`, а зіпсований час мовчки ставав
+/// нулем: 31 лютого переїжджало на 3 березня, і форма це приймала.
 pub fn parse(text: &str) -> Option<i64> {
     let text = text.trim();
     if text.is_empty() {
@@ -200,26 +223,39 @@ pub fn parse(text: &str) -> Option<i64> {
         None => (text, ""),
     };
     let mut date = date_part.split('-');
-    let year: i64 = date.next()?.parse().ok()?;
-    let month: u32 = date.next()?.parse().ok()?;
-    let day: u32 = date.next()?.parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    let year: i64 = digits(date.next()?)?;
+    let month: u32 = digits(date.next()?)?;
+    let day: u32 = digits(date.next()?)?;
+    if date.next().is_some() || !(1..=12).contains(&month) {
+        return None;
+    }
+    if day == 0 || day > days_in_month(year, month) {
         return None;
     }
 
     // Зона в хвості: `Z`, `+03:00`. Її ще треба відняти, щоб вийшов UTC.
     let (time_part, zone) = split_zone(rest);
-    let mut time = time_part.split(':');
-    let hour: u32 = time.next().unwrap_or("0").trim().parse().unwrap_or(0);
-    let minute: u32 = time.next().unwrap_or("0").parse().unwrap_or(0);
-    let second: u32 = time
-        .next()
-        .unwrap_or("0")
-        .split('.')
-        .next()
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0);
+    let time_part = time_part.trim();
+    let (hour, minute, second) = if time_part.is_empty() {
+        (0, 0, 0)
+    } else {
+        let mut time = time_part.split(':');
+        let hour: u32 = digits(time.next()?)?;
+        let minute: u32 = digits(time.next()?)?;
+        let second: u32 = match time.next() {
+            // Частки секунди (`09.123`) відкидаємо, але вони мають бути цифрами.
+            Some(raw) => {
+                let (whole, fraction) = raw.split_once('.').unwrap_or((raw, "0"));
+                digits::<u32>(fraction)?;
+                digits(whole)?
+            }
+            None => 0,
+        };
+        if time.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+            return None;
+        }
+        (hour, minute, second)
+    };
 
     Some(timestamp(year, month, day, hour, minute, second) - zone as i64 * 60)
 }
@@ -343,6 +379,54 @@ mod tests {
         );
         assert_eq!(parse("сьогодні"), None);
         assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn impossible_dates_and_times_are_not_dates() {
+        // 31 лютого раніше тихо ставало 3 березня.
+        assert_eq!(parse("2026-02-31"), None);
+        assert_eq!(parse("2026-04-31"), None);
+        assert_eq!(parse("2026-02-29"), None, "2026 — не високосний");
+        assert!(parse("2028-02-29").is_some());
+        assert!(parse("2000-02-29").is_some(), "2000 ділиться на 400");
+        assert_eq!(parse("1900-02-29"), None, "1900 — столітній, не високосний");
+        assert_eq!(parse("2026-00-10"), None);
+        assert_eq!(parse("2026-13-01"), None);
+        assert_eq!(parse("2026-09-00"), None);
+
+        // Час: раніше `25:99` і `ab:cd` мовчки ставали нулями.
+        assert_eq!(parse("2026-09-17 25:00"), None);
+        assert_eq!(parse("2026-09-17 24:00"), None);
+        assert_eq!(parse("2026-09-17 12:60"), None);
+        assert_eq!(parse("2026-09-17 12:30:61"), None);
+        assert_eq!(parse("2026-09-17 ab:cd"), None);
+        assert_eq!(parse("2026-09-17 12"), None, "година без хвилин");
+        assert_eq!(parse("2026-09-17 12:30:00:00"), None);
+        assert_eq!(parse("2026-09-17-01"), None);
+        assert_eq!(parse("2026-9-x"), None);
+        assert_eq!(parse("+2026-09-17"), None);
+
+        // Те, що справді буває, — проходить.
+        assert!(
+            parse("2026-09-17T14:05").is_some(),
+            "datetime-local з браузера"
+        );
+        assert!(parse("2026-09-17 23:59:59").is_some());
+        assert_eq!(
+            parse("2026-09-17T14:05:09.123Z"),
+            Some(timestamp(2026, 9, 17, 14, 5, 9))
+        );
+        assert_eq!(parse("2026-9-7"), Some(timestamp(2026, 9, 7, 0, 0, 0)));
+    }
+
+    #[test]
+    fn days_in_month_follow_the_gregorian_rule() {
+        assert_eq!(days_in_month(2026, 1), 31);
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2100, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(2026, 11), 30);
     }
 
     #[test]

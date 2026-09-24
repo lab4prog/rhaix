@@ -1,0 +1,52 @@
+---
+// ЗАДАЧА: сторінка оновлюється сама, щойно дані змінив хтось інший — у
+// сусідній вкладці, у «Звіті» чи через API.
+//
+// Сервер шле лише сигнал: `live.send("orders")` там, де замовлення
+// змінюються. Список нижче слухає його звичайним htmx-тригером і
+// перезапитує себе — зі своєю сесією й правами, тож через канал не може
+// протекти нічого чужого. Відкрийте сторінку у двох вкладках і додайте
+// замовлення в одній.
+page.title = "Живі оновлення";
+
+if req.method == "POST" {
+    let names = ["Олена Коваль", "Тарас Бойко", "Ірина Мельник", "Андрій Савчук"];
+    let id = db.insert("orders", #{
+        customer: names[now() % names.len()],
+        email:    "live@example.com",
+        amount:   (now() % 5000).to_float() + 100.5,
+        status:   "new",
+    });
+    live.send("orders", #{ id: id });
+    hx.toast(`Додано замовлення №${id}`, "success");
+    // Список оновиться сам — так само, як у всіх інших вкладках.
+    return "";
+}
+
+let orders = db.find("orders", #{}, #{ sort: "id desc", limit: 5 });
+let total = db.count("orders");
+---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
+<h1>Живі оновлення</h1>
+
+<p><button hx-post="/live" hx-swap="none">Додати замовлення</button></p>
+
+<!-- `live:orders from:body` — подія, яку ядро rhaix.js піднімає на <body>,
+     коли сервер викликав live.send("orders"). `hx-select` бере з відповіді
+     лише цей блок. -->
+<div id="live-orders" hx-get="/live" hx-trigger="live:orders from:body"
+     hx-select="#live-orders" hx-target="this" hx-swap="outerHTML">
+  <p>Усього замовлень: <b>{{ total }}</b>. Останні п'ять:</p>
+  <table>
+    <thead><tr><th>№</th><th>Клієнт</th><th>Сума</th><th>Статус</th></tr></thead>
+    <tbody>
+      <tr @for={o in orders}>
+        <td>{{ o.id }}</td>
+        <td>{{ o.customer }}</td>
+        <td>{{ money(o.amount) }}</td>
+        <td><span @class={status_class(o.status)}>{{ status_label(o.status) }}</span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>

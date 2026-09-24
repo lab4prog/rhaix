@@ -10,6 +10,8 @@ if order == () {
 
 if req.method == "DELETE" {
     db.delete("orders", order.id);
+    // Відкриті сторінки зі списком замовлень оновляться самі (pages/live.rhx).
+    live.send("orders");
     // 204 — тіла немає зовсім; повертати `#{ ok: true }` тут нічого не додає.
     res.status(204);
     return "";
@@ -47,6 +49,7 @@ if req.method == "PATCH" || req.method == "PUT" {
     }
 
     db.update("orders", order.id, changes);
+    live.send("orders");
     return db.get("orders", order.id);
 }
 
