@@ -252,7 +252,12 @@ companies = db.attach_count(companies, "deals", "company_id", "deals"); // c.dea
 ```
 
 Filter operators: `eq ne gt gte lt lte in nin contains starts ends between
-is_null`.
+is_null`. `contains/starts/ends` ignore case, Cyrillic included, identically on
+SQLite and Postgres (`lower()` in SQLite is replaced by a Unicode one, so your own
+`lower(...)` in raw SQL works for Cyrillic too).
+
+Rhai trap: `for r in rows { r.x = 1 }` changes a COPY — the array is untouched.
+Use `for i in 0..rows.len() { rows[i].x = 1; }` (`rhaix check` warns).
 
 ```rhai
 db.find("orders", #{ amount: #{ gte: 100, lt: 1000 }, status: #{ in: ["new", "paid"] } })
@@ -667,7 +672,8 @@ rhaix new <dir>      # project skeleton
 rhaix check <dir>    # compile everything without starting; --json for CI; warns
                      # (exit 0) on: layout without <rhaix:head/>, `{x}` in text
                      # (literal — use {{ x }}), @class with selected/checked/…
-                     # (use @attr), unknown rhaix.toml keys
+                     # (use @attr), unknown rhaix.toml keys, `for r in rows
+                     # { r.x = … }` (assigns a copy)
 rhaix openapi <dir>  # OpenAPI 3.1 of api/ derived from the files; -o file
 rhaix eject ui       # copy the built-in toasts/modals into public/rhaix-ui.js to own them
 ```

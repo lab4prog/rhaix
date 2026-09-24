@@ -274,17 +274,23 @@ fn condition(
         "gte" => simple(">=", params),
         "lt" => simple("<", params),
         "lte" => simple("<=", params),
+        // Пошук — без урахування регістру, і однаково на обох драйверах.
+        // Голий `like` у SQLite ігнорує регістр лише латиниці, а в Postgres —
+        // не ігнорує зовсім: «мед» не знаходив «МедСервіс» ніде, а той самий
+        // `.rhx` поводився по-різному залежно від бази. Рядок пошуку знижуємо
+        // тут (Unicode), колонку — `lower()` (у SQLite драйвер підміняє його
+        // Unicode-версією). `cast` — щоб і числова колонка шукалась як текст.
         "contains" => {
             params.push(Dynamic::from(format!("%{}%", escape_like(operand))));
-            format!("{column} like ? escape '\\'")
+            format!("lower(cast({column} as text)) like ? escape '\\'")
         }
         "starts" => {
             params.push(Dynamic::from(format!("{}%", escape_like(operand))));
-            format!("{column} like ? escape '\\'")
+            format!("lower(cast({column} as text)) like ? escape '\\'")
         }
         "ends" => {
             params.push(Dynamic::from(format!("%{}", escape_like(operand))));
-            format!("{column} like ? escape '\\'")
+            format!("lower(cast({column} as text)) like ? escape '\\'")
         }
         "in" | "nin" => {
             let Some(values) = operand.read_lock::<Array>() else {
@@ -340,6 +346,7 @@ fn condition(
 fn escape_like(value: &Dynamic) -> String {
     value
         .to_string()
+        .to_lowercase()
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
@@ -401,7 +408,11 @@ mod tests {
 
         assert!(sql.text.contains("\"qty\" >= ?"), "{}", sql.text);
         assert!(sql.text.contains("\"qty\" < ?"), "{}", sql.text);
-        assert!(sql.text.contains("\"title\" like ?"), "{}", sql.text);
+        assert!(
+            sql.text.contains("lower(cast(\"title\" as text)) like ?"),
+            "{}",
+            sql.text
+        );
         assert!(sql.text.contains("\"closed\" is null"), "{}", sql.text);
         assert_eq!(sql.params.len(), 3);
         assert_eq!(sql.params[2].to_string(), "%молоко%");
@@ -491,6 +502,21 @@ mod tests {
 
         let sql = delete("todos", Dynamic::from(7_i64)).unwrap();
         assert_eq!(sql.text, "delete from \"todos\" where \"id\" = ?");
+    }
+
+    #[test]
+    fn text_search_ignores_case_including_cyrillic() {
+        let filter = map(&[(
+            "name",
+            Dynamic::from_map(map(&[("contains", Dynamic::from("МЕД"))])),
+        )]);
+        let sql = find("companies", &filter, &Map::new()).unwrap();
+        assert_eq!(sql.params[0].to_string(), "%мед%");
+        assert!(
+            sql.text.contains("lower(cast(\"name\" as text))"),
+            "{}",
+            sql.text
+        );
     }
 
     #[test]

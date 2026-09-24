@@ -58,6 +58,7 @@ impl SqliteDriver {
         let _ = connection.pragma_update(None, "journal_mode", "WAL");
         let _ = connection.pragma_update(None, "foreign_keys", "ON");
         let _ = connection.busy_timeout(std::time::Duration::from_secs(5));
+        unicode_case(&connection)?;
         Ok(connection)
     }
 
@@ -309,8 +310,79 @@ fn query_error(sql: &str, err: rusqlite::Error) -> DbError {
     DbError::Query(format!("{err}\n  запит: {}", sql.trim()))
 }
 
+/// `lower()` і `upper()` SQLite знають лише латиницю: `lower('Мед')` — це
+/// 'Мед'. Через це пошук `contains` (і будь-який `lower(...)` у рідних
+/// запитах) був чутливим до регістру для кирилиці. Підміняємо обидві функції
+/// на з'єднанні Unicode-версіями; не текст повертається як є.
+fn unicode_case(connection: &Connection) -> Result<(), DbError> {
+    use rusqlite::functions::FunctionFlags;
+    use rusqlite::types::{Value, ValueRef};
+
+    let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+    for (name, upper) in [("lower", false), ("upper", true)] {
+        connection
+            .create_scalar_function(name, 1, flags, move |ctx| {
+                Ok(match ctx.get_raw(0) {
+                    ValueRef::Text(bytes) => {
+                        let text = String::from_utf8_lossy(bytes);
+                        Value::Text(if upper {
+                            text.to_uppercase()
+                        } else {
+                            text.to_lowercase()
+                        })
+                    }
+                    ValueRef::Null => Value::Null,
+                    ValueRef::Integer(n) => Value::Integer(n),
+                    ValueRef::Real(n) => Value::Real(n),
+                    ValueRef::Blob(b) => Value::Blob(b.to_vec()),
+                })
+            })
+            .map_err(|err| DbError::Config(format!("функція {name}(): {err}")))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_ignores_case_for_cyrillic_too() {
+        let driver = SqliteDriver::open(":memory:").expect("база");
+        driver
+            .raw_exec("create table c (id integer primary key, name text)", &[])
+            .expect("таблиця");
+        driver
+            .raw_exec(
+                "insert into c (name) values ('МедСервіс'), ('ФінАналітика'), ('Ґанок Їжака')",
+                &[],
+            )
+            .expect("дані");
+
+        let find = |op: &str, needle: &str| {
+            let mut condition = rhai::Map::new();
+            condition.insert(op.into(), Dynamic::from(needle.to_owned()));
+            let mut filter = rhai::Map::new();
+            filter.insert("name".into(), Dynamic::from_map(condition));
+            driver
+                .find("c", &filter, &rhai::Map::new())
+                .expect("пошук")
+                .len()
+        };
+        // Раніше все це давало 0: вбудований lower() SQLite знає лише латиницю.
+        assert_eq!(find("contains", "мед"), 1);
+        assert_eq!(find("contains", "АНАЛІТ"), 1);
+        assert_eq!(find("starts", "ґанок"), 1);
+        assert_eq!(find("ends", "ЇЖАКА"), 1);
+
+        let row = driver
+            .raw_query(
+                "select lower('МедСервіс ЇЄҐ') as l, upper('ґанок') as u",
+                &[],
+            )
+            .expect("запит");
+        assert_eq!(row[0]["l"].to_string(), "медсервіс їєґ");
+        assert_eq!(row[0]["u"].to_string(), "ҐАНОК");
+    }
+
     #[test]
     fn a_transaction_commits_together() {
         let driver = SqliteDriver::open(":memory:").expect("база");

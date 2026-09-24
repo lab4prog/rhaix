@@ -865,7 +865,7 @@ the start rather than the first request that uses it.
 cannot escape it), but it is rarely needed: an imported module lives only within
 one block of code, so it does **not** survive from frontmatter into `{{ }}`.
 
-### 7.1 Two Rhai facts worth knowing
+### 7.1 Rhai facts worth knowing
 
 1. **`loop` is a keyword**, which is why loop counters live in `iter` (4.2).
 2. **Many string methods work in place.** Rhai's own `trim()` trims the string
@@ -876,6 +876,10 @@ one block of code, so it does **not** survive from frontmatter into `{{ }}`.
    does not matter (`@if={t.done}` uses rhaix truthiness, and `!t.done` works too
    — negation is overridden by the same rule). But `if t.done` in frontmatter is
    plain Rhai, which demands an actual `bool`, so write `if bool(t.done)`.
+4. **A `for` loop variable is a copy of the element.** `for c in rows { c.total = 0; }`
+   changes nothing in `rows`. To extend rows, go through the index:
+   `for i in 0..rows.len() { rows[i].total = 0; }`. `rhaix check` warns about
+   it. For related rows there is `db.attach` (7.5).
 
 ### 7.2 Sessions and CSRF
 
@@ -1157,6 +1161,8 @@ a string), `prev_url`, `next_url`, `reset_url`, `filtered`.
 - **Links keep all the state.** Sorting keeps the filter, the filter keeps
   the sort, and the page resets to the first.
 - **Operators:** `eq ne contains starts ends gt gte lt lte between`.
+  `contains`, `starts` and `ends` ignore case, Cyrillic included, identically
+  on SQLite and PostgreSQL.
   `between` reads `field_from` and `field_to`. Numbers from the URL are
   compared as numbers.
 - **`where` is applied last and wins:** `?owner_id=7` from the URL cannot
@@ -1560,6 +1566,7 @@ does the wrong thing. Warnings do not change the exit code.
 | `@class={#{"selected": …}}` | `selected`, `checked`, `disabled` and the like are attributes; in `@class` they become a class; use `@attr` |
 | a layout without `<rhaix:head/>` | framework scripts rerun on boosted navigation, and without `<rhaix:scripts/>` htmx is not loaded at all |
 | an unknown key in `rhaix.toml` | the framework does not read `minify_html = true` or `sesion_days = 7`; the nearest known key is suggested |
+| `for c in rows { c.total = … }` | in Rhai the loop variable is a copy of the element and the array stays as it was; assign through the index: `rows[i].total = …` |
 
 Unknown config keys are also logged when the server starts.
 
