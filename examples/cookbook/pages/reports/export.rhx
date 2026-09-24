@@ -1,0 +1,22 @@
+---
+// ЗАДАЧА: вивантажити таблицю в CSV, який нормально відкриє Excel.
+//
+// Право `orders.export` уже перевірив middleware.rhx — тут лише дані.
+// `csv()` сама екранує коми, лапки й переноси і знешкоджує комірки-формули
+// (`=HYPERLINK(...)` в імені клієнта); `res.download` додає BOM, щоб Excel
+// не зіпсував кирилицю, і правильно кодує ім'я файлу.
+let status = req.query("status") ?? "";
+let where = if status == "" { #{} } else { #{ status: status } };
+let orders = db.find("orders", where, #{ sort: "id" });
+
+let text = csv(orders, #{
+    columns: ["id", "customer", "email", "amount", "status", "created"],
+    titles:  ["№", "Клієнт", "Пошта", "Сума", "Статус", "Створено"],
+    // Excel з українською локаллю чекає `;` і десяткову кому.
+    sep: ";",
+    decimal: ",",
+});
+
+let name = if status == "" { "замовлення.csv" } else { `замовлення-${status}.csv` };
+res.download(name, text);
+---

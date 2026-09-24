@@ -1,5 +1,5 @@
 ---
-// ЗАДАЧА: пустити в `/api/` лише за токеном, а сторінки лишити відкритими.
+// ЗАДАЧА 1: пустити в `/api/` лише за токеном, а сторінки лишити відкритими.
 //
 // Це єдине місце, де перевіряється доступ до API: маршрути в `api/` про
 // автентифікацію не знають нічого. Сесії там немає навмисно (SYNTAX 6.7), тож
@@ -17,5 +17,46 @@ if req.path.starts_with("/api/") {
         // Мапа стає JSON сама — бо маршрут із `api/`.
         return #{ error: "потрібен дійсний токен" };
     }
+    return;
+}
+
+// ЗАДАЧА 2: ролі й права для сторінок.
+//
+// Хто зайшов — один запит до бази тут, а не на кожній сторінці. `page` у
+// middleware і на сторінці — те саме значення, тож `page.user` сторінка бачить
+// без жодного повторного запиту. У сесії лише id: роль читається з бази
+// щоразу, тож зміна ролі діє одразу, а не після перелогіну.
+let user_id = session.get("user_id");
+page.user = if user_id == () { () } else { db.get("users", user_id) };
+
+// Шлях → потрібне право. Перше правило, що підійшло, і вирішує, тому
+// конкретніші — вище. `== prefix || starts_with(prefix + "/")`, а не просто
+// `starts_with`: інакше правило для `/reports` накрило б і `/reports-public`.
+let rules = [
+    ["/reports/export", "orders.export"],
+    ["/reports",        "orders.view"],
+];
+
+for rule in rules {
+    let prefix = rule[0];
+    if req.path != prefix && !req.path.starts_with(prefix + "/") { continue; }
+
+    if page.user == () {
+        // Ще не представився — на вибір користувача, а потім назад сюди.
+        hx.toast("Спочатку оберіть користувача", "warning");
+        res.redirect(url("/roles", #{ next: req.url }));
+    } else if !can(page.user, rule[1]) {
+        if req.is_htmx {
+            // Кнопка на вже відкритій сторінці: лишаємо сторінку як є, лише
+            // пояснюємо. Без `reswap("none")` htmx замінив би ціль порожнечею.
+            res.status(403);
+            hx.toast("Немає доступу", "error");
+            hx.reswap("none");
+            return "";
+        }
+        hx.toast(`Для цього потрібне право ${rule[1]}`, "error");
+        res.redirect("/roles");
+    }
+    break;
 }
 ---

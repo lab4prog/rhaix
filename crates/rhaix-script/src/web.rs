@@ -28,6 +28,8 @@ pub struct UploadData {
 pub struct RequestData {
     pub method: String,
     pub path: String,
+    /// Шлях разом із рядком запиту, як прийшов: `/orders?status=paid`.
+    pub url: String,
     /// Сегменти маршруту: `pages/todo/[id].rhx` → `id`.
     pub params: BTreeMap<String, String>,
     pub query: BTreeMap<String, String>,
@@ -208,6 +210,22 @@ pub struct ResponseData {
     pub refresh: bool,
     /// Чи просив скрипт зупинити обробку (редірект або явний статус).
     pub stop: bool,
+    /// `res.download(...)`: замість сторінки — файл.
+    pub download: Option<Download>,
+}
+
+/// Файл, який скрипт віддає замість сторінки (`res.download`).
+#[derive(Debug, Clone)]
+pub struct Download {
+    /// Ім'я, під яким браузер збереже файл. Як є, з кирилицею: сервер сам
+    /// закодує його в `Content-Disposition`.
+    pub filename: String,
+    /// `None` — сервер визначить тип за розширенням імені.
+    pub content_type: Option<String>,
+    pub bytes: Arc<Vec<u8>>,
+    /// Вміст прийшов текстом (а не blob): сервер може додати `; charset=utf-8`
+    /// і BOM для CSV.
+    pub is_text: bool,
 }
 
 impl Default for ResponseData {
@@ -220,6 +238,7 @@ impl Default for ResponseData {
             redirect: None,
             refresh: false,
             stop: false,
+            download: None,
         }
     }
 }
@@ -269,6 +288,7 @@ pub fn register_web(engine: &mut Engine) {
         .register_type_with_name::<Request>("Request")
         .register_get("method", |req: &mut Request| req.0.method.clone())
         .register_get("path", |req: &mut Request| req.0.path.clone())
+        .register_get("url", |req: &mut Request| req.0.url.clone())
         .register_get("body", |req: &mut Request| req.0.body.clone())
         .register_get("is_htmx", |req: &mut Request| req.0.is_htmx)
         .register_get("is_boosted", |req: &mut Request| req.0.is_boosted)
@@ -364,7 +384,21 @@ pub fn register_web(engine: &mut Engine) {
                 data.redirect = Some(url.to_owned());
                 data.stop = true;
             });
-        });
+        })
+        // `res.download("звіт.csv", csv(rows, ...))` — файл замість сторінки.
+        // Вміст — рядок або blob; тип визначається за розширенням імені.
+        .register_fn(
+            "download",
+            |res: &mut Response, filename: &str, content: Dynamic| {
+                download(res, filename, content, None)
+            },
+        )
+        .register_fn(
+            "download",
+            |res: &mut Response, filename: &str, content: Dynamic, content_type: &str| {
+                download(res, filename, content, Some(content_type.to_owned()))
+            },
+        );
 
     engine
         .register_type_with_name::<Hx>("Hx")
@@ -418,6 +452,44 @@ pub fn register_web(engine: &mut Engine) {
         .register_fn("error", |log: &mut Log, message: Dynamic| {
             tracing::error!("{}: {}", log.source, super::display(&message));
         });
+}
+
+fn download(
+    res: &mut Response,
+    filename: &str,
+    content: Dynamic,
+    content_type: Option<String>,
+) -> Result<(), Box<rhai::EvalAltResult>> {
+    let (bytes, is_text) = if content.is::<rhai::Blob>() {
+        (content.cast::<rhai::Blob>(), false)
+    } else if content.is_string() {
+        (
+            content.cast::<rhai::ImmutableString>().as_bytes().to_vec(),
+            true,
+        )
+    } else {
+        return Err(format!(
+            "res.download(): вміст — рядок або blob, а не `{}`. Таблицю спершу \
+             перетворіть: csv(rows, #{{ columns: [...] }})",
+            content.type_name()
+        )
+        .into());
+    };
+    let filename = filename.trim();
+    if filename.is_empty() {
+        return Err("res.download(): порожнє ім'я файлу".into());
+    }
+    res.with(|data| {
+        data.download = Some(Download {
+            filename: filename.to_owned(),
+            content_type,
+            bytes: Arc::new(bytes),
+            is_text,
+        });
+        // Сторінку не рендеримо: тіло відповіді — сам файл.
+        data.stop = true;
+    });
+    Ok(())
 }
 
 fn push_toast(hx: &mut Hx, message: &str, kind: &str) {

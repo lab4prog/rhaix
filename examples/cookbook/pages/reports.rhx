@@ -1,0 +1,62 @@
+---
+// ЗАДАЧА: одна сторінка — різні можливості для різних ролей.
+//
+// Хто може сюди зайти, вирішив middleware.rhx (`orders.view`). Тут — лише те,
+// що всередині: кнопки ховаються через `can(...)`, а дія перевіряє право ще
+// раз, бо сховану кнопку легко відтворити руками в DevTools.
+page.title = "Звіт по замовленнях";
+
+if req.method == "POST" {
+    if !can(page.user, "orders.cancel") {
+        res.status(403);
+        hx.toast("Скасовувати може лише адміністратор", "error");
+        hx.reswap("none");
+        return "";
+    }
+    let id = req.form_int("id");
+    if id != () {
+        db.update("orders", id, #{ status: "cancelled" });
+        hx.toast(`Замовлення №${id} скасовано`, "success");
+    }
+}
+
+let status = req.query("status") ?? "";
+let where = if status == "" { #{} } else { #{ status: status } };
+let orders = db.find("orders", where, #{ sort: "id desc" });
+---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
+<h1>Звіт по замовленнях</h1>
+<p>Ви — <b>{{ page.user.name }}</b> ({{ role_label(page.user.role) }}).
+   <a href="/roles">Змінити</a></p>
+
+<p class="filters">
+  <a @for={s in ["", "new", "paid", "cancelled"]}
+     href={url("/reports", #{ status: s })}
+     @class={#{"active": s == status}}>{{ if s == "" { "Усі" } else { status_label(s) } }}</a>
+</p>
+
+<!-- Звичайне посилання: під hx-boost сервер сам перетворить його на
+     справжнє завантаження (res.download на htmx-GET → HX-Redirect). -->
+<p @if={can(page.user, "orders.export")}>
+  <a href={url("/reports/export", #{ status: status })}>Вивантажити в CSV</a>
+</p>
+
+<table>
+  <thead><tr><th>№</th><th>Клієнт</th><th>Сума</th><th>Статус</th><th></th></tr></thead>
+  <tbody>
+    <tr @for={o in orders}>
+      <td>{{ o.id }}</td>
+      <td>{{ o.customer }}</td>
+      <td>{{ money(o.amount) }}</td>
+      <td><span @class={status_class(o.status)}>{{ status_label(o.status) }}</span></td>
+      <td>
+        <button @if={can(page.user, "orders.cancel") && o.status != "cancelled"}
+                hx-post={url("/reports", #{ status: status })}
+                hx-vals={json_encode(#{ id: o.id })}
+                hx-target="#main"
+                hx-confirm="Скасувати замовлення?">Скасувати</button>
+      </td>
+    </tr>
+  </tbody>
+</table>

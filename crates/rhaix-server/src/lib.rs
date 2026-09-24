@@ -703,7 +703,18 @@ pub fn build_watched(
         // `public/style.css` віддається як `/style.css` — без префікса, як в Astro.
         let files = ServeDir::new(public).append_index_html_on_directories(false);
         if config.dev {
-            router.fallback_service(files)
+            // Без `Cache-Control` браузер кешує файл евристично — на частку
+            // часу від останньої зміни. Живе перезавантаження тоді оновлює
+            // сторінку, а стара CSS лишається. `no-cache` — щоразу перепитати
+            // (з `Last-Modified` це дешеві 304), тож правка видна одразу.
+            router.fallback_service(
+                ServiceBuilder::new()
+                    .layer(SetResponseHeaderLayer::if_not_present(
+                        header::CACHE_CONTROL,
+                        HeaderValue::from_static("no-cache"),
+                    ))
+                    .service(files),
+            )
         } else {
             // У продакшні статика кешується браузером: вона змінюється лише
             // разом із деплоєм.
@@ -968,6 +979,11 @@ async fn collect_request(
     Ok(RequestData {
         method: parts.method.as_str().to_owned(),
         path: parts.uri.path().to_owned(),
+        url: parts
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str().to_owned())
+            .unwrap_or_else(|| parts.uri.path().to_owned()),
         params: params
             .iter()
             .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -995,6 +1011,9 @@ fn build_response(
     kind: RouteKind,
 ) -> Response {
     let mut status = StatusCode::from_u16(state.status).unwrap_or(StatusCode::OK);
+    if let Some(file) = &state.download {
+        return download_response(file, &state, status);
+    }
     let mut response = Response::new(Body::from(body));
 
     {
@@ -1066,6 +1085,129 @@ fn build_response(
     response
 }
 
+/// Відповідь-файл для `res.download(...)`.
+fn download_response(
+    file: &rhaix_script::Download,
+    state: &ResponseData,
+    status: StatusCode,
+) -> Response {
+    let content_type = file
+        .content_type
+        .clone()
+        .unwrap_or_else(|| content_type_for(&file.filename, file.is_text));
+
+    // Excel відкриває CSV без BOM у системному кодуванні — і кирилиця
+    // перетворюється на «РђР±РІ». BOM — стандартний спосіб сказати «це UTF-8»;
+    // інші програми його просто пропускають.
+    let mut bytes = file.bytes.as_ref().clone();
+    if file.is_text && content_type.starts_with("text/csv") && !bytes.starts_with(BOM) {
+        bytes.splice(0..0, BOM.iter().copied());
+    }
+
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    insert_header(headers, "Content-Type", &content_type);
+    insert_header(
+        headers,
+        "Content-Disposition",
+        &content_disposition(&file.filename),
+    );
+    // Тип задаємо ми; браузер не має вгадувати в тексті HTML.
+    insert_header(headers, "X-Content-Type-Options", "nosniff");
+    for (name, value) in &state.headers {
+        insert_header(headers, name, value);
+    }
+    for cookie in &state.cookies {
+        if let Ok(value) = HeaderValue::from_str(cookie) {
+            headers.append(header::SET_COOKIE, value);
+        }
+    }
+    // Вивантаження — зазвичай чиїсь дані: у спільному кеші їм не місце.
+    if !headers.contains_key(header::CACHE_CONTROL) {
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+    }
+    response
+}
+
+const BOM: &[u8] = b"\xEF\xBB\xBF";
+
+/// Тип файлу за розширенням. Лише те, що реально віддають застосунки;
+/// решта — `application/octet-stream`, і браузер просто збереже файл.
+fn content_type_for(filename: &str, is_text: bool) -> String {
+    let extension = Path::new(filename)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let base = match extension.as_str() {
+        "csv" => "text/csv",
+        "txt" | "log" => "text/plain",
+        "md" => "text/markdown",
+        "html" | "htm" => "text/html",
+        "ics" => "text/calendar",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ if is_text => "text/plain",
+        _ => "application/octet-stream",
+    };
+    let textual = base.starts_with("text/") || base.ends_with("json") || base.ends_with("xml");
+    if is_text && textual {
+        format!("{base}; charset=utf-8")
+    } else {
+        base.to_owned()
+    }
+}
+
+/// `Content-Disposition` з ім'ям, яке переживе будь-який браузер.
+///
+/// Ім'я в заголовку — ASCII. Тому два варіанти: `filename=` — запасний, де
+/// все не-ASCII замінено на `_`, і `filename*=UTF-8''…` (RFC 6266) із
+/// справжнім ім'ям — його читають усі сучасні браузери. Роздільники шляху й
+/// керівні символи прибираються з обох: ім'я від користувача (`звіт/../x`)
+/// не має вказувати, куди зберегти файл.
+fn content_disposition(filename: &str) -> String {
+    let clean: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | '"') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let fallback: String = clean
+        .chars()
+        .map(|c| if c.is_ascii() { c } else { '_' })
+        .collect();
+    let mut encoded = String::new();
+    for byte in clean.bytes() {
+        let keep = byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+            );
+        if keep {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
+}
+
 fn insert_header(headers: &mut axum::http::HeaderMap, name: &str, value: &str) {
     match (
         HeaderName::from_bytes(name.as_bytes()),
@@ -1130,7 +1272,12 @@ fn render_page(
     }
 
     let hx_request = data.hx_request;
+    let is_get = data.method == "GET";
+    let url = data.url.clone();
     let (mut body, mut response) = render_inner(state, file, kind, data, &session, &csrf, &i18n)?;
+    if response.download.is_some() && hx_request {
+        route_download_past_htmx(&mut response, is_get, &url);
+    }
     if !kind.is_api() {
         body = carry_flash(&session, &mut response, body, hx_request);
     }
@@ -1144,6 +1291,36 @@ fn render_page(
         }
     }
     Ok((body, response))
+}
+
+/// Файл на htmx-запит: htmx не вміє зберігати файли, він вставив би вміст
+/// CSV текстом у сторінку. Найчастіше це звичайне посилання «Експорт» під
+/// `<body hx-boost>` — автор про htmx і не думав.
+///
+/// На GET відповідаємо `HX-Redirect` на ту саму адресу: htmx робить
+/// `location.href = …`, браузер отримує вже звичайну відповідь з
+/// `Content-Disposition: attachment` і зберігає файл, лишаючись на сторінці.
+/// Скрипт виконається вдруге — для GET, що нічого не змінює, це ціна
+/// правильного завантаження. Тости першого проходу відкидаємо: другий їх
+/// повторить, і вони дочекаються наступної сторінки у flash.
+///
+/// Не-GET так не повториш (редірект став би GET без тіла форми), тож файл
+/// іде як є, але з `HX-Reswap: none` — сторінку хоч не зіпсує — і з
+/// попередженням у лозі, як це виправити.
+fn route_download_past_htmx(response: &mut ResponseData, is_get: bool, url: &str) {
+    if is_get {
+        response.download = None;
+        response.redirect = Some(url.to_owned());
+        take_toasts(response);
+    } else {
+        tracing::warn!(
+            "{url}: res.download() на htmx-запит не GET — файл не дійде до користувача. \
+             Віддавайте файли на GET-посилання або поставте hx-boost=\"false\" на форму"
+        );
+        response
+            .headers
+            .push(("HX-Reswap".to_owned(), "none".to_owned()));
+    }
 }
 
 /// Ключ сесії для тостів, що мають пережити редірект.
@@ -1171,7 +1348,10 @@ fn carry_flash(
         .try_cast::<rhai::Array>()
         .unwrap_or_default();
 
-    if response.redirect.is_some() || response.refresh {
+    // Файл — теж відповідь, у якій тост показати ніде: сторінка лишається
+    // та сама, а тіло — файл. Тож він чекає наступної відповіді, як і при
+    // редіректі; а вже накопичені лишаються в сесії.
+    if response.redirect.is_some() || response.refresh || response.download.is_some() {
         let mut all = pending;
         all.extend(take_toasts(response));
         if !all.is_empty() {
@@ -1940,6 +2120,28 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_names_cannot_point_anywhere_and_survive_any_browser() {
+        let value = content_disposition("../звіт/\"x\".csv");
+        // Роздільники шляху й лапки — `_`; не-ASCII у запасному імені — теж.
+        assert!(value.contains("filename=\".._______x_.csv\""), "{value}");
+        assert!(!value.contains('/'), "{value}");
+        assert!(value.is_ascii(), "{value}");
+        assert!(value.contains("filename*=UTF-8''.._%D0%B7"), "{value}");
+    }
+
+    #[test]
+    fn download_types_follow_the_extension() {
+        assert_eq!(content_type_for("a.csv", true), "text/csv; charset=utf-8");
+        assert_eq!(
+            content_type_for("a.JSON", true),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(content_type_for("a.pdf", false), "application/pdf");
+        assert_eq!(content_type_for("noext", false), "application/octet-stream");
+        assert_eq!(content_type_for("noext", true), "text/plain; charset=utf-8");
+    }
 
     #[test]
     fn client_ip_ignores_forwarded_headers_unless_told_to_trust_a_proxy() {

@@ -1,0 +1,61 @@
+---
+// ЗАДАЧА: хто я і що мені можна. Вибір користувача тут замість входу з
+// паролем — рецепт про права (middleware.rhx + scripts/access.rhai), а не про
+// вхід. Справжній вхід — examples/demo/pages/login.rhx.
+page.title = "Ролі й права";
+
+if req.method == "POST" {
+    let id = req.form_int("user_id");
+    let user = if id == () { () } else { db.get("users", id) };
+    if user == () {
+        session.remove("user_id");
+        hx.toast("Ви вийшли", "info");
+        res.redirect("/roles");
+    } else {
+        session.set("user_id", user.id);
+        hx.toast(`Тепер ви — ${user.name}`, "success");
+        // Назад туди, куди йшли, — але лише в межах сайту: `next=//evil.com`
+        // чи `next=https://…` не має виводити користувача на чужий сайт.
+        let next = req.form("next") ?? "";
+        let safe = next.starts_with("/") && !next.starts_with("//") && !next.contains("\\");
+        res.redirect(if safe { next } else { "/reports" });
+    }
+}
+
+let users = db.find("users", #{}, #{ sort: "id" });
+let next = req.query("next") ?? "";
+---
+<div @if={req.is_htmx} @oob={"#nav"}><Nav /></div>
+
+<h1>Ролі й права</h1>
+
+<p @if={page.user != ()}>
+  Зараз ви — <b>{{ page.user.name }}</b> ({{ role_label(page.user.role) }}).
+  Дозволено: <code @for={p in permissions(page.user.role)}>{{ p }} </code>
+</p>
+<p @if={page.user == ()}>Ви ще не представились — оберіть, ким бути.</p>
+
+<table>
+  <thead><tr><th>Користувач</th><th>Роль</th><th>Права</th><th></th></tr></thead>
+  <tbody>
+    <tr @for={u in users}>
+      <td>{{ u.name }}</td>
+      <td>{{ role_label(u.role) }}</td>
+      <td><code @for={p in permissions(u.role)}>{{ p }} </code></td>
+      <td>
+        <form method="post" action="/roles">
+          <input type="hidden" name="user_id" value={u.id}>
+          <input type="hidden" name="next" value={next}>
+          <button>Бути {{ u.name }}</button>
+        </form>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<form method="post" action="/roles" @if={page.user != ()}>
+  <button>Вийти</button>
+</form>
+
+<p>Далі — <a href="/reports">звіт</a>: переглядач його бачить, менеджер ще й
+   вивантажує в CSV, адміністратор — скасовує замовлення.</p>

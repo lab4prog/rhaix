@@ -6,6 +6,7 @@
 
 mod auth;
 mod crypto;
+mod csv;
 mod data;
 mod datetime;
 mod http;
@@ -40,8 +41,8 @@ pub use stdlib::{register_core, Html, SlotSet};
 pub use text::register_text;
 pub use urls::sanitize_url;
 pub use web::{
-    parse_cookies, parse_urlencoded, register_web, triggers_header, Hx, Log, Request, RequestData,
-    Response, ResponseData, State, UploadData,
+    parse_cookies, parse_urlencoded, register_web, triggers_header, Download, Hx, Log, Request,
+    RequestData, Response, ResponseData, State, UploadData,
 };
 
 use std::cell::Cell;
@@ -109,6 +110,7 @@ pub fn engine(limits: Limits) -> Engine {
     auth::register_auth(&mut engine);
     validate::register_validate(&mut engine);
     paginate::register_paginate(&mut engine);
+    csv::register_csv(&mut engine);
     mail::register_mail(&mut engine);
     markdown::register_markdown(&mut engine);
     i18n::register_i18n(&mut engine);

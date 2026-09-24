@@ -11,6 +11,8 @@ let recipes = [
     #{ href: "/pagination", label: "Пагінація" },
     #{ href: "/upload", label: "Файл" },
     #{ href: "/contact", label: "Пошта" },
+    #{ href: "/roles", label: "Ролі" },
+    #{ href: "/reports", label: "Звіт і CSV" },
 ];
 ---
 <nav>

@@ -209,8 +209,8 @@ menu, a header counter) re-renders itself. Two consequences:
 
 | Name | What |
 |---|---|
-| `req` | `req.method`, `req.path`, `req.ip`, `req.is_htmx`, `req.param/query/form/header/cookie`, typed `query_int/query_float/query_bool` and `form_int/form_float/form_bool`, `req.all_query()`, `req.all_form()`, `req.body` |
-| `res` | `res.status(422)`, `res.header(k,v)`, `res.cookie(k,v)`, `res.redirect("/login")` |
+| `req` | `req.method`, `req.path`, `req.url` (path + query), `req.ip`, `req.is_htmx`, `req.param/query/form/header/cookie`, typed `query_int/query_float/query_bool` and `form_int/form_float/form_bool`, `req.all_query()`, `req.all_form()`, `req.body` |
+| `res` | `res.status(422)`, `res.header(k,v)`, `res.cookie(k,v)`, `res.redirect("/login")`, `res.download(name, content[, type])` |
 | `hx` | `hx.toast(msg, "success")`, `hx.trigger(name[, detail])`, `hx.redirect`, `hx.refresh`, `hx.push_url`, `hx.retarget`, `hx.reswap`, `hx.location` |
 | `db` | see below |
 | `session` | `session.set/get/has/remove/clear/all`, `session.user` |
@@ -331,6 +331,16 @@ if !state.allow(attempts, 5, 300) {                      // 5 per 5 minutes
 ```
 
 Counters are per process (not shared between copies, cleared on restart).
+
+Roles and permissions (full recipe: examples/cookbook middleware.rhx +
+scripts/access.rhai): keep only the user id in the session; in middleware.rhx
+load the user once into `page.user` (the page sees the same `page`); map path
+prefixes to permissions (`req.path == p || req.path.starts_with(p + "/")`);
+pages test `can(page.user, "perm")`, never the role name; the action handler
+re-checks `can(...)` — hiding a button is not authorization. Deny an htmx
+button with `res.status(403); hx.toast(...); hx.reswap("none"); return "";`.
+Redirect back via `url("/login", #{ next: req.url })`, and only follow `next`
+if it starts with "/" and not "//".
 `req.ip` is the TCP peer; behind your own proxy set `[server] trust_proxy = true`
 to read the last `X-Forwarded-For` entry — never otherwise, it is forgeable.
 
@@ -368,6 +378,7 @@ money(v) money(v, 0) percent(a, b)
 uuid() random_id() sha256(s)
 hash_password(pw) verify_password(pw, hash)   // Argon2id — for passwords, not sha256()
 validate(values, rules) paginate(total, per, page)   // see the batteries section
+csv(rows, #{ columns: [...], titles: [...], sep: ";", decimal: "," })
 json(v)              // for <script> only — escapes tag-closing sequences
 json_encode(v) json_decode(s)
 raw(v) bool(v)
@@ -404,6 +415,16 @@ if f != () {
     // f.filename f.content_type f.size f.is_image f.extension f.text()
     f.save("public/uploads/" + random_id() + "." + f.extension);   // path checked: no absolute, no ..
 }
+
+// CSV export: escapes per RFC 4180, defuses formula cells (=, +, -, @ get a leading ')
+// rows of maps need `columns` (maps have no field order); arrays of arrays go as is
+res.download("orders.csv", csv(orders, #{
+    columns: ["id", "customer", "amount"], titles: ["No", "Customer", "Amount"],
+    sep: ";", decimal: ",",     // Excel in comma-decimal locales
+}));
+// res.download: string or blob; type from extension; UTF-8 filename encoded;
+// BOM added to CSV; stops rendering. Behind hx-boost a GET download becomes
+// HX-Redirect to the same URL (the script runs twice — keep exports on GET).
 
 // mail (dev: logs the message; real SMTP behind the `mail` build feature + [mail] config)
 mail.send(#{ to: "x@y.co", subject: "Hi", text: "...", html: "<p>...</p>" });

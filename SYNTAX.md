@@ -604,11 +604,9 @@ let todos = db.query("select * from todos order by id");
 ```
 middleware.rhx
 ---
-state.started = now();
-
-if req.path.starts_with("/admin") {
-    if session.user == () { hx.redirect("/login"); return; }
-    if session.user.role != "admin" { res.status(403); return "Немає доступу"; }
+if req.path.starts_with("/admin") && session.user == () {
+    hx.toast("Спочатку увійдіть", "error");
+    res.redirect("/login");
 }
 ---
 ```
@@ -621,6 +619,67 @@ if req.path.starts_with("/admin") {
 Без цього охорона доступу переписується в кожну закриту сторінку, і забутий
 рядок в одному файлі відкриває сторінку всім (перевірено в
 `examples/ergonomics/admin-report.rhx`).
+
+**Ролі й права — рецепт.** Фреймворк не нав'язує своєї моделі користувачів,
+але все потрібне вже є. Готовий приклад лежить у `examples/cookbook`
+(`middleware.rhx`, `scripts/access.rhai`, `pages/roles.rhx`, `pages/reports.rhx`).
+
+```rhai
+// scripts/access.rhai — одна таблиця прав на весь застосунок
+fn permissions(role) {
+    switch role {
+        "admin"   => ["orders.view", "orders.export", "orders.cancel"],
+        "manager" => ["orders.view", "orders.export"],
+        _         => ["orders.view"],
+    }
+}
+fn can(user, permission) {
+    if user == () { return false; }
+    permissions(user.role).contains(permission)
+}
+```
+
+```rhai
+// middleware.rhx — хто зайшов і куди йому можна
+let id = session.get("user_id");
+page.user = if id == () { () } else { db.get("users", id) };
+
+let rules = [["/reports/export", "orders.export"], ["/reports", "orders.view"]];
+for rule in rules {
+    if req.path != rule[0] && !req.path.starts_with(rule[0] + "/") { continue; }
+    if page.user == () {
+        res.redirect(url("/login", #{ next: req.url }));
+    } else if !can(page.user, rule[1]) {
+        hx.toast("Немає доступу", "error");
+        res.redirect("/");
+    }
+    break;
+}
+```
+
+```html
+<!-- будь-яка сторінка: page.user уже є, запитів до бази не треба -->
+<button @if={can(page.user, "orders.cancel")} hx-post="/orders/cancel">Скасувати</button>
+```
+
+Чотири речі, на яких такі схеми зазвичай ламаються:
+
+- **Сторінка перевіряє право, а не роль.** Пишіть `can(user, "orders.export")`,
+  а не `user.role == "admin"`. Тоді нова роль — це один рядок у
+  `permissions`, а не пошук по всіх файлах.
+- **У сесії лише id, роль — з бази.** Тоді зміна ролі або блокування діє з
+  наступного ж запиту. Роль, покладена в cookie, жила б до кінця сесії.
+- **Сховати кнопку — не те саме, що заборонити дію.** Middleware охороняє
+  шляхи, а не методи й параметри. Тому обробник дії перевіряє `can(...)` ще
+  раз: сховану кнопку легко відтворити вручну.
+- **Відмова на htmx-кнопці:** `res.status(403); hx.toast(...); hx.reswap("none");
+  return "";`. Без `reswap("none")` htmx замінив би ціль порожнечею.
+
+`page` у middleware і на сторінці — те саме значення. Тому `page.user` сторінка
+бачить без повторного запиту до бази. `req.url` — шлях разом із рядком запиту,
+саме він потрібен для «повернутись після входу». Перенаправляючи на `next`,
+перевіряйте, що адреса починається з `/`, але не з `//`: інакше
+`?next=//evil.com` виведе користувача на чужий сайт.
 
 ### 6.7 `api/` — JSON замість HTML
 
@@ -984,7 +1043,7 @@ is_blank(value)            // (), "", "   ", [], #{}
 
 ---
 
-### 7.5 Батарейки: валідація, пагінація, файли, пошта
+### 7.5 Батарейки: валідація, пагінація, файли, CSV, пошта
 
 **`validate(значення, правила)`** — перевірка форми одним викликом замість
 десятка `if`. Повертає мапу `поле → повідомлення` (порожню, якщо все гаразд):
@@ -1049,7 +1108,56 @@ smtp_user = "..."
 smtp_pass = "..."
 ```
 
-Рецепти всіх чотирьох — у `examples/cookbook`.
+**Вивантаження в CSV — `csv()` і `res.download()`.**
+
+```rhai
+// pages/reports/export.rhx
+let orders = db.find("orders", #{}, #{ sort: "id" });
+res.download("замовлення.csv", csv(orders, #{
+    columns: ["id", "customer", "amount"],
+    titles:  ["№", "Клієнт", "Сума"],
+    sep: ";", decimal: ",",      // так чекає Excel з українською локаллю
+}));
+```
+
+`csv(rows, options)` приймає масив мап (тоді `columns` обов'язковий: мапа в
+Rhai не пам'ятає порядку полів) або масив масивів. Параметри:
+
+| Параметр | Типово | Що робить |
+|---|---|---|
+| `columns` | — | які поля й у якому порядку |
+| `titles` | `columns` | рядок заголовків |
+| `sep` | `","` | роздільник. Для Excel з українською локаллю — `";"`, бо кома там десяткова |
+| `decimal` | `"."` | десятковий знак дробових чисел; `","` — для того ж Excel |
+| `header` | `true` | чи писати рядок заголовків |
+| `guard` | `true` | знешкоджувати комірки-формули |
+
+Коми, лапки й переноси всередині значень екрануються за RFC 4180. Текст, що
+починається з `=`, `+`, `-` або `@`, отримує на початку `'`. Інакше
+`=HYPERLINK(...)` в імені клієнта Excel виконав би як формулу у файлі
+бухгалтера. Числа з бази не чіпаються. Невідомий параметр — помилка, а не
+тиша.
+
+`res.download(ім'я, вміст)` віддає файл замість сторінки. Вміст — рядок або
+blob. Тип визначається за розширенням, або передайте його третім аргументом:
+`res.download("a.bin", data, "application/x-foo")`. Решту фреймворк робить сам:
+
+- **Ім'я файлу з кирилицею** доходить до будь-якого браузера: `filename*`
+  за RFC 6266 плюс ASCII-запасний варіант. Роздільники шляху з імені
+  прибираються.
+- **CSV-рядок отримує BOM.** Без нього Excel показав би кирилицю
+  кракозябрами.
+- **Службові заголовки:** `X-Content-Type-Options: nosniff` і
+  `Cache-Control: private, no-store`.
+- **Тост** (`hx.toast("Вивантажено")`) чекає наступної сторінки у flash.
+- **Посилання під `hx-boost`** працює як треба. Сервер відповідає
+  `HX-Redirect` на ту саму адресу, і браузер завантажує файл звичайним
+  переходом, лишаючись на сторінці. Інакше htmx вставив би CSV текстом у
+  сторінку. Скрипт при цьому виконується двічі, тож файли віддають на GET, що
+  нічого не змінює. На htmx-POST файл до користувача не дійде: сервер попередить
+  у лозі й додасть `HX-Reswap: none`, щоб хоч сторінку не зіпсувати.
+
+Рецепти всіх — у `examples/cookbook`.
 
 ### 7.6 Переклади й markdown
 

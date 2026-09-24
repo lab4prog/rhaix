@@ -369,6 +369,93 @@ async fn a_response_that_sets_a_session_cookie_is_never_shared_by_caches() {
 }
 
 #[tokio::test]
+async fn in_dev_public_files_are_revalidated_so_edits_show_up_at_once() {
+    // Без цього браузер кешував `style.css` евристично, і живе
+    // перезавантаження показувало нову сторінку зі старими стилями.
+    let (status, headers, _) = call(get("/style.css")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
+}
+
+#[tokio::test]
+async fn res_download_sends_a_file_instead_of_the_page() {
+    let (status, headers, body) = call(get("/export")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header(&headers, "content-type"),
+        Some("text/csv; charset=utf-8")
+    );
+    let disposition = header(&headers, "content-disposition").unwrap_or_default();
+    assert!(disposition.starts_with("attachment; "), "{disposition}");
+    // Справжнє ім'я — закодоване, запасне — ASCII.
+    assert!(
+        disposition.contains("filename*=UTF-8''%D0%B7%D0%B2%D1%96%D1%82%20"),
+        "{disposition}"
+    );
+    assert!(
+        disposition.contains("filename=\"____ __ _______.csv\""),
+        "{disposition}"
+    );
+    assert_eq!(header(&headers, "x-content-type-options"), Some("nosniff"));
+    assert_eq!(header(&headers, "cache-control"), Some("private, no-store"));
+
+    // BOM — щоб Excel не показав кирилицю кракозябрами.
+    assert!(body.starts_with('\u{feff}'), "{body:?}");
+    assert!(body.contains("№,Ім'я\r\n"), "{body}");
+    assert!(body.contains("1,\"Оля, \"\"Київ\"\"\"\r\n"), "{body}");
+    assert!(
+        body.contains("'=HYPERLINK"),
+        "формула має бути знешкоджена: {body}"
+    );
+    assert!(
+        !body.contains("розмітки"),
+        "сторінка не рендериться: {body}"
+    );
+
+    // Тост показати ніде — він чекає наступної сторінки в сесії.
+    let trigger = header(&headers, "hx-trigger").unwrap_or_default();
+    assert!(!trigger.contains("showToast"), "{trigger}");
+    let cookie = header(&headers, "set-cookie")
+        .expect("тост має лягти в сесію")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let request = Request::builder()
+        .uri("/")
+        .header("HX-Request", "true")
+        .header("cookie", &cookie)
+        .body(Body::empty())
+        .expect("запит");
+    let (_, headers, _) = call(request).await;
+    let trigger = header(&headers, "hx-trigger").unwrap_or_default();
+    assert!(trigger.contains("showToast"), "{trigger}");
+}
+
+#[tokio::test]
+async fn a_download_behind_hx_boost_becomes_a_real_navigation() {
+    // Посилання «Експорт» під <body hx-boost>: htmx вставив би CSV у сторінку.
+    let (status, headers, body) = call(boosted("/export?status=paid")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, "hx-redirect"), Some("/export?status=paid"));
+    assert!(
+        header(&headers, "content-disposition").is_none(),
+        "{headers:?}"
+    );
+    assert!(!body.contains("Оля"), "{body}");
+    // Другий, справжній запит повторить тост — з першого його не беремо.
+    assert!(header(&headers, "set-cookie").is_none(), "{headers:?}");
+}
+
+#[tokio::test]
+async fn a_download_on_an_htmx_post_at_least_leaves_the_page_alone() {
+    let ticket = ticket().await;
+    let (_, headers, _) = call(form_post("/export", "x=1", &ticket)).await;
+    assert_eq!(header(&headers, "hx-reswap"), Some("none"));
+    assert!(header(&headers, "content-disposition").is_some());
+}
+
+#[tokio::test]
 async fn a_redirect_from_a_boosted_form_still_uses_hx_redirect() {
     // htmx не йде за 303 сам — і для boosted-форми теж.
     let request = Request::builder()

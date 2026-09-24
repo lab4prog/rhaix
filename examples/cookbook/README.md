@@ -16,6 +16,8 @@ cargo run -p rhaix-cli -- dev examples/cookbook
 | Спільні функції для всіх сторінок | [`scripts/orders.rhai`](scripts/orders.rhai) |
 | JSON-API поверх тих самих даних | [`api/orders.rhx`](api/orders.rhx) + [`api/orders/[id].rhx`](api/orders/[id].rhx) |
 | Доступ до API за токеном | [`middleware.rhx`](middleware.rhx) |
+| Ролі й права: охорона шляхів і приховані кнопки | [`middleware.rhx`](middleware.rhx) + [`scripts/access.rhai`](scripts/access.rhai) + [`pages/roles.rhx`](pages/roles.rhx) |
+| Вивантаження в CSV для Excel | [`pages/reports.rhx`](pages/reports.rhx) + [`pages/reports/export.rhx`](pages/reports/export.rhx) |
 
 Три речі, які повторюються в усіх рецептах:
 

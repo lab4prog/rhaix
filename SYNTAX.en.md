@@ -633,6 +633,70 @@ if req.path.starts_with("/admin") && session.user == () {
 - CSRF is verified **before** the middleware, so a forged request never reaches
   a single line of application logic.
 
+**Roles and permissions — a recipe.** The framework does not impose its own
+user model, but everything needed is already there. A working example lives in
+`examples/cookbook` (`middleware.rhx`, `scripts/access.rhai`, `pages/roles.rhx`,
+`pages/reports.rhx`).
+
+```rhai
+// scripts/access.rhai — one permission table for the whole app
+fn permissions(role) {
+    switch role {
+        "admin"   => ["orders.view", "orders.export", "orders.cancel"],
+        "manager" => ["orders.view", "orders.export"],
+        _         => ["orders.view"],
+    }
+}
+fn can(user, permission) {
+    if user == () { return false; }
+    permissions(user.role).contains(permission)
+}
+```
+
+```rhai
+// middleware.rhx — who is this, and where may they go
+let id = session.get("user_id");
+page.user = if id == () { () } else { db.get("users", id) };
+
+let rules = [["/reports/export", "orders.export"], ["/reports", "orders.view"]];
+for rule in rules {
+    if req.path != rule[0] && !req.path.starts_with(rule[0] + "/") { continue; }
+    if page.user == () {
+        res.redirect(url("/login", #{ next: req.url }));
+    } else if !can(page.user, rule[1]) {
+        hx.toast("Access denied", "error");
+        res.redirect("/");
+    }
+    break;
+}
+```
+
+```html
+<!-- any page: page.user is already there, no extra query -->
+<button @if={can(page.user, "orders.cancel")} hx-post="/orders/cancel">Cancel</button>
+```
+
+Four things such schemes usually get wrong:
+
+- **Pages check a permission, not a role.** Write `can(user, "orders.export")`,
+  not `user.role == "admin"`. A new role is then one line in `permissions`,
+  not a hunt through every file.
+- **The session holds only the id; the role comes from the database.** A role
+  change or a ban then applies on the very next request. A role stored in the
+  cookie would live until the session ends.
+- **Hiding a button is not forbidding the action.** The middleware guards
+  paths, not methods and parameters. So the action handler checks `can(...)`
+  again: a hidden button is easy to recreate by hand.
+- **Refusing an htmx button:** `res.status(403); hx.toast(...); hx.reswap("none");
+  return "";`. Without `reswap("none")` htmx would replace the target with
+  nothing.
+
+`page` is the same value in the middleware and on the page, so the page sees
+`page.user` without another database query. `req.url` is the path together
+with the query string — exactly what "send them back after login" needs. When
+redirecting to `next`, check that it starts with `/` but not `//`: otherwise
+`?next=//evil.com` takes the user to someone else's site.
+
 ### 6.7 `api/` — JSON instead of HTML
 
 `api/` is a third top-level directory next to `pages/` and `partials/`.
@@ -985,7 +1049,7 @@ returns `false` rather than erroring.
 
 ---
 
-### 7.5 Batteries: validation, pagination, uploads, mail
+### 7.5 Batteries: validation, pagination, uploads, CSV, mail
 
 **`validate(values, rules)`** — validate a form in one call instead of a dozen
 `if`s. Returns a map of `field → message` (empty when valid):
@@ -1034,7 +1098,57 @@ section it runs in dev mode — logs the message instead of sending — so a con
 form works with no SMTP server. Real sending is behind the `mail` build feature
 (which `rhaix build` enables when `[mail]` is present) plus the config section.
 
-Recipes for all four are in `examples/cookbook`.
+**CSV export — `csv()` and `res.download()`.**
+
+```rhai
+// pages/reports/export.rhx
+let orders = db.find("orders", #{}, #{ sort: "id" });
+res.download("orders.csv", csv(orders, #{
+    columns: ["id", "customer", "amount"],
+    titles:  ["No", "Customer", "Amount"],
+    sep: ";", decimal: ",",      // what Excel expects in comma-decimal locales
+}));
+```
+
+`csv(rows, options)` takes an array of maps (then `columns` is required: a Rhai
+map does not remember field order) or an array of arrays. Options:
+
+| Option | Default | What it does |
+|---|---|---|
+| `columns` | — | which fields, in which order |
+| `titles` | `columns` | the header row |
+| `sep` | `","` | the separator. Use `";"` for Excel in comma-decimal locales |
+| `decimal` | `"."` | decimal mark for floats; `","` for that same Excel |
+| `header` | `true` | whether to write the header row |
+| `guard` | `true` | defuse cells that look like formulas |
+
+Commas, quotes and newlines inside values are escaped per RFC 4180. Text that
+starts with `=`, `+`, `-` or `@` gets a leading `'`. Otherwise
+`=HYPERLINK(...)` in a customer name would run as a formula in the
+accountant's spreadsheet. Numbers from the database are left alone. An unknown
+option is an error, not silence.
+
+`res.download(name, content)` sends a file instead of the page. The content is
+a string or a blob. The type comes from the extension, or pass it as a third
+argument: `res.download("a.bin", data, "application/x-foo")`. The framework does
+the rest:
+
+- **A file name with non-ASCII characters** reaches every browser:
+  `filename*` per RFC 6266 plus an ASCII fallback. Path separators are
+  stripped from the name.
+- **A CSV string gets a BOM.** Without it Excel shows Cyrillic as mojibake.
+- **Service headers:** `X-Content-Type-Options: nosniff` and
+  `Cache-Control: private, no-store`.
+- **A toast** (`hx.toast("Exported")`) waits for the next page in flash.
+- **A link under `hx-boost`** works as expected. The server answers
+  `HX-Redirect` to the same URL, and the browser downloads the file through a
+  normal navigation while staying on the page. Otherwise htmx would paste the
+  CSV into the page as text. The script therefore runs twice, so serve files on
+  a GET that changes nothing. On an htmx POST the file cannot reach the user:
+  the server logs a warning and adds `HX-Reswap: none` so at least the page is
+  not damaged.
+
+Recipes for all of them are in `examples/cookbook`.
 
 ### 7.6 Translations and markdown
 

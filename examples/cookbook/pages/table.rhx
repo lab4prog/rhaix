@@ -23,7 +23,7 @@ let flip = if dir == "asc" { "desc" } else { "asc" };
 
 <h1>Замовлення</h1>
 
-<p>
+<p class="filters">
   <a @for={s in ["", "new", "paid", "cancelled"]}
      href={url("/table", #{ status: s, sort: sort, dir: dir })}
      hx-get={url("/table", #{ status: s, sort: sort, dir: dir })}
