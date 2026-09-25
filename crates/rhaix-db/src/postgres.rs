@@ -8,67 +8,203 @@
 //! З'єднання беруться з невеликого пулу: рендер іде в `spawn_blocking`, тож
 //! паралельних запитів рівно стільки, скільки потоків.
 
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use postgres::types::{FromSql, ToSql, Type};
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, NoTls, Row, Statement};
 use rhai::{Dynamic, Map};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 
 use crate::{Affected, DbDriver, DbError};
 
-/// Скільки з'єднань тримати відкритими.
-const POOL_SIZE: usize = 8;
+/// Скільки з'єднань відкривати за замовчуванням (`[db] pool` у `rhaix.toml`).
+///
+/// Postgres за замовчуванням дозволяє 100 з'єднань на весь сервер; 16 на
+/// застосунок лишає місце для інших копій, міграцій і `psql`.
+pub const DEFAULT_POOL: usize = 16;
+
+/// Скільки чекати вільного з'єднання, перш ніж відповісти помилкою.
+const WAIT: Duration = Duration::from_secs(30);
+
+/// Пул з'єднань: не більше `max` одночасно, решта запитів **чекає**.
+///
+/// Раніше пул тримав до 8 вільних з'єднань, а коли запитів було більше —
+/// відкривав нове на кожен запит (TCP + автентифікація, десятки мілісекунд) і
+/// закривав після. Під навантаженням це означало нове з'єднання майже на
+/// кожен запит, а понад 100 одночасних — `too many clients` від Postgres і
+/// відповіді 500. У CRM на rhaix при 200 клієнтах так падав кожен третій
+/// запит. Черга на вільне з'єднання дешевша за нове з'єднання на кожен запит.
+struct Pool {
+    idle: Vec<Conn>,
+    /// Скільки ще з'єднань можна видати (вільні дозволи).
+    free: usize,
+}
 
 pub struct PostgresDriver {
     url: String,
-    pool: Mutex<Vec<Client>>,
+    max: usize,
+    pool: Mutex<Pool>,
+    ready: Condvar,
+}
+
+/// Скільки підготовлених запитів тримати на одне з'єднання. Запити з різною
+/// довжиною `in (…)` — різні тексти, тож без межі кеш міг би рости вічно.
+const STATEMENT_CACHE: usize = 256;
+
+/// З'єднання разом із запитами, уже підготовленими на ньому.
+///
+/// `client.query("select …", …)` щоразу робить два походи до бази: спершу
+/// готує запит (Parse/Describe), потім виконує. Коли база не на тій самій
+/// машині — у Docker, у сусідньому контейнері, у хмарі — кожен похід коштує
+/// мілісекунди, і сторінка з п'ятьма запитами платить за десять. Повторний
+/// запит із кешу йде одним походом.
+struct Conn {
+    client: Client,
+    statements: HashMap<String, Statement>,
+}
+
+impl Conn {
+    fn new(client: Client) -> Self {
+        Self {
+            client,
+            statements: HashMap::new(),
+        }
+    }
+
+    /// Підготовлений запит: з кешу або щойно підготовлений.
+    fn statement(&mut self, sql: &str) -> Result<Statement, DbError> {
+        if let Some(statement) = self.statements.get(sql) {
+            return Ok(statement.clone());
+        }
+        if self.statements.len() >= STATEMENT_CACHE {
+            self.statements.clear();
+        }
+        let statement = self
+            .client
+            .prepare(sql)
+            .map_err(|err| query_error(sql, err))?;
+        self.statements.insert(sql.to_owned(), statement.clone());
+        Ok(statement)
+    }
+
+    /// Запит не вдався — підготовку забуваємо: після зміни схеми (міграція,
+    /// `alter table`) старий план міг стати недійсним, і наступна спроба
+    /// має підготувати запит наново.
+    fn forget(&mut self, sql: &str) {
+        self.statements.remove(sql);
+    }
+}
+
+impl std::ops::Deref for Conn {
+    type Target = Client;
+    fn deref(&self) -> &Client {
+        &self.client
+    }
+}
+
+impl std::ops::DerefMut for Conn {
+    fn deref_mut(&mut self) -> &mut Client {
+        &mut self.client
+    }
+}
+
+/// Дозвіл на одне з'єднання. Повертається сам, коли виходить з області
+/// видимості, — на будь-якому шляху, зокрема на помилці посеред транзакції.
+struct Permit<'a>(&'a PostgresDriver);
+
+impl Drop for Permit<'_> {
+    fn drop(&mut self) {
+        let mut pool = self.0.pool.lock().expect("пул не отруєний");
+        pool.free += 1;
+        self.0.ready.notify_one();
+    }
 }
 
 impl PostgresDriver {
     /// `url` — рядок під'єднання: `postgres://user:pass@host:port/db`.
     pub fn open(url: &str) -> Result<Arc<Self>, DbError> {
+        Self::open_with_pool(url, DEFAULT_POOL)
+    }
+
+    /// Те саме з явним розміром пулу.
+    pub fn open_with_pool(url: &str, max: usize) -> Result<Arc<Self>, DbError> {
+        let max = max.clamp(1, 1000);
         let driver = Arc::new(Self {
             url: url.to_owned(),
-            pool: Mutex::new(Vec::new()),
+            max,
+            pool: Mutex::new(Pool {
+                idle: Vec::new(),
+                free: max,
+            }),
+            ready: Condvar::new(),
         });
         // Перевіряємо одразу: краще впасти на старті, ніж на першому запиті.
-        let client = driver.connect()?;
-        driver.checkin(client);
+        {
+            let (_permit, client) = driver.acquire()?;
+            driver.checkin(client);
+        }
         Ok(driver)
     }
 
-    fn connect(&self) -> Result<Client, DbError> {
+    fn connect(&self) -> Result<Conn, DbError> {
         Client::connect(&self.url, NoTls)
+            .map(Conn::new)
             .map_err(|err| DbError::Config(format!("не вдалося під'єднатися до postgres: {err}")))
     }
 
-    fn checkout(&self) -> Result<Client, DbError> {
-        if let Some(client) = self.pool.lock().expect("пул не отруєний").pop() {
-            return Ok(client);
+    /// Дочекатися дозволу й узяти з'єднання: вільне або нове, якщо пул ще не
+    /// заповнений.
+    fn acquire(&self) -> Result<(Permit<'_>, Conn), DbError> {
+        let deadline = Instant::now() + WAIT;
+        let mut pool = self.pool.lock().expect("пул не отруєний");
+        while pool.free == 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(DbError::Query(format!(
+                    "усі {} з'єднань із базою зайняті довше {} с — збільште `[db] pool` \
+                     або пошукайте повільний запит",
+                    self.max,
+                    WAIT.as_secs()
+                )));
+            }
+            pool = self
+                .ready
+                .wait_timeout(pool, left)
+                .expect("пул не отруєний")
+                .0;
         }
-        self.connect()
+        pool.free -= 1;
+        let idle = pool.idle.pop();
+        drop(pool);
+
+        let permit = Permit(self);
+        let client = match idle {
+            Some(client) if !client.is_closed() => client,
+            // Зламане з'єднання (впала мережа, перезапуск бази) — відкриваємо
+            // свіже. Помилка тут поверне дозвіл сама: `permit` дропнеться.
+            _ => self.connect()?,
+        };
+        Ok((permit, client))
     }
 
-    fn checkin(&self, client: Client) {
-        let mut pool = self.pool.lock().expect("пул не отруєний");
-        if pool.len() < POOL_SIZE {
-            pool.push(client);
+    /// Повернути живе з'єднання до вільних. Дозвіл повертає `Permit`.
+    fn checkin(&self, client: Conn) {
+        if client.is_closed() {
+            return;
         }
+        self.pool.lock().expect("пул не отруєний").idle.push(client);
     }
 
     /// Взяти з'єднання, зробити з ним щось і повернути в пул.
-    ///
-    /// Якщо з'єднання зламалось (мережа впала), у пул воно не повертається —
-    /// наступний виклик відкриє свіже.
-    fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, DbError>) -> Result<T, DbError> {
-        let mut client = self.checkout()?;
-        let broken = client.is_closed();
+    fn with<T>(&self, f: impl FnOnce(&mut Conn) -> Result<T, DbError>) -> Result<T, DbError> {
+        let (_permit, mut client) = self.acquire()?;
         let result = f(&mut client);
-        if !broken && !client.is_closed() {
-            self.checkin(client);
-        }
+        // Спершу з'єднання — у вільні, потім (на виході) дозвіл: наступний у
+        // черзі одразу знайде готове з'єднання, а не відкриватиме нове.
+        self.checkin(client);
         result
     }
 }
@@ -113,7 +249,9 @@ impl DbDriver for PostgresDriver {
         &self,
         body: &mut dyn FnMut(Arc<dyn DbDriver>) -> Result<Dynamic, DbError>,
     ) -> Result<Dynamic, DbError> {
-        let mut client = self.checkout()?;
+        // Дозвіл тримаємо до кінця транзакції; на будь-якому виході він
+        // повернеться сам.
+        let (_permit, mut client) = self.acquire()?;
         client
             .batch_execute("begin")
             .map_err(|err| DbError::Query(format!("не вдалося почати транзакцію: {err}")))?;
@@ -137,9 +275,7 @@ impl DbDriver for PostgresDriver {
                 let _ = client.batch_execute("rollback");
             }
         }
-        if !client.is_closed() {
-            self.checkin(client);
-        }
+        self.checkin(client);
         result
     }
 
@@ -187,15 +323,15 @@ impl DbDriver for PostgresDriver {
 
 /// Драйвер, прив'язаний до одного з'єднання — усередині `db.tx`.
 struct PinnedPostgres {
-    client: Mutex<Option<Client>>,
+    client: Mutex<Option<Conn>>,
 }
 
 impl PinnedPostgres {
-    fn take(&self) -> Option<Client> {
+    fn take(&self) -> Option<Conn> {
         self.client.lock().expect("з'єднання не отруєне").take()
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut Client) -> Result<T, DbError>) -> Result<T, DbError> {
+    fn with<T>(&self, f: impl FnOnce(&mut Conn) -> Result<T, DbError>) -> Result<T, DbError> {
         let mut guard = self.client.lock().expect("з'єднання не отруєне");
         match guard.as_mut() {
             Some(client) => f(client),
@@ -240,27 +376,31 @@ impl DbDriver for PinnedPostgres {
 
 // ------------------------------------------------------------- виконання
 
-fn run_query(client: &mut Client, sql: &str, params: &[Dynamic]) -> Result<Vec<Map>, DbError> {
+fn run_query(conn: &mut Conn, sql: &str, params: &[Dynamic]) -> Result<Vec<Map>, DbError> {
     let bound: Vec<Bind> = params.iter().map(bind).collect();
     let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = bound
         .iter()
         .map(|b| b as &(dyn postgres::types::ToSql + Sync))
         .collect();
-    let rows = client
-        .query(sql, &refs)
-        .map_err(|err| query_error(sql, err))?;
+    let statement = conn.statement(sql)?;
+    let rows = conn.client.query(&statement, &refs).map_err(|err| {
+        conn.forget(sql);
+        query_error(sql, err)
+    })?;
     Ok(rows.iter().map(row_to_map).collect())
 }
 
-fn run_exec(client: &mut Client, sql: &str, params: &[Dynamic]) -> Result<Affected, DbError> {
+fn run_exec(conn: &mut Conn, sql: &str, params: &[Dynamic]) -> Result<Affected, DbError> {
     let bound: Vec<Bind> = params.iter().map(bind).collect();
     let refs: Vec<&(dyn postgres::types::ToSql + Sync)> = bound
         .iter()
         .map(|b| b as &(dyn postgres::types::ToSql + Sync))
         .collect();
-    let rows = client
-        .execute(sql, &refs)
-        .map_err(|err| query_error(sql, err))?;
+    let statement = conn.statement(sql)?;
+    let rows = conn.client.execute(&statement, &refs).map_err(|err| {
+        conn.forget(sql);
+        query_error(sql, err)
+    })?;
     // У Postgres немає «останнього rowid»: id повертає лише `insert` через
     // `RETURNING` (див. вище). Для `update`/`delete` це поле й не потрібне.
     Ok(Affected {
@@ -639,6 +779,35 @@ mod live_tests {
             .to_owned(),
         )])
         .expect("міграція");
+    }
+
+    #[test]
+    fn a_crowd_waits_for_the_pool_instead_of_opening_connections() {
+        let Some((_, _guard)) = driver() else { return };
+        let url = std::env::var("RHAIX_PG_TEST_URL").expect("є, раз driver() повернув базу");
+        // Пул на 3 з'єднання й 30 одночасних запитів: раніше кожен зайвий
+        // відкривав своє з'єднання, тепер — чекає вільного.
+        let db = PostgresDriver::open_with_pool(&url, 3).expect("пул");
+        let peak = std::sync::atomic::AtomicI64::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..30 {
+                scope.spawn(|| {
+                    let rows = db
+                        .raw_query(
+                            "select count(*) as n from pg_stat_activity \
+                             where datname = current_database() and backend_type = 'client backend'",
+                            &[],
+                        )
+                        .expect("запит під навантаженням");
+                    let n = rows[0]["n"].as_int().unwrap_or(0);
+                    peak.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+                    db.raw_query("select pg_sleep(0.02)", &[]).expect("сон");
+                });
+            }
+        });
+        // 3 з'єднання цього пулу + 1 з'єднання `driver()` у цьому ж тесті.
+        let peak = peak.into_inner();
+        assert!(peak <= 4, "з'єднань із базою було {peak}, а пул — 3");
     }
 
     #[test]

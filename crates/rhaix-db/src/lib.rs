@@ -23,7 +23,7 @@ use std::sync::Arc;
 use rhai::{Dynamic, Map};
 
 #[cfg(feature = "postgres")]
-pub use postgres::PostgresDriver;
+pub use postgres::{PostgresDriver, DEFAULT_POOL as POSTGRES_DEFAULT_POOL};
 pub use query::{ident, Sql, PRIMARY_KEY};
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteDriver;
@@ -171,11 +171,21 @@ impl Database {
 
     /// Відкрити базу за налаштуваннями з `rhaix.toml`.
     pub fn open(driver: &str, url: &str) -> Result<Self, DbError> {
+        Self::open_with_pool(driver, url, None)
+    }
+
+    /// Те саме з `[db] pool` — скільки з'єднань тримати (Postgres). SQLite
+    /// його не потребує: з'єднання там — це відкритий файл, не мережа.
+    #[allow(unused_variables)]
+    pub fn open_with_pool(driver: &str, url: &str, pool: Option<usize>) -> Result<Self, DbError> {
         match driver {
             #[cfg(feature = "sqlite")]
             "sqlite" => Ok(Self::new(SqliteDriver::open(url)?)),
             #[cfg(feature = "postgres")]
-            "postgres" | "postgresql" => Ok(Self::new(PostgresDriver::open(url)?)),
+            "postgres" | "postgresql" => Ok(Self::new(PostgresDriver::open_with_pool(
+                url,
+                pool.unwrap_or(postgres::DEFAULT_POOL),
+            )?)),
 
             // Драйвер відомий, але не увімкнений при збірці — кажемо, який
             // feature додати, а не «невідомий драйвер».
@@ -195,7 +205,7 @@ impl Database {
     #[allow(dead_code)]
     fn disabled(name: &str) -> DbError {
         DbError::Config(format!(
-            "драйвер `{name}` не увімкнено в цій збірці; додайте feature `{name}`              для rhaix-db (у проді це робить `rhaix build` за секцією [db])"
+            "драйвер `{name}` не увімкнено в цій збірці; додайте feature `{name}` для rhaix-db (у проді це робить `rhaix build` за секцією [db])"
         ))
     }
 

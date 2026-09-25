@@ -283,6 +283,7 @@ driver = "sqlite"                 # sqlite | postgres
 url = "data/app.db"               # relative to the project root, not the working dir
 # driver = "postgres"
 # url = "postgres://user:pass@host:5432/dbname"
+# pool = 16                       # postgres: max connections; extra requests wait
 
 [app]
 csrf = true               # default

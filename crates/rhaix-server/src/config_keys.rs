@@ -9,7 +9,7 @@
 /// Що фреймворк читає: секція → ключі.
 const KNOWN: &[(&str, &[&str])] = &[
     ("server", &["port", "trust_proxy"]),
-    ("db", &["driver", "url"]),
+    ("db", &["driver", "url", "pool"]),
     (
         "app",
         &[
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn every_documented_key_is_accepted() {
-        let text = "[server]\nport = 1\ntrust_proxy = true\n[db]\ndriver = \"sqlite\"\nurl = \"x\"\n\
+        let text = "[server]\nport = 1\ntrust_proxy = true\n[db]\ndriver = \"sqlite\"\nurl = \"x\"\npool = 16\n\
             [app]\nsecret = \"s\"\ncsrf = true\nsession_cookie = \"c\"\nsession_days = 1\n\
             session_secure = true\ntz_offset = \"+03:00\"\nhttp_timeout = 5\nlocale = \"uk\"\n\
             [mail]\nfrom = \"a\"\nsmtp_host = \"h\"\nsmtp_port = 25\nsmtp_user = \"u\"\nsmtp_pass = \"p\"\n\

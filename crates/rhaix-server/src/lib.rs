@@ -261,6 +261,9 @@ impl std::fmt::Debug for Config {
 pub struct DatabaseConfig {
     pub driver: String,
     pub url: String,
+    /// Скільки з'єднань тримати (Postgres; за замовчуванням 16).
+    #[serde(default)]
+    pub pool: Option<usize>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -702,6 +705,7 @@ pub fn build_watched(
             // базу не там, і після деплою це виглядає як зникнення даних.
             let url = resolve_db_url(&config.root, &settings.url);
             let driver = settings.driver.clone();
+            let pool = settings.pool;
             let migrations: Vec<(String, String)> = config
                 .files
                 .list(&config.migrations_dir(), "sql")
@@ -721,7 +725,7 @@ pub fn build_watched(
             std::thread::scope(|scope| {
                 scope
                     .spawn(|| -> anyhow::Result<Database> {
-                        let database = Database::open(&driver, &url)
+                        let database = Database::open_with_pool(&driver, &url, pool)
                             .map_err(|err| anyhow::anyhow!("{err}"))?;
                         // Сервер, який піднявся, завжди має схему, яку очікують
                         // сторінки.
