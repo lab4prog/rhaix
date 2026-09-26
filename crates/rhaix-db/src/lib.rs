@@ -174,13 +174,16 @@ impl Database {
         Self::open_with_pool(driver, url, None)
     }
 
-    /// Те саме з `[db] pool` — скільки з'єднань тримати (Postgres). SQLite
-    /// його не потребує: з'єднання там — це відкритий файл, не мережа.
+    /// Те саме з `[db] pool` — скільки з'єднань тримати. Коли всі зайняті,
+    /// запит чекає вільного, а не відкриває нове.
     #[allow(unused_variables)]
     pub fn open_with_pool(driver: &str, url: &str, pool: Option<usize>) -> Result<Self, DbError> {
         match driver {
             #[cfg(feature = "sqlite")]
-            "sqlite" => Ok(Self::new(SqliteDriver::open(url)?)),
+            "sqlite" => Ok(Self::new(SqliteDriver::open_with_pool(
+                url,
+                pool.unwrap_or(sqlite::DEFAULT_POOL),
+            )?)),
             #[cfg(feature = "postgres")]
             "postgres" | "postgresql" => Ok(Self::new(PostgresDriver::open_with_pool(
                 url,
