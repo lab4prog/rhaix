@@ -18,6 +18,8 @@ default = ["sqlite"]
 sqlite = ["rhaix-db/sqlite"]
 postgres = ["rhaix-db/postgres"]
 mail = ["rhaix-script/mail"]
+# `markdown()` у скриптах: CommonMark без сирого HTML.
+markdown = ["rhaix-script/markdown"]
 
 [dependencies]
 rhaix-db.workspace = true

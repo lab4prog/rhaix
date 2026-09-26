@@ -264,16 +264,28 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
 /// `cargo install` він указує на теку чужої машини (CI, реєстр cargo), і
 /// `rhaix build` падав би в кожного, крім автора.
 ///
-/// Тепер: якщо той репозиторій справді є на диску — це розробка самого rhaix,
-/// беремо його; інакше — crates.io рівно тієї версії, що й цей CLI.
+/// Тепер: якщо той репозиторій справді є на диску — це розробка самого rhaix
+/// або `cargo install --git`, беремо його. Інакше — тег `vX.Y.Z` цієї версії
+/// в репозиторії на GitHub: крейтів на crates.io поки немає, і реєстр дав би
+/// «не знайдено» кожному, хто завантажив CLI з релізу.
+///
+/// `RHAIX_FRAMEWORK=crates-io` перемикає на crates.io — на той час, коли
+/// крейти там з'являться.
 fn detect_framework() -> build::Framework {
     let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|crates| crates.parent())
         .map(PathBuf::from);
+    let version = env!("CARGO_PKG_VERSION");
     match checkout {
         Some(root) if is_framework_checkout(&root) => build::Framework::Path(root),
-        _ => build::Framework::Registry(env!("CARGO_PKG_VERSION").to_owned()),
+        _ if std::env::var("RHAIX_FRAMEWORK").as_deref() == Ok("crates-io") => {
+            build::Framework::Registry(version.to_owned())
+        }
+        _ => build::Framework::Git {
+            repository: env!("CARGO_PKG_REPOSITORY").to_owned(),
+            tag: format!("v{version}"),
+        },
     }
 }
 

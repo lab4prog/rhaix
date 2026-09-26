@@ -76,7 +76,8 @@ pub fn markdown(text: &str) -> Html {
 pub fn markdown(_text: &str) -> Result<Html, Box<rhai::EvalAltResult>> {
     Err(
         "markdown() не увімкнено в цій збірці; додайте feature `markdown` \
-         (у проді це робить `rhaix build`, коли бачить markdown у проєкті)"
+         (`rhaix dev`/`serve` мають його завжди, `rhaix build` — коли бачить \
+         виклик markdown() у проєкті)"
             .into(),
     )
 }

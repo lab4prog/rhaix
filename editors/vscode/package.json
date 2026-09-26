@@ -2,7 +2,7 @@
   "name": "rhaix",
   "displayName": "rhaix (.rhx)",
   "description": "Підсвітка синтаксису й мовний сервер для файлів .rhx фреймворку rhaix",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "publisher": "rhaix",
   "license": "MIT OR Apache-2.0",
   "repository": {

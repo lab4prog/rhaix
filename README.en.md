@@ -42,7 +42,7 @@ toolchain. The step-by-step guide is [GUIDE.md](GUIDE.md) (Ukrainian).
 
 ## Status
 
-The current version is **1.6.3**. The `.rhx` language, routing, data layer,
+The current version is **1.6.4**. The `.rhx` language, routing, data layer,
 sessions and batteries are stable: breaking changes can only come in 2.0.
 History is in [CHANGELOG.md](CHANGELOG.md) (Ukrainian).
 
@@ -109,7 +109,8 @@ History is in [CHANGELOG.md](CHANGELOG.md) (Ukrainian).
   down gives `ok: false`, not a 500;
 - exports: `res.download("report.csv", csv(rows, #{ columns: [...] }))` —
   RFC 4180, formula cells defused, a BOM for Excel, non-ASCII file names;
-- dates, `slug()` with transliteration, `money()`, translations with `t("key")`;
+- dates, `slug()` with transliteration, `money()`, translations with `t("key")`,
+  and a safe `markdown()` — raw HTML is escaped, link schemes are checked;
 - your own Rust functions in `native/lib.rs` — for when Rhai is not enough.
 
 **Client**
@@ -142,8 +143,6 @@ History is in [CHANGELOG.md](CHANGELOG.md) (Ukrainian).
 - **MongoDB and SurrealDB drivers** — the `DbDriver` trait is ready for them.
 - **Scoped slots, `@key` morph swaps, `@transition`** — the names are reserved.
 - **Rename and find-references** in the editor.
-- **`markdown()` in CLI builds**: the function exists behind the `markdown`
-  feature, but `rhaix dev`/`serve`/`build` do not enable it yet.
 
 ## Documentation
 

@@ -1368,10 +1368,10 @@ are **not configurable**:
 Because of this, no HTML sanitizer is needed — there is nowhere for anything
 dangerous to come from.
 
-`markdown()` lives behind the `markdown` feature of the `rhaix-script` crate.
-Current CLI builds (`rhaix dev`, `serve`, `build`) do not enable it, and a call
-fails with an explanatory error. For now `markdown()` is available only to an
-app that embeds rhaix in its own program and turns the feature on itself.
+`markdown()` is always available in `rhaix dev` and `rhaix serve`.
+`rhaix build` turns it on (the `markdown` feature) when it sees a `markdown(`
+call in the project's `.rhx` or `.rhai` files, so an app that does not use it
+does not carry a markdown parser in its binary.
 
 ### 7.7 Client: the core stays put, the interface is yours
 

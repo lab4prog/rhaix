@@ -482,10 +482,12 @@ set_locale("en"); locale()    // usually in middleware.rhx; unknown locale is ig
 ```
 
 `markdown(text)` escapes raw HTML instead of passing it through and
-scheme-checks link/image URLs — safe by construction. It sits behind the
-`markdown` feature of `rhaix-script`, which current CLI builds do not enable:
-in `rhaix dev`/`serve`/`build` the call fails with an explanatory error. Do not
-use it in generated apps for now.
+scheme-checks link/image URLs — safe by construction. Always available in
+`rhaix dev`/`serve`; `rhaix build` enables it when the project calls it.
+
+```rhai
+{{ markdown(post.body) }}
+```
 
 ## Client: errors swap, toasts and modals are yours
 
@@ -719,5 +721,6 @@ rhaix eject ui [--force]        # own the toasts/modals as public/rhaix-ui.js
 - **Rename and find-references** in the editor. Diagnostics, go-to-component
   and completion do exist — `editors/vscode` plus the `rhaix-lsp` server.
 
-Behind build features, enabled automatically by `rhaix build` from
-`rhaix.toml`: `postgres` (`[db] driver`), `mail` (a `[mail]` section).
+Behind build features, enabled automatically by `rhaix build`: `postgres`
+(`[db] driver`), `mail` (a `[mail]` section), `markdown` (a `markdown(` call in
+the project).

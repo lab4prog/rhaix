@@ -20,6 +20,9 @@ pub enum Framework {
     /// Локальний репозиторій rhaix: розробка самого фреймворку або явний
     /// `--framework <тека>`.
     Path(PathBuf),
+    /// Репозиторій rhaix, тег `vX.Y.Z` рівно цієї версії CLI. Так збирає
+    /// бінарник із релізу: крейтів rhaix на crates.io поки немає.
+    Git { repository: String, tag: String },
     /// crates.io, **рівно** та версія, що й у цього `rhaix`. Точна, а не
     /// «сумісна»: застосунок, зібраний CLI 1.2.1, має отримати ядро 1.2.1, а не
     /// те, що вийде завтра, — інакше `rhaix check` і збірка розійдуться.
@@ -33,6 +36,9 @@ impl Framework {
             Framework::Path(root) => {
                 let root = root.to_string_lossy().replace('\\', "/");
                 format!("{{ path = \"{root}/crates/{krate}\"{extra} }}")
+            }
+            Framework::Git { repository, tag } => {
+                format!("{{ git = \"{repository}\", tag = \"{tag}\"{extra} }}")
             }
             Framework::Registry(version) => format!("{{ version = \"={version}\"{extra} }}"),
         }
@@ -55,7 +61,8 @@ pub fn build(root: &Path, framework: &Framework, out: Option<PathBuf>) -> anyhow
 
     let driver = read_driver(root);
     let has_mail = has_section(root, "[mail]");
-    let features = server_features(driver.as_deref(), has_mail);
+    let markdown = uses_markdown(&files);
+    let features = server_features(driver.as_deref(), has_mail, markdown);
     let native = native_module(root);
     std::fs::write(
         workdir.join("Cargo.toml"),
@@ -74,8 +81,12 @@ pub fn build(root: &Path, framework: &Framework, out: Option<PathBuf>) -> anyhow
     if has_mail {
         println!("Пошта: SMTP (feature mail)");
     }
+    if markdown {
+        println!("markdown(): так (feature markdown)");
+    }
     match framework {
         Framework::Path(path) => println!("Фреймворк: {}", path.display()),
+        Framework::Git { repository, tag } => println!("Фреймворк: {repository}, тег {tag}"),
         Framework::Registry(version) => println!("Фреймворк: crates.io, rhaix {version}"),
     }
 
@@ -218,18 +229,48 @@ fn read_driver(root: &Path) -> Option<String> {
     None
 }
 
+/// Чи викликає проєкт `markdown(...)` у `.rhx` чи `.rhai`.
+///
+/// Пошук текстовий. Зайвий збіг (слово в коментарі) коштує лише залежності, а
+/// пропущений виклик дав би помилку «markdown() не увімкнено» на першому ж
+/// запиті в проді — тому краще перестрахуватись.
+fn uses_markdown(files: &[PathBuf]) -> bool {
+    files
+        .iter()
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "rhx" || ext == "rhai")
+        })
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .any(|text| calls(&text, "markdown"))
+}
+
+/// `name(` як виклик функції, а не частина довшого імені чи метод `x.name(`.
+fn calls(text: &str, name: &str) -> bool {
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let standalone = !before.is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.');
+        standalone && text[at + name.len()..].trim_start().starts_with('(')
+    })
+}
+
 /// Рядок features для залежності rhaix-server у згенерованому маніфесті.
 ///
 /// SQLite вбудований завжди (feature за замовчуванням), тож для нього нічого не
-/// додаємо. Postgres і пошта — опційні: вмикаються лише тоді, коли їх справді
-/// використовує проєкт, інакше прод-бінарник тягнув би їхні залежності дарма.
-fn server_features(driver: Option<&str>, mail: bool) -> String {
+/// додаємо. Postgres, пошта й markdown — опційні: вмикаються лише тоді, коли
+/// їх справді використовує проєкт, інакше прод-бінарник тягнув би їхні
+/// залежності дарма.
+fn server_features(driver: Option<&str>, mail: bool, markdown: bool) -> String {
     let mut features: Vec<&str> = Vec::new();
     if matches!(driver, Some("postgres" | "postgresql")) {
         features.push("postgres");
     }
     if mail {
         features.push("mail");
+    }
+    if markdown {
+        features.push("markdown");
     }
     if features.is_empty() {
         return String::new();
@@ -293,7 +334,8 @@ pub fn run_native(
     std::fs::create_dir_all(workdir.join("src"))?;
 
     let driver = read_driver(root);
-    let features = server_features(driver.as_deref(), has_section(root, "[mail]"));
+    let markdown = uses_markdown(&collect(root).unwrap_or_default());
+    let features = server_features(driver.as_deref(), has_section(root, "[mail]"), markdown);
     let name = format!("{}-native", project_name(root));
     std::fs::write(
         workdir.join("Cargo.toml"),
@@ -501,9 +543,9 @@ mod native;"
     }
 
     #[test]
-    fn a_released_cli_builds_against_crates_io() {
-        // Бінарник із релізу не має репозиторію поруч: згенерований крейт має
-        // брати фреймворк із crates.io, і саме тієї версії, що й CLI.
+    fn crates_io_mode_pins_the_exact_version() {
+        // `RHAIX_FRAMEWORK=crates-io`: фреймворк із реєстру, і саме тієї
+        // версії, що й CLI.
         let text = manifest("demo", &Framework::Registry("1.2.1".into()), "", "");
         // `[[bin]] path = "src/main.rs"` лишається — шукаємо саме шлях до крейтів.
         assert!(!text.contains("/crates/"), "шлях до чужої машини: {text}");
@@ -518,8 +560,59 @@ mod native;"
     }
 
     #[test]
+    fn a_released_cli_builds_against_the_git_tag() {
+        // Бінарник із релізу не має репозиторію поруч, а на crates.io rhaix
+        // поки немає: фреймворк береться з GitHub за тегом цієї версії.
+        let framework = Framework::Git {
+            repository: "https://github.com/lab4prog/rhaix".into(),
+            tag: "v1.6.4".into(),
+        };
+        let features = server_features(None, false, true);
+        let text = manifest("demo", &framework, &features, "");
+        assert!(!text.contains("/crates/"), "шлях до чужої машини: {text}");
+        assert!(
+            text.contains(
+                "rhaix-server = { git = \"https://github.com/lab4prog/rhaix\", tag = \"v1.6.4\", default-features = false, features = [\"markdown\"] }"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "rhaix-template = { git = \"https://github.com/lab4prog/rhaix\", tag = \"v1.6.4\" }"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn markdown_is_detected_only_as_a_call() {
+        assert!(calls("{{ markdown(post.body) }}", "markdown"));
+        assert!(calls("let html = markdown (text);", "markdown"));
+        assert!(!calls("let markdown_text = 1;", "markdown"));
+        assert!(!calls("render_markdown(x)", "markdown"));
+        assert!(!calls("post.markdown()", "markdown"));
+        assert!(!calls("<p>Пишіть у markdown</p>", "markdown"));
+    }
+
+    #[test]
+    fn markdown_usage_is_found_in_project_files() {
+        let dir = std::env::temp_dir().join(format!("rhaix-md-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("pages")).unwrap();
+        let page = dir.join("pages/index.rhx");
+        std::fs::write(&page, "<p>без нього</p>").unwrap();
+        assert!(!uses_markdown(std::slice::from_ref(&page)));
+        std::fs::write(&page, "<div>{{ markdown(text) }}</div>").unwrap();
+        assert!(uses_markdown(std::slice::from_ref(&page)));
+        // CSS і картинки з public/ не читаються як код.
+        let css = dir.join("style.css");
+        std::fs::write(&css, "/* markdown( */").unwrap();
+        assert!(!uses_markdown(&[css]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn registry_mode_keeps_the_features() {
-        let features = server_features(Some("postgres"), true);
+        let features = server_features(Some("postgres"), true, false);
         let text = manifest("demo", &Framework::Registry("1.2.1".into()), &features, "");
         assert!(
             text.contains(
@@ -533,21 +626,26 @@ mod native;"
     fn features_are_enabled_only_when_used() {
         // Лише драйвер.
         assert_eq!(
-            server_features(Some("postgres"), false),
+            server_features(Some("postgres"), false, false),
             r#", default-features = false, features = ["postgres"]"#
         );
         // Лише пошта.
         assert_eq!(
-            server_features(None, true),
+            server_features(None, true, false),
             r#", default-features = false, features = ["mail"]"#
         );
-        // Обидва.
+        // Лише markdown.
         assert_eq!(
-            server_features(Some("postgres"), true),
-            r#", default-features = false, features = ["postgres", "mail"]"#
+            server_features(None, false, true),
+            r#", default-features = false, features = ["markdown"]"#
         );
-        // SQLite без пошти — нічого.
-        assert_eq!(server_features(Some("sqlite"), false), "");
-        assert_eq!(server_features(None, false), "");
+        // Усе разом.
+        assert_eq!(
+            server_features(Some("postgres"), true, true),
+            r#", default-features = false, features = ["postgres", "mail", "markdown"]"#
+        );
+        // SQLite без пошти й markdown — нічого.
+        assert_eq!(server_features(Some("sqlite"), false, false), "");
+        assert_eq!(server_features(None, false, false), "");
     }
 }
