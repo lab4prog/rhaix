@@ -1,8 +1,25 @@
-# rhaix — `.rhx` syntax specification (v1)
+# rhaix — `.rhx` reference
 
-Anything marked **[v1.1]** is deliberately out of scope for the first version.
-Ukrainian original: [SYNTAX.md](SYNTAX.md). For LLMs: [llms.txt](llms.txt).
-Ready-made recipes: [examples/cookbook](examples/cookbook).
+The full description of the template language and everything a script can
+reach: directives, components, routes, globals, batteries, config. How to
+create and ship an app is in [GUIDE.md](GUIDE.md) (Ukrainian). Ukrainian
+original: [SYNTAX.md](SYNTAX.md). Condensed for LLMs: [llms.txt](llms.txt).
+Ready-made "task → file" recipes: [examples/cookbook](examples/cookbook).
+
+Section numbers are stable: code, diagnostics and other documents refer to them.
+
+| Section | What |
+|---|---|
+| 0 | one-screen cheat sheet |
+| 1–3 | the `.rhx` file, output and escaping, attributes |
+| 4 | directives `@if` `@for` `@class` `@attr` `@oob` … |
+| 5 | components, props, slots |
+| 6 | layout, routes, `middleware.rhx`, `api/` |
+| 7 | globals: `req` `res` `hx` `session` `db` `http`, batteries, client, live updates, Rust |
+| 8 | `<style>` and `<script>` in a component |
+| 9 | errors and `rhaix check` warnings |
+| 10–12 | reserved names, grammar, a complete example |
+| 13 | `rhaix.toml` — every key |
 
 > Note on language: diagnostics are currently emitted in Ukrainian. A `lang`
 > switch is planned; this document translates the messages where it quotes them.
@@ -260,14 +277,13 @@ Inside, an `iter` object is available:
 | `iter.count` | length of the collection |
 
 Why `iter` and not `loop`: `loop` is a Rhai keyword, and `{{ loop.number }}`
-simply does not compile. Found while implementing M1.
+simply does not compile.
 
 The counter map is built only when `iter` is actually mentioned in the loop body
 — on a thousand-row table that is measurable.
 
-`@key={expr}` is optional. In v1 it does not affect the output; it is reserved
-for morph swaps (idiomorph) and will be emitted as `data-rhx-key` once those are
-enabled.
+`@key={expr}` is optional and does not affect the output yet. It is reserved
+for morph swaps (idiomorph), where it will be emitted as `data-rhx-key`.
 
 **Order with `@if`:** `@for` is the outer one, `@if` is evaluated **on every
 iteration** (so the loop variable may be used in the condition):
@@ -455,7 +471,7 @@ keeps the component portable and its errors local.
 - A slot is rendered in the **caller's scope** (it sees the caller's variables,
   not the component's).
 - `slots.has("name")` → `bool`.
-- Scoped slots (passing data back out of a slot) are **[v1.1]**.
+- There are no scoped slots (passing data back out of a slot) yet.
 - A slot counts as passed when its content is non-empty: `<Card></Card>` shows
   the fallback rather than a blank.
 
@@ -508,11 +524,11 @@ let nav = [#{href:"/", t:"Home"}, #{href:"/todo", t:"ToDo"}];
 | `<rhaix:raw>…</rhaix:raw>` | a block emitted without processing |
 
 Scripts go in `<head>`, not at the end of `<body>`, on purpose: htmx only swaps
-`<body>`, and a script from there would run again on every boosted navigation
-(before 1.2.5 it did — each such navigation added another listener, and toasts
-multiplied). Project scripts get `defer`: they run once, when `<body>` already
-exists. A layout without `<rhaix:head/>` still works — everything then goes into
-`<rhaix:scripts/>` as before.
+`<body>`, and a script from there would run again on every boosted navigation,
+adding another event listener each time. Project scripts get `defer`: they run
+once, when `<body>` already exists. A layout without `<rhaix:head/>` still
+works, but the framework scripts then go into `<rhaix:scripts/>` and
+`rhaix check` warns about it (9).
 
 ### 6.2 Choosing a layout
 
@@ -570,13 +586,15 @@ full render drew it, until something updates those spots itself.
 |---|---|---|
 | `pages/index.rhx` | `/` | — |
 | `pages/todo.rhx` | `/todo` | — |
-| `pages/todo/[id].rhx` | `/todo/:id` | `req.param("id")` |
-| `pages/blog/[...slug].rhx` | `/blog/*` | `req.param("slug")` |
+| `pages/blog/index.rhx` | `/blog` | — |
+| `pages/todo/[id].rhx` | `/todo/{id}` | `req.param("id")` |
+| `pages/blog/[...slug].rhx` | `/blog/{*slug}` — any depth | `req.param("slug")` |
 | `partials/Stats.rhx` | `/components/stats` | — |
+| `api/orders.rhx` | `/api/orders` (6.7) | — |
 
-Routes are defined by the **directory structure only**. The `route()` and
-`methods()` declarations that appeared in the draft spec were removed: reading
-them would require executing the frontmatter before knowing the route.
+Routes are defined by the **directory structure only**. There are no `route()`
+or `methods()` declarations in frontmatter: reading them would require executing
+the page's logic at startup — with no request and no `req`.
 
 ### 6.5 Method-specific logic and early exit
 
@@ -593,17 +611,20 @@ if req.method == "DELETE" {
 }
 if session.user == () {
   res.redirect("/login");
-  return;                        // the markup is not rendered
+  return;                        // no markup after a redirect
 }
 let todos = db.query("select * from todos order by id");
 ---
 <TodoList todos={todos} />
 ```
 
-- `return;` — respond without rendering the markup (for a redirect or a 204).
+- `return;` only ends the script: the markup is still rendered. After
+  `res.redirect` there is no markup anyway, and for an empty body (a `204`, a
+  removed element) write `return "";`.
 - `return <string>` — return exactly that string (no escaping is applied; the
   content is treated as ready HTML).
-- Rendering is cancelled only by `res.redirect`, `hx.redirect` and `hx.refresh`.
+- Rendering is cancelled only by `res.redirect`, `res.download`, `hx.redirect`
+  and `hx.refresh`.
   `res.status(422)` changes the status but still renders the page — which is
   exactly what a form with validation errors needs.
 - Only an **explicit `return`** becomes the body. The value of the last
@@ -633,7 +654,9 @@ if req.path.starts_with("/admin") && session.user == () {
 - CSRF is verified **before** the middleware, so a forged request never reaches
   a single line of application logic.
 
-**Roles and permissions — a recipe.** The framework does not impose its own
+#### Roles and permissions — a recipe
+
+The framework does not impose its own
 user model, but everything needed is already there. A working example lives in
 `examples/cookbook` (`middleware.rhx`, `scripts/access.rhai`, `pages/roles.rhx`,
 `pages/reports.rhx`).
@@ -763,7 +786,9 @@ if req.path.starts_with("/api/") {
 A worked recipe with validation, partial update and mass-assignment protection
 lives in `examples/cookbook/api/`.
 
-**CORS — `[api] cors`.** If the API is called by a frontend on another domain:
+#### CORS
+
+If the API is called by a frontend on another domain:
 
 ```toml
 [api]
@@ -778,7 +803,7 @@ hand it everything a signed-in user sees. `"*"` is safe in `api/` precisely
 because there are no cookies there. Your own frontend on the same domain or a
 mobile client does not need CORS.
 
-**API description — OpenAPI 3.1 from the files themselves.**
+#### API description — OpenAPI 3.1 from the files themselves
 
 ```
 rhaix openapi                  # to the console
@@ -815,16 +840,43 @@ rebuilt on every request, in production once at startup. `[api] title` and
 | `props` | component / partial | the values passed in |
 | `slots` | component | `slots.has(name)` |
 | `iter` | inside `@for` | iteration counters |
-| `page` | everywhere | shared page map: `page.title`, `page.layout` |
-| `req` `res` `hx` | everywhere | request / response / HTMX |
-| `state` | everywhere | process-wide store: `state.get/set/has/remove`; rate limiting: `state.allow/retry_after/reset` (7.2) |
-| `live` | everywhere | `live.send(topic[, detail])` — notify open pages (7.8) |
-| `db` | everywhere | database: `query/one/exec/tx` and `find/get/count/insert/update/delete` |
-| `session` | everywhere | signed cookie: `get/set/has/remove/clear/all`, `session.user` (7.2) |
-| `csrf` | everywhere | `csrf.token` (7.2) |
+| `page` | everywhere | map shared by the page, middleware and layout: `page.title`, `page.layout` (6.2) and any fields of your own |
+| `req` `res` `hx` | everywhere | request, response, htmx headers — reference below |
+| `session` `csrf` | `pages/`, `partials/`, middleware | signed cookie and its CSRF token (7.2) |
+| `state` | everywhere | process memory: `state.get/set/has/remove`; rate limiting `state.allow/retry_after/reset` (7.2) |
+| `db` | everywhere | database (7.10) |
 | `http` | everywhere | calling other services (7.3) |
-| `log` | everywhere | `log.info/warn/error` |
-| helpers | everywhere | `url()`, `now()`, `date()`, `slug()`, `money()`, `json()`, … (7.4) |
+| `mail` | everywhere | `mail.send(...)` (7.5) |
+| `live` | everywhere | `live.send(topic[, detail])` — notify open pages (7.8) |
+| `log` | everywhere | `log.info/warn/error(value)` — to the server log with the file name |
+| functions | everywhere | `url()`, dates, strings, money (7.4), `validate()`, `paginate()`, `csv()` (7.5), `t()` (7.6) |
+
+#### `req`, `res`, `hx` reference
+
+| Call | Returns or does |
+|---|---|
+| `req.method` `req.path` `req.url` | method; path; path plus query string |
+| `req.ip` | client address (behind a proxy see `trust_proxy`, 7.2) |
+| `req.is_htmx` `req.is_boosted` | explicit htmx request; boosted navigation (6.3) |
+| `req.param(name)` | route segment `[name]` |
+| `req.query(name)` `req.form(name)` | a string or `()` |
+| `req.query_int/query_float/query_bool(name)` | a number or flag, or `()` if it does not parse; likewise `form_int/form_float/form_bool` |
+| `req.all_query()` `req.all_form()` | all parameters as a map |
+| `req.header(name)` `req.cookie(name)` | a string or `()` |
+| `req.body` `req.json()` | raw body; body as JSON or `()` (6.7) |
+| `req.file(name)` `req.files(name)` `req.has_file(name)` | uploads (7.5) |
+| `res.status(code)` | status; does **not** stop rendering |
+| `res.header(name, value)` | response header |
+| `res.cookie(name, value)` | a cookie with `Path=/; HttpOnly; SameSite=Lax` |
+| `res.redirect(url)` | `303` (or `HX-Redirect` for htmx); stops rendering |
+| `res.download(name, content[, type])` | a file instead of the page (7.5); stops rendering |
+| `hx.toast(message[, type])` | a toast (7.7); survives a redirect |
+| `hx.trigger(name[, detail])` | a client event via `HX-Trigger` |
+| `hx.redirect(url)` `hx.refresh()` | full navigation / reload; stops rendering |
+| `hx.push_url(url)` `hx.location(url)` | `HX-Push-Url`; `HX-Location` |
+| `hx.retarget(selector)` `hx.reswap(mode)` | a different target or swap for this response |
+
+#### Links, types, shared functions
 
 **`url(path, params)`** is the only correct way to build a link that carries
 state:
@@ -881,7 +933,9 @@ one block of code, so it does **not** survive from frontmatter into `{{ }}`.
    `for i in 0..rows.len() { rows[i].total = 0; }`. `rhaix check` warns about
    it. For related rows there is `db.attach` (7.5).
 
-### 7.2 Sessions and CSRF
+### 7.2 Sessions, CSRF, rate limits, client address
+
+#### Sessions
 
 ```rhai
 session.set("user", name);
@@ -916,7 +970,9 @@ worth knowing up front:
   the script set caching itself: a shared cache (CDN, proxy) must not hand one
   visitor's session to the next.
 
-**CSRF works by itself.** A form that changes data gets a hidden field added:
+#### CSRF
+
+It works by itself. A form that changes data gets a hidden field added:
 
 ```html
 <form method="post" action="/login">   <!-- or hx-post="/login" -->
@@ -952,25 +1008,20 @@ text "This form has expired. Reload the page and try again."
 The token is **lazy**: it is created by the first form on the page. A page with
 no forms gets neither a token nor a cookie.
 
-Configuration lives in the `[app]` section of `rhaix.toml`:
+#### Configuration and the signing key
 
-```toml
-[app]
-# The signing key. Better here than nowhere, but best in RHAIX_SECRET.
-secret = "…"
-csrf = true            # on by default
-session_cookie = "rhaix_session"
-session_days = 30
-tz_offset = "+03:00"   # which offset dates are displayed in
-http_timeout = 10      # seconds
-```
+Sessions and CSRF are configured in the `[app]` section of `rhaix.toml`:
+`secret`, `csrf`, `session_cookie`, `session_days`, `session_secure` (every key
+with its default is in 13).
 
 The signing key is looked up in this order: `RHAIX_SECRET` → `[app] secret` →
 a `.rhaix-secret` file (created by `rhaix dev`, never committed) → a random one
 for the lifetime of the process. The last option works, but after a restart every
 session becomes invalid — in production that is reported as a warning in the log.
 
-**Rate limiting — `state.allow`.** Password guessing, form spam, an overly
+#### Rate limiting — `state.allow`
+
+Password guessing, form spam, an overly
 chatty API client — all of it is "no more than N times per T seconds":
 
 ```rhai
@@ -998,7 +1049,9 @@ counter for their address, and guessing someone else's password carries on.
 Counters live in process memory: two copies behind a load balancer count
 separately, and a restart clears them — enough to stop password guessing.
 
-**`req.ip`** is the client address. Behind your own reverse proxy (nginx,
+#### Client address — `req.ip`
+
+Behind your own reverse proxy (nginx,
 Caddy) it is always the proxy's address, so turn this on there:
 
 ```toml
@@ -1070,8 +1123,7 @@ from the database.
 Date parsing is strict: `2026-02-31`, `2026-02-29` (not a leap year),
 `2026-09-17 25:00` or `12:60` are not dates. `timestamp(...)` returns `()`,
 `date(...)` an empty string, and the `date` rule in `validate()` rejects such a
-form. Before 1.5.0 an extra day quietly rolled into the next month and a
-garbled time became zero.
+form. An extra day never quietly rolls into the next month.
 
 ```rhai
 slug("Привіт, світе!")     // "pryvit-svite" — transliteration per Ukrainian standard
@@ -1099,7 +1151,9 @@ returns `false` rather than erroring.
 
 ---
 
-### 7.5 Batteries: validation, pagination, uploads, CSV, mail
+### 7.5 Batteries: validation, pagination, tables, uploads, CSV, mail
+
+#### Validation — `validate()`
 
 **`validate(values, rules)`** — validate a form in one call instead of a dozen
 `if`s. Returns a map of `field → message` (empty when valid):
@@ -1119,6 +1173,8 @@ Rules: `required email url int number min:N max:N between:a,b same:field
 in:a,b,c`. `min`/`max`/`between` compare by **value** on an `int`/`number`
 field, by string **length** otherwise. An empty optional field skips the rest.
 
+#### Pagination — `paginate()`
+
 **`paginate(total, per_page, page)`** — all the page arithmetic. `page` is
 clamped, so `?page=999` gives the last page:
 
@@ -1129,6 +1185,8 @@ let rows = db.find("orders", #{}, #{ sort: "id desc", limit: 20, skip: p.skip })
 
 Fields: `page pages per_page total skip from to has_prev has_next prev next
 first last window`.
+
+#### Admin tables — `db.grid()`
 
 **`db.grid(table, req, options)`** — an admin table in one call: sorting by
 column, filters, pages, all of it living in the URL.
@@ -1173,12 +1231,12 @@ The option is `order`, not `default`: that is a reserved word in Rhai. A
 working recipe with live search that keeps focus is
 `examples/cookbook/pages/grid.rhx`.
 
-**`db.attach` and `db.attach_count` — related rows in one query.** The most
-common reason for a slow page is a query per table row:
+#### Related rows in one query — `db.attach`
+
+The most common reason for a slow page is a query per table row:
 `db.get("companies", d.company_id)` inside `@for` is 25 queries instead of one.
-On SQLite it barely shows; on PostgreSQL every query is a network round trip.
-In a CRM built on rhaix the companies page, with three such queries per row,
-took 195 ms, and 19 ms after `attach`.
+On SQLite it barely shows; on PostgreSQL every query is a network round trip,
+and a page with a few such queries per row gets an order of magnitude slower.
 
 ```rhai
 let deals = db.find("deals", #{}, #{ limit: 25 });
@@ -1195,7 +1253,9 @@ companies = db.attach_count(companies, "deals", "company_id", "deals");  // c.de
 with one `group by`. Table and column names are checked the same way as in
 `db.find`.
 
-**File uploads.** A form with `enctype="multipart/form-data"`:
+#### File uploads
+
+A form with `enctype="multipart/form-data"`:
 
 ```rhai
 let f = req.file("photo");        // first upload or (); also req.files(name), req.has_file(name)
@@ -1208,12 +1268,14 @@ Upload fields: `filename content_type size is_image extension`; methods `text()`
 and `save(path)`. `save` checks the path — no absolute, no `..`, resolved
 against the project root. The form's text fields stay in `req.form(...)`.
 
-**Mail.** `mail.send(#{ to, subject, text, html? })`. Without a `[mail]`
+#### Mail — `mail.send()`
+
+`mail.send(#{ to, subject, text, html? })`. Without a `[mail]`
 section it runs in dev mode — logs the message instead of sending — so a contact
 form works with no SMTP server. Real sending is behind the `mail` build feature
 (which `rhaix build` enables when `[mail]` is present) plus the config section.
 
-**CSV export — `csv()` and `res.download()`.**
+#### CSV export — `csv()` and `res.download()`
 
 ```rhai
 // pages/reports/export.rhx
@@ -1267,7 +1329,9 @@ Recipes for all of them are in `examples/cookbook`.
 
 ### 7.6 Translations and markdown
 
-**`t("key")`.** Files live in `locales/<lang>.toml` and are read through the
+#### Translations — `t()`
+
+Files live in `locales/<lang>.toml` and are read through the
 same `Files` abstraction as templates, so translations work in an embedded
 binary too.
 
@@ -1290,6 +1354,8 @@ translation shows up on the page as `todo.title`, not a blank spot. An
 unknown language in `set_locale` is ignored with a warning, so `?lang=xx`
 can't turn labels into raw keys.
 
+#### `markdown()`
+
 **`markdown(text)`** returns `Html`, i.e. its output is not escaped — and the
 text usually comes from a user. So there are two guardrails here, and they
 are **not configurable**:
@@ -1300,8 +1366,12 @@ are **not configurable**:
    `[click](javascript:alert(1))` becomes `#`.
 
 Because of this, no HTML sanitizer is needed — there is nowhere for anything
-dangerous to come from. `markdown()` is enabled by the `markdown` build
-feature (which `rhaix build` turns on when it's used).
+dangerous to come from.
+
+`markdown()` lives behind the `markdown` feature of the `rhaix-script` crate.
+Current CLI builds (`rhaix dev`, `serve`, `build`) do not enable it, and a call
+fails with an explanatory error. For now `markdown()` is available only to an
+app that embeds rhaix in its own program and turns the feature on itself.
 
 ### 7.7 Client: the core stays put, the interface is yours
 
@@ -1315,7 +1385,9 @@ The client side has two layers, and the boundary between them is deliberate:
 The core has not a single line about how anything looks. Everything visible
 lives in `ui.js`, and a project can replace it without patching the framework.
 
-**Responses with a status other than 2xx swap too.** htmx by default only
+#### Responses with a status other than 2xx swap too
+
+htmx by default only
 swaps `2xx` and silently drops the rest (`config.responseHandling`). In rhaix
 `res.status(...)` is part of an ordinary response, not a signal that
 something's wrong: `422` carries the same page with errors under the fields
@@ -1324,7 +1396,9 @@ diagnostics. The core overrides this, so `validate()` on the server never
 stays invisible on screen. `htmx:responseError` still fires for anyone
 listening, and `204` does not swap — there is no body.
 
-**Validation under fields is a component, not a directive.** The framework
+#### Validation under fields is a component, not a directive
+
+The framework
 deliberately adds no dedicated `<Field>` tag: `@if={errors.x}` plus a `<span>`
 is already a sufficient primitive, and the wrapper is an ordinary project
 component:
@@ -1352,7 +1426,9 @@ let error = props.error;
 One component instead of three lines of markup per form field. A working
 example with a `<textarea>` variant is `examples/cookbook/components/Field.rhx`.
 
-**Toasts.** `hx.toast(message, type)` (7.5) on the server sends a `showToast`
+#### Toasts
+
+`hx.toast(message, type)` on the server sends a `showToast`
 event via the `HX-Trigger` header; `ui.js` draws it into `#toasts` (creating
 the container itself if the layout has none). Types are `info` (default),
 `success`, `error`, `warning`. A click dismisses a toast; otherwise it goes
@@ -1363,7 +1439,9 @@ toast, plus an `items` array with all of them.
 The default styles have zero specificity (`:where(...)`), so any rule of
 yours — even a plain `.toast { … }` — wins.
 
-**A toast before a redirect is not lost (flash).** `hx.toast("Welcome");
+#### A toast before a redirect is not lost (flash)
+
+`hx.toast("Welcome");
 res.redirect("/admin")` is the most common pairing. On its own nobody would
 ever see that toast: htmx fires the `HX-Trigger` event and immediately leaves
 for the new address, and a plain form without htmx gets a `303` with no toast
@@ -1376,7 +1454,9 @@ toasts of a plain (non-htmx) page load travel the same way, since the browser
 does not read `HX-Trigger` there. Nothing to do on your side — it only needs a
 session (there is one in `pages/`, none in `api/`).
 
-**`<dialog>` opens itself as a real modal.** Write `<dialog>` instead of
+#### `<dialog>` opens itself as a real modal
+
+Write `<dialog>` instead of
 `<div class="modal">` — `ui.js` calls `showModal()` for every `<dialog>`,
 wherever it shows up: on the first load, in a fragment, outside the main
 target via `@oob`. Native backdrop, `Esc`, focus trap — with no code in the
@@ -1386,7 +1466,7 @@ dialog). A project that genuinely wants a plain, non-modal `<dialog>` just
 adds `data-plain`. A working example is
 `examples/cookbook/partials/OrderCard.rhx`.
 
-**Changing the interface — two levels.**
+#### Changing the interface — two levels
 
 Piece by piece: override one function in `public/*.js`. It is read at the
 moment of the event, so load order does not matter:
@@ -1486,6 +1566,66 @@ pub fn register(engine: &mut Engine) {
 A function in `scripts/*.rhai` with the same name overrides the Rust one, so do
 not reuse names.
 
+### 7.10 The database — `db`
+
+Two levels: a portable layer that is identical on SQLite and PostgreSQL, and
+plain SQL for when it is not enough. The driver and connection come from `[db]`
+(13); migrations are `migrations/*.sql` ([GUIDE.md](GUIDE.md) §3).
+
+```rhai
+// Portable layer — works on every driver
+db.find("orders", #{ status: "paid" }, #{ sort: "id desc", limit: 20, skip: 40 })
+db.one("orders", #{ number: n })            // first match or ()
+db.get("orders", id)                        // by primary key `id`, or ()
+db.count("orders", #{ status: "new" })
+db.insert("orders", #{ customer: name })    // returns the new id
+db.update("orders", id, #{ status: "paid" })// returns the number of changed rows
+db.delete("orders", id)                     // likewise
+
+// Your own SQL — always with `?` placeholders
+db.query("select * from orders where amount > ?", [100])   // array of maps
+db.one("select count(*) as n from orders")                 // first row or ()
+db.exec("update orders set status = ? where id = ?", ["paid", id])
+
+// Several queries in one transaction
+db.tx(|t| {
+    let id = t.insert("orders", order);
+    t.exec("update stock set qty = qty - 1 where item = ?", [order.item]);
+});
+```
+
+**A filter** is a map of `column → value` (equality) or `column → #{ operator:
+value }`:
+
+```rhai
+db.find("orders", #{ amount: #{ gte: 100, lt: 1000 }, status: #{ in: ["new", "paid"] } })
+db.find("orders", #{ customer: #{ contains: q }, closed: #{ is_null: true } })
+```
+
+Operators: `eq ne gt gte lt lte in nin contains starts ends between is_null`.
+`contains`, `starts` and `ends` ignore case, Cyrillic included, identically on
+both drivers. On SQLite `lower()`/`upper()` are replaced by Unicode versions,
+so your own `lower(...)` in SQL works for Cyrillic too.
+
+**`find` options** are only `sort` (`"created desc"` or `"dept, created desc"`),
+`limit`, `skip`, `fields` (an array of columns). An unknown key is an error,
+not silence. Table and column names are checked: SQL cannot be smuggled in
+through them.
+
+**`db.tx`** holds one connection for the whole function. Any error inside —
+from the database or a `throw` in the script — rolls everything back. Separate
+`db.exec("begin")` calls do not work: each `db` call may take a different
+connection from the pool.
+
+Three more things worth knowing:
+
+- **The portable layer expects the primary key in a column named `id`.**
+- **Your own SQL on PostgreSQL also uses `?`**: the driver rewrites them to
+  `$1, $2, …`. Do not mix in `$1` yourself.
+- **A query per table row is the most common cause of a slow page.** Use
+  `db.attach`/`db.attach_count` for related rows and `db.grid` for admin
+  tables (7.5).
+
 ---
 
 ## 8. `<style>` and `<script>` in a component
@@ -1494,7 +1634,7 @@ not reuse names.
 <div class="card">…</div>
 
 <style>
-  /* in v1 — global CSS, hoisted into <rhaix:head/> and deduplicated by hash */
+  /* global CSS: hoisted into <rhaix:head/>, duplicates dropped by hash */
   .card { border: 1px solid #ddd }
 </style>
 
@@ -1579,7 +1719,7 @@ Unknown config keys are also logged when the server starts.
 - Attributes starting with `@` — directives only.
 - `data-rhx-*` attributes — internal.
 - Component names `Fragment`, `Slot` — internal.
-- **[v1.1]**: scoped slots, `@key` for morph swaps, `@transition`.
+- Reserved for later: scoped slots, `@key` for morph swaps, `@transition`.
 - **Not planned**: islands (`<script client>`), partial hydration, client-side
   components — deliberately outside the framework.
 
@@ -1592,6 +1732,134 @@ duplicated here.
 
 ## 12. A complete example
 
-See [examples/cookbook](examples/cookbook): every file there answers one task,
-and a test in `crates/rhaix-server/tests/examples.rs` fails the build if a recipe
-stops compiling.
+A to-do list: add, tick, delete — without a single line of JS.
+
+```sql
+-- migrations/001_todos.sql
+create table todos (
+    id    integer primary key autoincrement,
+    title text    not null,
+    done  boolean not null default false
+);
+```
+
+```
+pages/todo.rhx
+---
+if req.method == "POST" {
+    let title = req.form("title").trim();
+    if !is_blank(title) {
+        db.insert("todos", #{ title: title });
+        hx.toast("Added", "success");
+    }
+} else if req.method == "PATCH" {
+    db.exec("update todos set done = not done where id = ?", [req.query_int("id")]);
+} else if req.method == "DELETE" {
+    db.delete("todos", req.query_int("id"));
+    hx.toast("Deleted");
+}
+page.title = "ToDo";
+let todos = db.find("todos", #{}, #{ sort: "id" });
+---
+<h1>ToDo</h1>
+<section hx-target="#list" hx-select="#list" hx-swap="outerHTML">
+  <form hx-post="/todo" hx-on::after-request="this.reset()">
+    <input name="title" placeholder="What needs doing?" required>
+    <button>Add</button>
+  </form>
+  <TodoList todos={todos} />
+</section>
+```
+
+```
+components/TodoList.rhx
+---
+let todos = props.todos ?? [];
+---
+<ul id="list">
+  <TodoItem @for={t in todos} @key={t.id} todo={t} />
+  <li @if={todos.is_empty()} class="empty">Nothing here</li>
+</ul>
+```
+
+```
+components/TodoItem.rhx
+---
+let todo = props.todo;
+---
+<li class="todo-item" @class={#{"completed": todo.done}}>
+  <input type="checkbox" @attr={#{"checked": todo.done}}
+         hx-patch={url("/todo", #{ id: todo.id })}>
+  <span>{{ todo.title }}</span>
+  <button hx-delete={url("/todo", #{ id: todo.id })}>×</button>
+</li>
+
+<style scoped>
+  .todo-item.completed span { text-decoration: line-through; opacity: .6 }
+</style>
+```
+
+How it works:
+
+- All the logic is in the page itself: the request method picks the action
+  (6.5), then the page renders as usual.
+- `hx-target`, `hx-select` and `hx-swap` sit on `<section>` and are inherited
+  by the form, the checkbox and the button. An htmx request gets the page's
+  markup without the layout (6.3), and `hx-select="#list"` takes only the list
+  from it.
+- The framework adds the CSRF token both to the form and to
+  `hx-patch`/`hx-delete` (7.2).
+
+Four files, zero Rust, zero frontend build. More "task → file" recipes are in
+[examples/cookbook](examples/cookbook); a test in
+`crates/rhaix-server/tests/examples.rs` fails the build if one stops compiling.
+
+---
+
+## 13. `rhaix.toml` — every key
+
+The file sits in the project root. Every section and key is optional. A key the
+framework does not know is not silently ignored: the startup log and
+`rhaix check` name it and suggest the nearest known one.
+
+```toml
+[server]
+port = 3000                # the --port flag and PORT (binary) take precedence
+trust_proxy = false        # req.ip from the last X-Forwarded-For — only behind your own proxy
+
+[db]
+driver = "sqlite"          # sqlite | postgres
+url = "data/app.db"        # SQLite: path relative to the project root; Postgres: postgres://…
+pool = 8                   # max connections; default 8 for SQLite, 16 for Postgres
+
+[app]
+secret = "…"               # session signing key; RHAIX_SECRET is better
+csrf = true                # false turns the check off for the whole app
+session_cookie = "rhaix_session"
+session_days = 30          # 1–365; the session slides while it is used
+session_secure = true      # Secure on the cookie; default yes in production, no in dev
+tz_offset = "+00:00"       # display offset from UTC
+http_timeout = 10          # seconds http.* waits, 1–300
+locale = "uk"              # default language for t()
+
+[mail]                     # without this section mail.send logs the message
+from = "App <noreply@example.com>"
+smtp_host = "smtp.example.com"
+smtp_port = 587
+smtp_user = "…"
+smtp_pass = "…"
+
+[api]
+cors = []                  # "*" or a list of origins; applies to /api only (6.7)
+openapi = false            # true serves the description at /api/openapi.json
+title = "…"                # info.title; defaults to the project directory name
+version = "1.0.0"          # info.version
+```
+
+| Environment variable | What it does |
+|---|---|
+| `RHAIX_SECRET` | session signing key; beats `[app] secret` (7.2) |
+| `PORT` | port of the built binary; beats `[server] port` |
+
+Where the server listens: `rhaix dev` and `rhaix serve` — only `127.0.0.1` and
+`::1` (publish through nginx or Caddy); the binary from `rhaix build` — `0.0.0.0`.

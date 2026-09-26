@@ -1,10 +1,13 @@
 # Кухарська книга rhaix
 
-Кожен файл — відповідь на одну задачу. Запустити:
+Кожен файл — відповідь на одну задачу, з поясненням у коментарі на початку.
+Запустити (сервер підніметься на `http://localhost:3100`):
 
 ```bash
-cargo run -p rhaix-cli -- dev examples/cookbook
+rhaix dev examples/cookbook
 ```
+
+У клоні репозиторію без встановлення — `cargo run -p rhaix-cli -- dev examples/cookbook`.
 
 | Задача | Файл |
 |---|---|
@@ -20,6 +23,9 @@ cargo run -p rhaix-cli -- dev examples/cookbook
 | Адмін-таблиця: сортування, фільтри, сторінки (`db.grid`) | [`pages/grid.rhx`](pages/grid.rhx) |
 | Живі оновлення: сторінка оновлюється сама (`live.send`) | [`pages/live.rhx`](pages/live.rhx) |
 | Вивантаження в CSV для Excel | [`pages/reports.rhx`](pages/reports.rhx) + [`pages/reports/export.rhx`](pages/reports/export.rhx) |
+| Завантаження файлу з перевіркою типу й розміру | [`pages/upload.rhx`](pages/upload.rhx) |
+| Форма зворотного зв'язку, що надсилає лист | [`pages/contact.rhx`](pages/contact.rhx) |
+| Ліміт запитів до API за адресою й за токеном | [`middleware.rhx`](middleware.rhx) |
 
 Три речі, які повторюються в усіх рецептах:
 
@@ -40,7 +46,7 @@ curl -H "Authorization: Bearer demo-token-42" http://localhost:3100/api/orders
 ```
 
 ```bash
-curl -X POST http://localhost:3100/api/orders   -H "Authorization: Bearer demo-token-42"   -H "Content-Type: application/json"   -d '{"customer":"Нова Клієнтка","email":"n@example.com","amount":250.5}'
+curl -X POST http://localhost:3100/api/orders -H "Authorization: Bearer demo-token-42" -H "Content-Type: application/json" -d '{"customer":"Нова Клієнтка","email":"n@example.com","amount":250.5}'
 ```
 
 Чим `api/` відрізняється від `pages/`:
@@ -51,7 +57,10 @@ curl -X POST http://localhost:3100/api/orders   -H "Authorization: Bearer demo-t
   лише за токеном із заголовка, тож чужий сайт не може послати запит від імені
   залогіненого користувача — його cookie просто не читають;
 - помилки, 404 і діагностика теж приїжджають JSON-ом: клієнт ніколи не отримає
-  HTML там, де чекав дані.
+  HTML там, де чекав дані;
+- `middleware.rhx` обмежує запити двічі: 120 на хвилину з однієї адреси (ще до
+  перевірки токена, щоб його не можна було підбирати) і 60 на хвилину на
+  токен. Понад ліміт — `429` із заголовком `Retry-After`.
 
 Рецепти перевіряються тестом `crates/rhaix-server/tests/examples.rs`: зламаний
 рецепт валить збірку. Сам API — `crates/rhaix-server/tests/api.rs`, і там він

@@ -1,13 +1,13 @@
 # rhaix
 
+Ukrainian version: [README.md](README.md).
+
 Server-rendered HTML over HTMX, with a component model.
 The core is Rust, the scripting language for business logic is
 [Rhai](https://rhai.rs), and the developer experience is modelled on Astro.
 
-Ukrainian version: [README.md](README.md).
-
 You write only `.rhx` files: markup plus a small block of logic on top.
-No Rust, no frontend build, no `node_modules`.
+No Rust, no frontend build, no `node_modules`. Deployment is copying one file.
 
 ```
 pages/todo.rhx
@@ -24,117 +24,167 @@ page.title = "ToDo";
 
 ## Install
 
-A prebuilt `rhaix` (and the `rhaix-lsp` language server) for Linux, macOS and
-Windows is attached to every [GitHub release](https://github.com/lab4prog/rhaix/releases).
-Or build it from source:
+Archives with `rhaix` and the `rhaix-lsp` language server for Linux, macOS and
+Windows are attached to every [GitHub release](https://github.com/lab4prog/rhaix/releases).
+Or build from source (Rust 1.88+):
 
 ```bash
-cargo install rhaix-cli      # the `rhaix` command
-cargo install rhaix-lsp      # optional: language server for the VS Code extension
+cargo install --git https://github.com/lab4prog/rhaix rhaix-cli
 ```
 
 ```bash
 rhaix new myapp && rhaix dev myapp
 ```
 
-Running an app needs nothing but the `rhaix` binary. `rhaix build` (one
-self-contained executable per app) additionally needs a Rust toolchain, 1.88 or
-newer; the step-by-step guide is [GUIDE.md](GUIDE.md) (Ukrainian).
+Developing and running an app needs nothing but the `rhaix` binary.
+`rhaix build` (one self-contained executable per app) additionally needs a Rust
+toolchain. The step-by-step guide is [GUIDE.md](GUIDE.md) (Ukrainian).
 
-## Status: v1.2 — stable
+## Status
 
-The `.rhx` language, routing, data layer, sessions and batteries are frozen
-until 2.0. See [CHANGELOG.md](CHANGELOG.md).
+The current version is **1.6.3**. The `.rhx` language, routing, data layer,
+sessions and batteries are stable: breaking changes can only come in 2.0.
+History is in [CHANGELOG.md](CHANGELOG.md) (Ukrainian).
 
-What already works:
+## What's inside
 
-- `rhaix dev <dir>` — routes are derived from the structure of `pages/`;
-- **frontmatter runs**: `req`, `res`, `hx`, `log`, `state`, `db`, `http`,
-  `session`, `csrf` are available in every `.rhx`;
-- **components**: `<TodoItem todo={t} />`, `<Ui.Card>` with props, `{...spread}`,
-  named and default slots, and an isolated scope;
-- **file-based routing**: `pages/` for pages, `partials/` for fragment
-  endpoints (`partials/Stats.rhx` → `/components/stats`), `[id].rhx` for dynamic
-  segments;
-- **`api/` serves JSON**: `api/orders.rhx` → `/api/orders`; a returned map is
-  serialised automatically, no layout is applied, and errors and 404s are machine
-  readable too. There is no session there on purpose — hence no CSRF to check,
-  and no way for another site to act as the logged-in user;
-- **`middleware.rhx`** — one file guards every protected page; a ready recipe
-  for roles and permissions lives in `examples/cookbook`;
-- **admin tables**: `db.grid("orders", req, #{ sort: [...], filters: #{...} })`
-  gives rows, pages and links that keep sort and filters, with the sort column
-  checked against a whitelist;
-- **live updates**: `live.send("orders")` on the server, and every open page
-  listening with `hx-trigger="live:orders from:body"` refreshes itself;
-- **API extras**: CORS for `api/` in one line of config, rate limiting with
-  `state.allow(key, max, seconds)`, and `rhaix openapi` derives an OpenAPI 3.1
-  spec from the files themselves;
-- **exports**: `res.download("orders.csv", csv(rows, #{ columns: [...] }))` —
-  RFC 4180, formula cells defused, a BOM for Excel;
-- **your own Rust**: functions in `native/lib.rs` are compiled in by
-  `rhaix build` and picked up by `rhaix dev` — for when Rhai is not enough;
-- **`@oob`** — one response updates both the main target and a block outside it;
-- **database**: a `[db]` section in `rhaix.toml`, migrations from
-  `migrations/*.sql` applied at startup, native queries (`db.query`), portable
-  CRUD (`db.find/get/insert/…`) with an operator dictionary, and `db.tx` for
-  all-or-nothing writes; **two drivers, `sqlite` and `postgres`** — the same
-  `.rhx` runs on both, switching driver is a config change, not a code change;
-- **sessions and CSRF**: `session.set("user", name)` is a signed cookie that
-  survives a server restart. CSRF needs neither switching on nor remembering:
-  a form gets a hidden field, a button with `hx-delete` gets a header, and a
-  request without a token never reaches `middleware.rhx`;
-- **`http`**: `http.get(url).json` straight from frontmatter, with no `await`.
-  If the other service is down you get `ok: false`, not a 500 on your page;
-- **shared functions**: anything declared in `scripts/*.rhai` is visible from
-  every file, with nothing to import;
-- **live reload**: an edit is visible in about 70 ms, and the template cache
-  knows its dependencies — editing a component refreshes the pages that embed it;
-- **component assets**: `<style>` and `<script>` live next to the markup, and the
-  core hoists them into the document once; inside a fragment the script is
-  wrapped in a registry check, so a repeated swap does not run it again;
-- **production build**: `rhaix build` embeds every file into a single binary
-  (11.3 MB) that reads nothing from disk except the database; `rhaix serve`
-  runs the same app from disk in production mode — frozen cache, compression,
-  cached static files;
-- the layout is loaded only on a normal visit; on `HX-Request` a fragment is
-  returned;
-- `{{ expression }}` with context-aware escaping, and the directives `@if` /
-  `@else` / `@for` / `@class` / `@style` / `@attr` / `@html` / `@text` / `@oob`;
-- forms, validation with status 422, toasts over `HX-Trigger`, redirects;
-- errors are reported in `.rhx` coordinates (`pages/todo.rhx:7:26`) with a caret
-  and a suggestion;
-- scripts are bounded in time and operation count — an infinite loop produces an
-  error, not a hang.
+**Language and components**
 
-Unknown components and circular dependencies are **compile** errors, with a
-suggestion for the closest name and the full chain.
+- `{{ expression }}` escaped for its context: text, attribute, URL, `<script>`;
+  `onclick={…}` from data is a compile error;
+- directives `@if` / `@else-if` / `@else` / `@for` / `@class` / `@style` /
+  `@attr` / `@html` / `@text` / `@oob` — the last one updates a block outside the
+  main target with the same response;
+- components `<TodoItem todo={t} />`, `<Ui.Card>` with props, `{...spread}`,
+  default and named slots, and an isolated scope;
+- `<style>` and `<script>` next to a component's markup; the core hoists them
+  into the document once, and `<style scoped>` narrows selectors to its own file;
+- shared functions in `scripts/*.rhai` are visible from every file, with
+  nothing to import.
 
-Not there yet: password hashing and authentication (M12), `markdown()` (M12),
-Postgres / MongoDB / SurrealDB drivers (M11, behind the same `DbDriver` trait).
+**Routing and HTTP**
+
+- file-based routes: `pages/` for pages, `partials/` for fragments, `[id].rhx`
+  for dynamic segments;
+- the fragment rule: an htmx request gets the page's markup without the layout,
+  a boosted navigation gets the full page;
+- `api/` serves JSON: a returned map is serialised automatically, errors are
+  JSON too, and there is deliberately no session; CORS in one line of config,
+  and `rhaix openapi` derives an OpenAPI 3.1 spec from the files themselves;
+- `middleware.rhx` guards every page from one file; a ready recipe for roles
+  and permissions lives in [examples/cookbook](examples/cookbook);
+- live updates: `live.send("orders")` on the server, and every open page
+  listening with `hx-trigger="live:orders from:body"` re-fetches its data.
+
+**Data**
+
+- two drivers, `sqlite` and `postgres`: the same `.rhx` runs on both, and
+  switching driver is a `rhaix.toml` change;
+- portable CRUD (`db.find/get/insert/update/delete`) with an operator dictionary,
+  plus your own SQL with `?` placeholders; `db.tx` for all-or-nothing writes;
+- migrations from `migrations/*.sql` applied at startup;
+- `db.grid` — an admin table in one call, with sorting, filters and pages kept
+  in the URL; `db.attach` removes the query-per-row pattern;
+- a bounded connection pool and a prepared-statement cache on both drivers.
+
+**Security**
+
+- a session is a signed cookie that survives a restart and slides while it is
+  used;
+- CSRF needs no switching on: a form gets a hidden field, a button with
+  `hx-delete` gets a header, and a request without a token never reaches
+  `middleware.rhx`;
+- passwords with Argon2id (`hash_password`/`verify_password`), rate limiting
+  with `state.allow(key, max, seconds)`;
+- scripts are bounded in time and operation count: an infinite loop is an error,
+  not a hang.
+
+**Batteries**
+
+- `validate()` checks a form in one call, `paginate()` does all the page
+  arithmetic;
+- file uploads with path checks, mail (`mail.send`; without SMTP it goes to the
+  log);
+- `http.get(url).json` straight from frontmatter, no `await`; a service that is
+  down gives `ok: false`, not a 500;
+- exports: `res.download("report.csv", csv(rows, #{ columns: [...] }))` —
+  RFC 4180, formula cells defused, a BOM for Excel, non-ASCII file names;
+- dates, `slug()` with transliteration, `money()`, translations with `t("key")`;
+- your own Rust functions in `native/lib.rs` — for when Rhai is not enough.
+
+**Client**
+
+- htmx ships inside the binary: no CDN dependency;
+- the `rhaix.js` core swaps `422`/`403`/`404` responses too, so validation
+  errors show up on screen;
+- `hx.toast(...)` survives a redirect, and `<dialog>` becomes a real modal on its
+  own; override the interface with one function or take it over completely
+  (`rhaix eject ui`).
+
+**Tooling and deployment**
+
+- `rhaix dev` reloads in about 70 ms; the cache knows its dependencies, so
+  editing a component refreshes the pages that embed it;
+- errors in `.rhx` coordinates (`pages/todo.rhx:7:26`) with a caret and a
+  suggestion; an unknown component or a dependency cycle is a compile error;
+- `rhaix check` validates a project without starting it and warns about common
+  traps;
+- `rhaix build` embeds every file into one binary that reads nothing from disk
+  except the database; `rhaix serve` runs the same app from disk in production
+  mode;
+- a VS Code extension with a language server: diagnostics, `F12` to a component,
+  completion ([editors/vscode](editors/vscode)).
+
+## What's not there
+
+- **Islands and client components** — on purpose: interactivity is htmx
+  attributes, `public/*.js` and component scripts.
+- **MongoDB and SurrealDB drivers** — the `DbDriver` trait is ready for them.
+- **Scoped slots, `@key` morph swaps, `@transition`** — the names are reserved.
+- **Rename and find-references** in the editor.
+- **`markdown()` in CLI builds**: the function exists behind the `markdown`
+  feature, but `rhaix dev`/`serve`/`build` do not enable it yet.
+
+## Documentation
+
+| File | About |
+|---|---|
+| [SYNTAX.en.md](SYNTAX.en.md) | the full reference: `.rhx`, globals, `rhaix.toml` |
+| [llms.txt](llms.txt) | one-file reference written for LLMs |
+| [examples/cookbook](examples/cookbook) | "task → finished `.rhx`" recipes, verified by a test |
+| [examples/demo](examples/demo) | demo: todo, sign-in, admin, escaping examples |
+| [examples/ergonomics](examples/ergonomics) | the hardest pages, written by hand against the spec |
+| [editors/vscode](editors/vscode) | VS Code extension: highlighting and the language server |
+| [GUIDE.md](GUIDE.md) | guide: create an app, database and migrations, deploy, update (Ukrainian) |
+| [SYNTAX.md](SYNTAX.md) | the Ukrainian reference (the original) |
+| [bench](bench) | a like-for-like comparison with Astro on a shared database (Ukrainian) |
+| [CHANGELOG.md](CHANGELOG.md) | changes by version (Ukrainian) |
+| [RELEASING.md](RELEASING.md) | how to cut a release (Ukrainian) |
+
+## Working on rhaix itself
+
+The demo from a clone, without installing:
 
 ```bash
 cargo run --release -p rhaix-cli -- dev examples/demo --port 3000
 ```
 
-A new project, and checking one without starting it:
+The same checks CI runs:
 
 ```bash
-cargo run --release -p rhaix-cli -- new myapp
+cargo test --workspace --locked
 ```
 
 ```bash
-cargo run --release -p rhaix-cli -- check myapp --json
+cargo clippy --workspace --all-targets --locked
 ```
-
-The whole app in one binary — deployment becomes copying a file:
 
 ```bash
-cargo run --release -p rhaix-cli -- build myapp
+cargo fmt --all --check
 ```
 
-Performance gates. M0 measures expression evaluation (4.88 ms against a 5 ms
-limit), M1 measures a full 1000-row render (7.34 ms against a 10 ms limit):
+Core benchmarks with limits that must not be exceeded: expression evaluation
+(5 ms) and a full 1000-row table render (10 ms):
 
 ```bash
 cargo run --release -p rhaix-script --bin rhaix-bench
@@ -144,27 +194,14 @@ cargo run --release -p rhaix-script --bin rhaix-bench
 cargo run --release -p rhaix-template --bin rhaix-render-bench
 ```
 
-## Documentation
-
-| File | About |
-|---|---|
-| [SYNTAX.en.md](SYNTAX.en.md) | the full `.rhx` language specification (v1) |
-| [llms.txt](llms.txt) | one-file reference written for LLMs |
-| [examples/cookbook](examples/cookbook) | "task → finished `.rhx`" recipes, verified by a test |
-| [examples/demo](examples/demo) | the demo application running on the current code |
-| [bench](bench) | a like-for-like comparison with Astro on a shared database (Ukrainian) |
-| [SYNTAX.md](SYNTAX.md) | the Ukrainian specification (the original) |
-
-## Crates
-
 | Crate | Role |
 |---|---|
-| `rhaix-db` | driver trait, portable CRUD → SQL, SQLite and PostgreSQL drivers, transactions, migrations |
+| `rhaix-db` | driver trait, portable CRUD → SQL, SQLite and PostgreSQL drivers, pool, transactions, migrations |
 | `rhaix-parser` | sources, spans, `file:line:column`, frontmatter splitting |
-| `rhaix-script` | the Rhai engine, limits, `display`/`truthy`, `raw()`/`json()`/`url()`, `req`/`res`/`hx`/`state`, sessions and CSRF, `http`, dates and strings |
-| `rhaix-template` | `.rhx` lexer, AST, expression compilation, components, renderer, escaping |
-| `rhaix-server` | axum: routing, layout, the fragment rule, static files |
-| `rhaix-cli` | `rhaix dev`, `rhaix serve`, `rhaix build`, `rhaix new`, `rhaix check`, `rhaix openapi`, `rhaix eject ui` |
+| `rhaix-script` | the Rhai engine with limits, `req`/`res`/`hx`/`state`, sessions and CSRF, `http`, `db.grid`, `csv`, dates and strings |
+| `rhaix-template` | `.rhx` lexer, AST, expression compilation, components, renderer, escaping, scoped CSS |
+| `rhaix-server` | axum: routing, layout, the fragment rule, `api/`, live updates, static files, `rhaix check` |
+| `rhaix-cli` | commands `new`, `dev`, `serve`, `build`, `check`, `openapi`, `eject ui` |
 | `rhaix-lsp` | language server: diagnostics, go-to-component, completion |
 
 Licence: MIT or Apache-2.0.

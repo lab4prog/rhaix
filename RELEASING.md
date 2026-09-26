@@ -3,6 +3,11 @@
 Автоматизовано все, що можна відкотити. Кроки, які публікують щось назавжди
 (crates.io, Marketplace, публічний реліз), людина робить сама — вони позначені ⚠.
 
+> **Поточний стан:** крейти `rhaix-*` на crates.io ще не опубліковані. Релізи
+> виходять на GitHub (архіви, `.vsix`), а встановлення з вихідного коду — через
+> `cargo install --git`. Поки так, `rhaix build` із релізного бінарника потребує
+> `--framework <клон>` ([GUIDE.md](GUIDE.md) §6).
+
 ## 0. Один раз: репозиторій
 
 ```bash
@@ -24,7 +29,9 @@ git push -u origin main
 4. Перевірити локально:
 
    ```bash
-   cargo test --workspace
+   cargo test --workspace --locked
+   cargo clippy --workspace --all-targets --locked
+   cargo fmt --all --check
    cargo publish --workspace --dry-run
    ```
 
@@ -36,6 +43,10 @@ git push -u origin main
 git tag -a vX.Y.Z -m "X.Y.Z"
 git push origin vX.Y.Z
 ```
+
+Теги пушаться **по одному**. GitHub не запускає workflow, якщо одним push
+прийшло більше трьох тегів, тож кілька версій, накопичених локально, потребують
+окремого `git push origin vX.Y.Z` на кожну.
 
 `.github/workflows/release.yml`:
 
@@ -50,10 +61,10 @@ git push origin vX.Y.Z
 
 ## 3. ⚠ Опублікувати
 
-Усе нижче незворотне. Порядок має значення: реліз на GitHub і `rhaix build`
-зі свіжого бінарника працюють лише тоді, коли крейти вже є в crates.io.
+Усе нижче незворотне. Порядок має значення: `rhaix build` зі свіжого релізного
+бінарника без `--framework` працює лише тоді, коли крейти вже є в crates.io.
 
-1. **crates.io.** Потрібен токен (`cargo login`). Назви крейтів `rhaix-*` мають
+1. **crates.io** (поки не робилось). Потрібен токен (`cargo login`). Назви крейтів `rhaix-*` мають
    бути вільні або вашими — перевірте на crates.io до першого випуску.
 
    ```bash
@@ -77,10 +88,10 @@ git push origin vX.Y.Z
 ## Що перевіряти після
 
 ```bash
-cargo install rhaix-cli --version X.Y.Z
+cargo install --git https://github.com/lab4prog/rhaix --tag vX.Y.Z rhaix-cli
 rhaix new /tmp/check && rhaix build /tmp/check
 ```
 
-Саме `rhaix build` на машині без клону репозиторію — те, що до 1.2.1 було
-зламане для всіх, крім автора: згенерований крейт посилався на шлях до
-репозиторію на машині збірки.
+Найважливіше — `rhaix build` на машині без клону репозиторію: згенерований
+крейт не повинен посилатися на шляхи машини, де зібрано CLI. Після публікації
+на crates.io те саме перевіряється через `cargo install rhaix-cli --version X.Y.Z`.

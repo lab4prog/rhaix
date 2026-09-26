@@ -209,15 +209,16 @@ menu, a header counter) re-renders itself. Two consequences:
 
 | Name | What |
 |---|---|
-| `req` | `req.method`, `req.path`, `req.url` (path + query), `req.ip`, `req.is_htmx`, `req.param/query/form/header/cookie`, typed `query_int/query_float/query_bool` and `form_int/form_float/form_bool`, `req.all_query()`, `req.all_form()`, `req.body` |
+| `req` | `req.method`, `req.path`, `req.url` (path + query), `req.ip`, `req.is_htmx`, `req.is_boosted`, `req.param/query/form/header/cookie`, typed `query_int/query_float/query_bool` and `form_int/form_float/form_bool`, `req.all_query()`, `req.all_form()`, `req.body`, `req.json()`, `req.file/files/has_file` |
 | `res` | `res.status(422)`, `res.header(k,v)`, `res.cookie(k,v)`, `res.redirect("/login")`, `res.download(name, content[, type])` |
 | `hx` | `hx.toast(msg, "success")`, `hx.trigger(name[, detail])`, `hx.redirect`, `hx.refresh`, `hx.push_url`, `hx.retarget`, `hx.reswap`, `hx.location` |
-| `db` | see below |
-| `session` | `session.set/get/has/remove/clear/all`, `session.user` |
-| `csrf` | `csrf.token` |
+| `db` | see Database |
+| `session` | `session.set/get/has/remove/clear/all`, `session.user` — not in `api/` |
+| `csrf` | `csrf.token` — not in `api/` |
 | `http` | `http.get/post/put/patch/delete` |
+| `mail` | `mail.send(#{ to, subject, text, html })` |
 | `state` | process-wide key/value: `state.get/set/has/remove`; rate limit: `state.allow(key, max, seconds)`, `state.retry_after(key)`, `state.reset(key)` |
-| `page` | shared map for the page and its layout |
+| `page` | map shared by middleware, the page and its layout |
 | `live` | `live.send(topic[, detail])` — tell open pages that data changed |
 | `log` | `log.info/warn/error` |
 | `props` `slots` | inside components |
@@ -225,9 +226,9 @@ menu, a header counter) re-renders itself. Two consequences:
 
 Missing values are `()`, so `req.query("x") ?? "default"` is the idiom.
 
-Only `res.redirect`, `hx.redirect` and `hx.refresh` stop rendering.
-`res.status(422)` does **not**: re-rendering a form with errors is the normal
-case.
+Only `res.redirect`, `res.download`, `hx.redirect` and `hx.refresh` stop
+rendering. `res.status(422)` does **not**: re-rendering a form with errors is
+the normal case.
 
 ## Database
 
@@ -256,9 +257,6 @@ is_null`. `contains/starts/ends` ignore case, Cyrillic included, identically on
 SQLite and Postgres (`lower()` in SQLite is replaced by a Unicode one, so your own
 `lower(...)` in raw SQL works for Cyrillic too).
 
-Rhai trap: `for r in rows { r.x = 1 }` changes a COPY — the array is untouched.
-Use `for i in 0..rows.len() { rows[i].x = 1; }` (`rhaix check` warns).
-
 ```rhai
 db.find("orders", #{ amount: #{ gte: 100, lt: 1000 }, status: #{ in: ["new", "paid"] } })
 db.find("orders", #{ customer: #{ contains: q } })
@@ -267,11 +265,19 @@ db.find("orders", #{ customer: #{ contains: q } })
 `options` accepts only `sort`, `limit`, `skip`, `fields`. An unknown key is an
 error, not silence.
 
-**SQLite has no boolean type.** `done` comes back as `0`/`1`. In markup that is
-fine (`@if={t.done}`, `!t.done` both work), but plain Rhai `if t.done` needs
-`if bool(t.done)`.
+Drivers: `sqlite` (default) and `postgres`. The portable layer (`db.find/get/…`)
+and `?` placeholders are identical on both — switching driver is a config change,
+not a code change. `rhaix build` reads `[db] driver` and compiles only that
+driver into the binary, so a SQLite app carries none of the Postgres
+dependencies. Two Postgres specifics to know: the portable layer assumes a
+primary key column named `id` (a `serial`/`bigserial`); and in **native** queries
+you still write `?` placeholders (the driver rewrites them to `$1, $2, …`), so
+do not mix in `$1` yourself.
 
-Config, `rhaix.toml`:
+## Config — `rhaix.toml`
+
+Every key is optional. An unknown key is reported at startup and by
+`rhaix check`, with the nearest known name.
 
 ```toml
 [server]
@@ -286,10 +292,13 @@ url = "data/app.db"               # relative to the project root, not the workin
 # pool = 16                       # max connections (sqlite 8, postgres 16); extra requests wait
 
 [app]
-csrf = true               # default
-session_days = 30
-tz_offset = "+03:00"
-http_timeout = 10
+# secret = "…"            # prefer the RHAIX_SECRET env var
+csrf = true               # default; false disables it app-wide
+session_cookie = "rhaix_session"
+session_days = 30         # 1–365, sliding
+# session_secure = true   # default: true in production, false in dev
+tz_offset = "+03:00"      # display offset, default +00:00
+http_timeout = 10         # seconds, 1–300
 locale = "uk"             # default locale for t(); files in locales/*.toml
 
 # [mail] enables real SMTP (build with the `mail` feature); without it mail.send logs
@@ -299,19 +308,14 @@ locale = "uk"             # default locale for t(); files in locales/*.toml
 # smtp_port = 587
 # smtp_user = "..."
 # smtp_pass = "..."
+
+# [api] — see JSON API: cors, openapi, title, version
 ```
 
 The session signing key comes from `RHAIX_SECRET`, then `[app] secret`, then a
 `.rhaix-secret` file created by `rhaix dev`. In production, set `RHAIX_SECRET`.
-
-Drivers: `sqlite` (default) and `postgres`. The portable layer (`db.find/get/…`)
-and `?` placeholders are identical on both — switching driver is a config change,
-not a code change. `rhaix build` reads `[db] driver` and compiles only that
-driver into the binary, so a SQLite app carries none of the Postgres
-dependencies. Two Postgres specifics to know: the portable layer assumes a
-primary key column named `id` (a `serial`/`bigserial`); and in **native** queries
-you still write `?` placeholders (the driver rewrites them to `$1, $2, …`), so
-do not mix in `$1` yourself.
+`PORT` overrides the port of a built binary. `rhaix dev`/`serve` listen on
+loopback only (127.0.0.1 and ::1); a built binary listens on 0.0.0.0.
 
 ## Sessions and CSRF
 
@@ -342,16 +346,6 @@ if !state.allow(attempts, 5, 300) {                      // 5 per 5 minutes
 ```
 
 Counters are per process (not shared between copies, cleared on restart).
-
-Roles and permissions (full recipe: examples/cookbook middleware.rhx +
-scripts/access.rhai): keep only the user id in the session; in middleware.rhx
-load the user once into `page.user` (the page sees the same `page`); map path
-prefixes to permissions (`req.path == p || req.path.starts_with(p + "/")`);
-pages test `can(page.user, "perm")`, never the role name; the action handler
-re-checks `can(...)` — hiding a button is not authorization. Deny an htmx
-button with `res.status(403); hx.toast(...); hx.reswap("none"); return "";`.
-Redirect back via `url("/login", #{ next: req.url })`, and only follow `next`
-if it starts with "/" and not "//".
 `req.ip` is the TCP peer; behind your own proxy set `[server] trust_proxy = true`
 to read the last `X-Forwarded-For` entry — never otherwise, it is forgeable.
 
@@ -363,6 +357,26 @@ no valid token are refused with 403 before `middleware.rhx` runs.
 Edge cases: dynamic `method={m}` → put `<rhaix:csrf />` inside the form by hand;
 your own `hx-headers` → add `#{"x-csrf-token": csrf.token}` yourself;
 `data-no-csrf` opts one element out.
+
+## Middleware, roles and permissions
+
+`middleware.rhx` (frontmatter only) runs after the CSRF check and before every
+page. `res.redirect`/`hx.redirect`/`hx.refresh` or a returned value end the
+request there; a bare `return;` just lets the page run.
+
+Full recipe: examples/cookbook `middleware.rhx` + `scripts/access.rhai`.
+
+- Keep only the user id in the session; in middleware.rhx load the user once
+  into `page.user` (the page sees the same `page`).
+- Map path prefixes to permissions
+  (`req.path == p || req.path.starts_with(p + "/")`).
+- Pages test `can(page.user, "perm")`, never the role name.
+- The action handler re-checks `can(...)` — hiding a button is not
+  authorization.
+- Deny an htmx button with
+  `res.status(403); hx.toast(...); hx.reswap("none"); return "";`.
+- Redirect back via `url("/login", #{ next: req.url })`, and only follow `next`
+  if it starts with "/" and not "//".
 
 ## Calling other services
 
@@ -400,7 +414,7 @@ is kept verbatim. `date()` accepts both a timestamp and a database string.
 Parsing is strict: `2026-02-31`, `2026-02-29` (non-leap), `25:00`, `12:60` are
 not dates — `timestamp()` gives `()`, `date()` "", `validate` rule `date` fails.
 
-## Form validation, pagination, uploads, mail
+## Batteries: validation, pagination, admin tables, uploads, CSV, mail
 
 ```rhai
 // validate(values, rules) -> map of field -> message (empty if valid)
@@ -414,7 +428,6 @@ let errors = validate(req.all_form(), #{
     role:  "in:user,admin",
 });
 if !errors.is_empty() { res.status(422); }
-// rules: required email url int number min:N max:N between:a,b same:field in:a,b,c
 // min/max compare by value on int/number fields, by length otherwise
 
 // paginate(total, per_page, page) -> map; page is clamped to 1..=pages
@@ -451,22 +464,28 @@ res.download("orders.csv", csv(orders, #{
 // BOM added to CSV; stops rendering. Behind hx-boost a GET download becomes
 // HX-Redirect to the same URL (the script runs twice — keep exports on GET).
 
-// mail (dev: logs the message; real SMTP behind the `mail` build feature + [mail] config)
+// mail (dev: logs the message; real SMTP when [mail] is configured — rhaix build enables it)
 mail.send(#{ to: "x@y.co", subject: "Hi", text: "...", html: "<p>...</p>" });
-
-// i18n: locales/<lang>.toml, read through the same Files trait
-t("greeting")                 // current locale -> default locale -> the key itself
-t("items", #{ count: 3 })     // "{count}" placeholders
-set_locale("en"); locale()    // usually in middleware.rhx; unknown locale is ignored
-
-// markdown (behind the `markdown` build feature): raw HTML is escaped, not
-// passed through, and link/image URLs are scheme-checked — safe by construction
-{{ markdown(post.body) }}
 ```
 
 Validation rules in full: `required email url int number bool date min:N max:N
 between:a,b len:N same:field different:field in:a,b not_in:a,b starts:x ends:x
 alpha alnum`.
+
+## Translations and markdown
+
+```rhai
+// i18n: locales/<lang>.toml, read through the same Files trait
+t("greeting")                 // current locale -> default locale -> the key itself
+t("items", #{ count: 3 })     // "{count}" placeholders
+set_locale("en"); locale()    // usually in middleware.rhx; unknown locale is ignored
+```
+
+`markdown(text)` escapes raw HTML instead of passing it through and
+scheme-checks link/image URLs — safe by construction. It sits behind the
+`markdown` feature of `rhaix-script`, which current CLI builds do not enable:
+in `rhaix dev`/`serve`/`build` the call fails with an explanatory error. Do not
+use it in generated apps for now.
 
 ## Client: errors swap, toasts and modals are yours
 
@@ -543,20 +562,27 @@ startup, so editing them needs a `rhaix dev` restart (it says so in the console)
 both deduplicated by content hash. `<style scoped>` narrows selectors to the
 file's own markup: every element of that file gets `data-rhx-<hash8>` and
 `[data-rhx-…]` is appended to the last compound selector. Slot content stays in
-the parent's scope; `@keyframes` is left alone; `:root` will not match. A script runs **once per page lifetime**,
-even if its component arrives through several HTMX swaps. htmx is already
+the parent's scope; `@keyframes` is left alone; `:root` will not match. A
+script runs **once per page lifetime**, even if its component arrives through
+several HTMX swaps. htmx is already
 loaded when it runs; `public/*.js` (deferred) are not yet — use them from
-event handlers. `<style>` is global
-in v1 — scoping is v1.1. There are no islands and no `<script client>`.
+event handlers. Plain `<style>` is global. There are no islands and no
+`<script client>`.
 
 ---
 
-## Two Rhai facts that bite
+## Rhai facts that bite
 
 1. `loop` is a keyword — loop counters live in `iter`.
 2. Many string methods mutate in place. rhaix overrides `trim()` so it both
    trims and returns the value, but other in-place methods still behave the
    Rhai way.
+3. `for r in rows { r.x = 1 }` changes a COPY — the array is untouched. Use
+   `for i in 0..rows.len() { rows[i].x = 1; }` (`rhaix check` warns).
+4. SQLite has no boolean type: `done` comes back as `0`/`1`. In markup that is
+   fine (`@if={t.done}`, `!t.done` both work), but plain Rhai `if t.done` needs
+   `if bool(t.done)`.
+5. `default` is a reserved word — hence `db.grid(..., #{ order: … })`.
 
 ## Method-specific logic in one file
 
@@ -579,7 +605,9 @@ let todos = db.find("todos", #{}, #{ sort: "id desc" });
 ---
 ```
 
-Returning a value from frontmatter makes it the response body, skipping markup.
+Only an explicit `return value` becomes the response body, skipping markup
+(`return "";` for an empty body). A bare `return;` still renders the markup,
+and the value of the last expression is never sent.
 
 ## JSON API
 
@@ -666,29 +694,30 @@ same name in scripts/*.rhai overrides the Rust one.
 ## Commands
 
 ```bash
-rhaix dev <dir>      # live reload, diagnostics in the browser
-rhaix serve <dir>    # production from disk: frozen cache, compression
-rhaix build <dir>    # one binary with every file embedded
-rhaix new <dir>      # project skeleton
-rhaix check <dir>    # compile everything without starting; --json for CI; warns
-                     # (exit 0) on: layout without <rhaix:head/>, `{x}` in text
-                     # (literal — use {{ x }}), @class with selected/checked/…
-                     # (use @attr), unknown rhaix.toml keys, `for r in rows
-                     # { r.x = … }` (assigns a copy)
-rhaix openapi <dir>  # OpenAPI 3.1 of api/ derived from the files; -o file
-rhaix eject ui       # copy the built-in toasts/modals into public/rhaix-ui.js to own them
+rhaix new <dir>                 # project skeleton
+rhaix dev [dir] [--port N]      # live reload, diagnostics in the browser
+rhaix serve [dir] [--port N]    # production from disk: frozen cache, compression
+rhaix build [dir]               # one binary with every file embedded
+rhaix check [dir] [--json]      # compile everything without starting
+rhaix openapi [dir] [-o file]   # OpenAPI 3.1 of api/ derived from the files
+rhaix eject ui [--force]        # own the toasts/modals as public/rhaix-ui.js
 ```
 
-## Not in v1, on purpose
+`rhaix check` exits non-zero on errors and only warns (exit 0) on: a layout without
+`<rhaix:head/>`, `{x}` in text (literal — use `{{ x }}`), `@class` with
+`selected`/`checked`/… (use `@attr`), unknown `rhaix.toml` keys, and
+`for r in rows { r.x = … }` (assigns a copy).
+
+## Not included
 
 - **Islands, client components, partial hydration.** Interactivity is HTMX
   attributes, `public/*.js` and hoisted component `<script>`. This is a design
   decision, not a gap.
-- **Scoped slots, `@key` morph swaps, `@transition`** — v1.1.
+- **Scoped slots, `@key` morph swaps, `@transition`** — reserved, not built.
 - **MongoDB and SurrealDB drivers** — the `DbDriver` trait is ready for them,
   the drivers are not written. `sqlite` and `postgres` ship.
 - **Rename and find-references** in the editor. Diagnostics, go-to-component
   and completion do exist — `editors/vscode` plus the `rhaix-lsp` server.
 
-Behind build features (enabled automatically by `rhaix build` when the project
-uses them): `postgres`, `mail` (real SMTP), `markdown`.
+Behind build features, enabled automatically by `rhaix build` from
+`rhaix.toml`: `postgres` (`[db] driver`), `mail` (a `[mail]` section).

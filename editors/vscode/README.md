@@ -23,7 +23,7 @@
 поруч із `rhaix` — достатньо покласти його в PATH. Або зібрати:
 
 ```bash
-cargo install rhaix-lsp
+cargo install --git https://github.com/lab4prog/rhaix rhaix-lsp
 ```
 
 Якщо ставити його в PATH не хочеться, шлях задається налаштуванням
@@ -40,14 +40,24 @@ cargo install rhaix-lsp
 | компоненти | `<TodoItem/>`, `<Ui.Card>` — інший колір, ніж у HTML-тегів |
 | службові теги | `<rhaix:head/>`, `<rhaix:scripts/>`, `<rhaix:csrf/>`, `<rhaix:raw>` |
 | вирази в атрибутах | `href={link}`, `{...attrs}` |
-| глобальні об'єкти | `req` `res` `hx` `db` `session` `csrf` `http` `mail` `state` `page` `log` `props` `slots` `iter` |
-| функції фреймворку | `t()` `validate()` `paginate()` `url()` `date()` `money()` … |
+| глобальні об'єкти | `req` `res` `hx` `db` `session` `csrf` `http` `mail` `state` `live` `page` `log` `props` `slots` `iter` |
+| функції фреймворку | `t()` `validate()` `paginate()` `csv()` `url()` `date()` `money()` … |
 
-## Встановити локально
+## Встановити
+
+Готовий `rhaix-<версія>.vsix` лежить у кожному
+[релізі](https://github.com/lab4prog/rhaix/releases):
 
 ```bash
-# у теці editors/vscode
-code --install-extension .          # або: скопіювати теку в ~/.vscode/extensions/
+code --install-extension rhaix-<версія>.vsix
+```
+
+Або зібрати з цієї теки:
+
+```bash
+npm install
+npx @vscode/vsce package
+code --install-extension rhaix-*.vsix
 ```
 
 Для розробки достатньо відкрити цю теку у VS Code і натиснути F5 — відкриється
@@ -69,7 +79,7 @@ node check-grammar.cjs
 ## Чого поки немає
 
 Перейменування, пошук використань і підказки типів. Наведення (`hover`) теж
-поки без опису — доки читаються в `SYNTAX.md`.
+поки без опису — документація лежить у [SYNTAX.md](../../SYNTAX.md).
 
 ## Як це перевіряється
 
